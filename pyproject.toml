@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "virus_interactome"
+version = "0.1"
+description = "A simple package to learn a little bit"
+authors = [
+    {name = "Daniel", email = "danigual40@gmail.com"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.0"
+dependencies = []
+
+
+[project.urls]
+"Homepage" = "https://github.com/PabloHNieto/virus_interactome"

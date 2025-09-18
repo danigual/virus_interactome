@@ -1,0 +1,9 @@
+LICENSE
+README.md
+pyproject.toml
+virus_interactome/__init__.py
+virus_interactome/utils.py
+virus_interactome.egg-info/PKG-INFO
+virus_interactome.egg-info/SOURCES.txt
+virus_interactome.egg-info/dependency_links.txt
+virus_interactome.egg-info/top_level.txt
