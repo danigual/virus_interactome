@@ -1,6 +1,6 @@
-from .utils import test
+from .fasta_utils import change_id_proteome
 
-__all__ = ['test']
+__all__ = ['change_id_proteome']
 
 
 
