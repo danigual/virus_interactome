@@ -11,8 +11,10 @@ authors = [
 ]
 license = {text = "MIT"}
 readme = "README.md"
-requires-python = ">=3.0"
-dependencies = []
+requires-python = ">=3.9"
+dependencies = [
+    "biopython==1.79"
+]
 
 
 [project.urls]
