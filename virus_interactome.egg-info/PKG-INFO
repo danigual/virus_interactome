@@ -8,6 +8,7 @@ Project-URL: Homepage, https://github.com/PabloHNieto/virus_interactome
 Requires-Python: >=3.0
 Description-Content-Type: text/markdown
 License-File: LICENSE
+Requires-Dist: biopython==1.79
 Dynamic: license-file
 
 # virus_interactome
