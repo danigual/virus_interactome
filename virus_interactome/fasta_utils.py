@@ -1,9 +1,9 @@
 
 def change_id_proteome (inputpath, outputpath):
     
-  '''Define a function in order to clean a .txt file
-  ARGS IN: inputpath: path to the input .txt file
-            outputpath: path to the output .txt file
+  '''Define a function in order to clean a file
+  ARGS IN: inputpath: path to the input file
+            outputpath: path to the output file
   '''
 
   with open (inputpath,'r') as inputfile:
@@ -16,7 +16,7 @@ def change_id_proteome (inputpath, outputpath):
           start = line.find('protein=')
           if start != -1:
             end = line.find(']', start)
-            protein_id = line[start+8:end].replace(' ','_') 
+            protein_id = line[start+8:end].replace(' ','_').replace('.','_').replace('/','_').replace('.','_')
             #import pdb; pdb.set_trace()
             newline = f">{protein_id}|{line[1:]}"
             outputfile.write(newline)
