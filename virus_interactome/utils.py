@@ -1,5 +1,6 @@
 import json
 from collections import OrderedDict
+import numpy as np
 
 def load_json(json_path: str):
     with open (json_path,"r") as j:
@@ -39,6 +40,10 @@ def process_full_data_af3(json_path: str):
         chain_boundaries_by_atom.append((start, end))
         start = end
     
+    ## Convert pae, atom_plddts and contact_probs to np arrays
+    full_data["pae"] = np.array(full_data["pae"])
+    full_data ["atom_plddts"] = np.array(full_data["atom_plddts"])
+    full_data["contact_probs"] = np.array(full_data["contact_probs"])
     
     full_data["chain_lengths"] = chain_lengths 
     full_data["chain_boundaries"] = chain_boundaries
