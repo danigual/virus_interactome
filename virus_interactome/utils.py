@@ -49,3 +49,4 @@ def process_full_data_af3(json_path: str):
     full_data["chain_boundaries"] = chain_boundaries
     full_data["chain_boundaries_by_atom"] = chain_boundaries_by_atom
     return full_data
+
