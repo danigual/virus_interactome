@@ -163,7 +163,21 @@ def process_cif_file (cif_file: str):
                         #   min_pae_chain_A, min_pae_chain_B, 
                           mean_pae_chain_A_B]
    
-    
+def get_info_for_proteins(df):
+    info_from_chain_a = df.loc[:, ["ORF_A", "PPI", "Model_num", 
+                                   "plddt_mean_chain_A", "mean_pae_chain_A"]]
+
+    info_from_chain_b = df.loc[:, ["ORF_B", "PPI", "Model_num", 
+                                   "plddt_mean_chain_B", "mean_pae_chain_B"]]
+
+    info_from_chain_a.columns = ["ORF", "PPI", "Model_num", 
+                                 "plddt_mean_ORF", "pae_mean_ORF"]
+
+    info_from_chain_b.columns = ["ORF", "PPI", "Model_num", 
+                                 "plddt_mean_ORF", "pae_mean_ORF"]
+    by_protein_df = pd.concat([info_from_chain_a, info_from_chain_b], 
+                              ignore_index=True) 
+    return by_protein_df   
 
 def process_interactome(folder_path:str, output_name:str, **kwargs):    
     # Extract the .cif files
@@ -177,8 +191,8 @@ def process_interactome(folder_path:str, output_name:str, **kwargs):
          # map devuelve los resultados en orden de la lista
         for res in tqdm.tqdm(executor.map(process_cif_file, all_cif_files)): #For testing
              results.append(res)
-     # Create the df
-    df = pd.DataFrame(results,
+    # Create the df with the info of all PPIs
+    interactome_df = pd.DataFrame(results,
                      columns=["PPI", "ORF_A", "ORF_B", "Folder", "Model_num","Fraction_disordered","iPTM","pTM",
                              "chain_lenght_A","chain_lenght_B", 
                              #    "contact_probs",
@@ -186,13 +200,20 @@ def process_interactome(folder_path:str, output_name:str, **kwargs):
                              "mean_pae", "mean_pae_chain_A", "mean_pae_chain_B",
                              #    "min_pae_chain_A", "min_pae_chain_B",
                              "mean_pae_chain_A_B"])
-    df.reset_index(inplace=True, drop=True)
+    interactome_df.reset_index(inplace=True, drop=True)
     # Save df to .csv
-    df.to_csv(output_name, index=False)
+    interactome_df.to_csv(output_name, index=False)
+
+    ## Creating simplfied dataframe with info of individual proteins
+    by_protein_df = get_info_for_proteins(interactome_df)
+    # by_protein_df.to_csv(output_name, index=False) 
+    # TODO: en lugar de pasar "output_name", pasamos "output_path"
+    ## guardarmos el anterior como "ineractome_data.csv"
+    ## y este como "interactome_data_by_protein"
 
     ## Add functions for plotting data statistics
     ## def plddt_A_vs plddt_B ire poniendo mas opciones
-    return df 
+    # return interactome_df
 
 
 
