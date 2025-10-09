@@ -9,7 +9,7 @@ from glob import glob
 import tqdm
 from Bio import SeqIO
 from itertools import combinations
-from utils import process_full_data_af3
+from .utils import process_full_data_af3
 
 #------------------------------FUNCTIONS -----------------------------
 
@@ -90,6 +90,7 @@ def process_cif_file (cif_file: str):
     # Extract folder name and model number
     folder_path = "/".join(cif_file.split("/")[1:-1])
     ppi_id = cif_file.split("/")[-2].replace("adv5_", "")
+    orf_a, orf_b = ppi_id.split("__")
     model_number = int(cif_file.split("/")[-1].split("_")[-1].replace(".cif", ""))
     # Name for summary confidences file
     summary_confidences_file = cif_file.replace(".cif",".json").replace("model","summary_confidences")
@@ -147,7 +148,6 @@ def process_cif_file (cif_file: str):
     pae_chain_B = full_data["pae"][start_b_residues:end_b_residues,start_b_residues:end_b_residues]
     mean_pae_chain_B = np.mean(pae_chain_B)
 
-    
     ## Add mean PAE pair A-B
     ## Generate the pae matrix for chain A-B
     pae_chain_A_B = full_data["pae"][start_a_residues:end_a_residues,start_b_residues:end_b_residues]
@@ -155,7 +155,7 @@ def process_cif_file (cif_file: str):
     ## Add minimun PAE pair A-B
     
     # Append info to the list
-    return [ppi_id, folder_path, model_number, fraction_disordered, iPTM, 
+    return [ppi_id, orf_a, orf_b, folder_path, model_number, fraction_disordered, iPTM, 
                         pTM, chain_lenght_A, chain_lenght_B, 
                         # contact_probs,
                          plddt_mean, plddt_mean_chain_A, plddt_mean_chain_B,
@@ -171,7 +171,7 @@ def process_interactome(folder_path:str, output_name:str, **kwargs):
 
     # Paralelización
 
-     # lista de tuplas
+     #List of tuples
     results = []
     with concurrent.futures.ProcessPoolExecutor(**kwargs) as executor:
          # map devuelve los resultados en orden de la lista
@@ -179,7 +179,7 @@ def process_interactome(folder_path:str, output_name:str, **kwargs):
              results.append(res)
      # Create the df
     df = pd.DataFrame(results,
-                     columns=["PPI", "Folder", "Model_num","Fraction_disordered","iPTM","pTM",
+                     columns=["PPI", "ORF_A", "ORF_B", "Folder", "Model_num","Fraction_disordered","iPTM","pTM",
                              "chain_lenght_A","chain_lenght_B", 
                              #    "contact_probs",
                              "plddt_mean", "plddt_mean_chain_A","plddt_mean_chain_B",
@@ -188,7 +188,10 @@ def process_interactome(folder_path:str, output_name:str, **kwargs):
                              "mean_pae_chain_A_B"])
     df.reset_index(inplace=True, drop=True)
     # Save df to .csv
-    df.to_csv(output_name)
+    df.to_csv(output_name, index=False)
+
+    ## Add functions for plotting data statistics
+    ## def plddt_A_vs plddt_B ire poniendo mas opciones
     return df 
 
 
