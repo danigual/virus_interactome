@@ -10,7 +10,7 @@ import tqdm
 from Bio import SeqIO
 from itertools import combinations
 from .utils import process_full_data_af3
-
+from .plotting import plot_boxplots, plot_iptm_vs_ptm
 #------------------------------FUNCTIONS -----------------------------
 
 def load_proteome (fasta_file:str):
@@ -162,7 +162,8 @@ def process_cif_file (cif_file: str):
                           mean_pae, mean_pae_chain_A, mean_pae_chain_B,
                         #   min_pae_chain_A, min_pae_chain_B, 
                           mean_pae_chain_A_B]
-   
+
+## Creating simplfied dataframe with info of individual proteins
 def get_info_for_proteins(df):
     info_from_chain_a = df.loc[:, ["ORF_A", "PPI", "Model_num", 
                                    "plddt_mean_chain_A", "mean_pae_chain_A"]]
@@ -178,14 +179,20 @@ def get_info_for_proteins(df):
     by_protein_df = pd.concat([info_from_chain_a, info_from_chain_b], 
                               ignore_index=True) 
     return by_protein_df   
+   
 
-def process_interactome(folder_path:str, output_name:str, **kwargs):    
+def process_interactome(folder_path:str, output_path:str, **kwargs):    
+    ## TODO:Check and create the output path
+
     # Extract the .cif files
     all_cif_files = glob(f"{folder_path}/*/*cif")
 
+    ## TODO:Check we are working with a non-empty list
+
     # Paralelización
 
-     #List of tuples
+    #List of tuples
+    ##TODO: skip this is .csv exists
     results = []
     with concurrent.futures.ProcessPoolExecutor(**kwargs) as executor:
          # map devuelve los resultados en orden de la lista
@@ -201,19 +208,59 @@ def process_interactome(folder_path:str, output_name:str, **kwargs):
                              #    "min_pae_chain_A", "min_pae_chain_B",
                              "mean_pae_chain_A_B"])
     interactome_df.reset_index(inplace=True, drop=True)
-    # Save df to .csv
-    interactome_df.to_csv(output_name, index=False)
-
-    ## Creating simplfied dataframe with info of individual proteins
+    # Save dfs to .csv
+    interactome_df.to_csv(f'{output_path}/interactome_data.csv', index=False)
     by_protein_df = get_info_for_proteins(interactome_df)
-    # by_protein_df.to_csv(output_name, index=False) 
-    # TODO: en lugar de pasar "output_name", pasamos "output_path"
-    ## guardarmos el anterior como "ineractome_data.csv"
-    ## y este como "interactome_data_by_protein"
+    by_protein_df.to_csv(f'{output_path}/interactome_data_by_protein.csv', index=False) 
 
-    ## Add functions for plotting data statistics
-    ## def plddt_A_vs plddt_B ire poniendo mas opciones
-    # return interactome_df
+    ## Plotting boxplots
+    output_folder = f"{output_path}/plots"
+    plddt_array, labels_array1 = process_boxplot_data(by_protein_df, "plddt_mean")
+    pae_array, labels_array2 = process_boxplot_data(by_protein_df, "mean_pae")
+    plot_boxplots("plddt",plddt_array, labels_array1, output_path=output_folder)
+    plot_boxplots("pae",pae_array,labels_array2, output_path=output_folder)
+
+    ## Plotting scatterplots
+    plot_iptm_vs_ptm(interactome_df, output_path=output_folder)
+
+
+
+def process_boxplot_data(df, value_column:str):
+        '''
+        Receives a df, the orf column and the plddt column. It returns a list of 
+        of lists of the different pae or plddts values by protein
+            ARGS IN:
+            -------
+            df: pd.df
+            value_column: pd.Series
+
+            ARGS OUT:
+            --------
+            value_matrix: np.arrray (array of lists with values per ORF)
+            labels_list: np.array (array of ORF names, ordered by mean value)
+
+
+        '''
+        grouped_values = []
+        orf_labels = []
+        for orf in df["ORF"].unique():
+            tmp = list(df.loc[df["ORF"] == orf , value_column])
+            grouped_values.append(tmp) 
+            orf_labels.append(orf)
+            
+        mean_values = [np.mean(v) for v in grouped_values]
+        sort_idx = np.argsort(mean_values)    
+        value_matrix = np.array(grouped_values, dtype=object)[sort_idx]    
+        orf_labels = np.array(orf_labels)[sort_idx]
+    
+        return value_matrix, orf_labels
+
+
+
+        
+
+
+   
 
 
 

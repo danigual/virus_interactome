@@ -1,5 +1,7 @@
 
+import os
 import matplotlib.pyplot as plt
+import numpy as np
 from pathlib import Path
 from matplotlib.patches import Rectangle
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
@@ -173,3 +175,72 @@ def plot_pLDDT (fulldata_path: str, save_name: str = None):
     plt.close(fig)
 
     return save_name
+
+def plot_boxplots (data_type:str, value_matrix:np.array, orf_labels:np.array, output_path:str = None):
+    '''
+    Generates a boxplot for a given data type (pLDDT or PAE) per ORF..
+        
+        ARGS IN:
+        -------
+        data_type: str, type of data ('pLDDT' or 'PAE')
+        value_matrix: np.ndarray of lists, each containing values for an ORF, 
+                      ordered by mean value
+        orf_labels: np.ndarray of ORF names, in the same order as value_matrix
+        output_path: str, path where the plots will be saved
+
+        ARGS OUT:
+        --------
+
+    '''
+    plt.figure(figsize=(12, 6))
+    plt.boxplot(list(value_matrix),
+                labels=list(orf_labels))
+    plt.xticks(rotation=45, ha='right')
+    plt.ylabel(data_type)
+    plt.title(f"{data_type} / ORF")
+
+    
+    if data_type.lower() == "plddt":
+        plt.axhline(70, color='blue', linestyle='--', label='Confidence threshold (~70)')
+        plt.axhline(90, color='red', linestyle='--', label='Confidence threshold (~90)')
+    elif data_type.lower() == "pae":
+        plt.axhline(10, color='blue', linestyle='--', label='Confidence threshold (~10Å)')
+        plt.axhline(5, color='red', linestyle='--', label='Confidence threshold (~5Å)')
+    
+
+    plt.legend()
+    plt.tight_layout()
+
+    filename = f"{data_type}_boxplot.png"
+    plt.savefig(os.path.join(output_path, filename), dpi=300, bbox_inches='tight')
+    plt.close()
+
+def plot_iptm_vs_ptm(df, output_path:str = None):
+
+    '''
+    Receives a df and creates a scatterplot of ipTM vs pTM
+        
+        ARGS IN:
+        -------
+        df: pd.dataframe
+        output_path: str, path where the plots will be saved
+    
+        ARGS OUT:
+        --------
+
+    '''
+    plt.figure(figsize=(12,12))
+    plt.scatter(df['iPTM'], df['pTM'], alpha=0.7)
+    plt.axhline(0.5, color='blue', linestyle='--', label='pTM')
+    plt.axvline(0.6, color='green', linestyle='--', label='ipTM')
+    plt.axvline(0.8, color='red', linestyle='--', label='ipTM')
+    plt.title("iPTM vs pTM")
+    plt.xlabel("iPTM")
+    plt.ylabel("pTM")
+    plt.xlim(0, 1)
+    plt.ylim(0, 1)
+    plt.legend()
+    plt.tight_layout()
+    filename = f"_scatterplot.png"
+    plt.savefig(os.path.join(output_path, filename), dpi=300, bbox_inches='tight')
+    plt.close()
