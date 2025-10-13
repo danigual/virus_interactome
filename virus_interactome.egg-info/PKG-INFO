@@ -5,10 +5,14 @@ Summary: A simple package to learn a little bit
 Author-email: Daniel <danigual40@gmail.com>
 License: MIT
 Project-URL: Homepage, https://github.com/PabloHNieto/virus_interactome
-Requires-Python: >=3.0
+Requires-Python: >=3.9
 Description-Content-Type: text/markdown
 License-File: LICENSE
-Requires-Dist: biopython==1.79
+Requires-Dist: biopython==1.85
+Requires-Dist: matplotlib
+Requires-Dist: numpy
+Requires-Dist: pandas
+Requires-Dist: tqdm
 Dynamic: license-file
 
 # virus_interactome
