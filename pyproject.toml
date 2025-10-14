@@ -20,6 +20,8 @@ dependencies = [
     "tqdm"
 ]
 
+[pytest]
+pythonpath = "virus_interactome"
 
 [project.urls]
 "Homepage" = "https://github.com/PabloHNieto/virus_interactome"
