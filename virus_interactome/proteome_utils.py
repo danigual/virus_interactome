@@ -13,25 +13,25 @@ from .utils import process_full_data_af3
 from .plotting import plot_boxplots, plot_iptm_vs_ptm
 #------------------------------FUNCTIONS -----------------------------
 
-def load_proteome (fasta_file:str):
-    ''' Receives a fasta file and extracts the ID-sequence
-            ARGS IN:
-                fasta_file (.fasta)
-            ARGS OUT:
-                proteins_dic (dictionary): key-value, id-aas_sequence
-     '''
+# def load_proteome (fasta_file:str): ## Moving this to proteome_input
+#     ''' Receives a fasta file and extracts the ID-sequence
+#             ARGS IN:
+#                 fasta_file (.fasta)
+#             ARGS OUT:
+#                 proteins_dic (dictionary): key-value, id-aas_sequence
+#      '''
 
-    proteins_dic = {}
-    for protein in SeqIO.parse(fasta_file,"fasta"):
-        complete_id = protein.id
-        fractioned_id = complete_id.split('|')
-        short_id = fractioned_id[0]
-        sequence = str (protein.seq)
-        proteins_dic[short_id] = sequence
-    return proteins_dic
+#     proteins_dic = {}
+#     for protein in SeqIO.parse(fasta_file,"fasta"):
+#         complete_id = protein.id
+#         fractioned_id = complete_id.split('|')
+#         short_id = fractioned_id[0]
+#         sequence = str (protein.seq)
+#         proteins_dic[short_id] = sequence
+#     return proteins_dic
 
 
-def get_af3_input(orf1, orf2, proteome_dict):
+def create_af3_input_json(orf1, orf2, proteome_dict:dict):
     return {
             "name": f"AdV5_{orf1}__{orf2}",
             "sequences":[
@@ -49,6 +49,54 @@ def get_af3_input(orf1, orf2, proteome_dict):
             ]
         }
 
+def create_af3_input_json_v2(*args, proteome_dict:dict, proteome_label = None):
+    orf_list = []
+    orf_num_copies = []
+
+    for idx, i in enumerate(args): 
+        if isinstance(i, str):
+            orf_list.append(i)
+        
+            if isinstance(args[idx + 1], int):
+                orf_num_copies.append(args[idx + 1])
+                idx += 2
+            else:
+                orf_num_copies.append(1)
+        
+        else:
+            raise ValueError(f"Expected string at position {i}, got {type(args[i])}")
+    
+    # Check all orfs are in the proteome_dict
+    for orf in orf_list:
+        if orf not in proteome_dict:
+            raise KeyError(f"ORF {orf} is missing from proteome_dict")
+
+    # Check all num_copies are integers and > 0
+    for num in orf_num_copies:
+        if not isinstance(num, int) or num <= 0:
+            raise ValueError(f"Number of copies must be a positive integer, got {num}")
+
+    # Generate the json
+    if proteome_label is not None:
+        proteome_label += "_" 
+    else:
+        proteome_label = ""
+    header = proteome_label + "__".join(orf_list)
+
+    return {
+        "name": header,
+        "sequences": 
+            [
+                {
+                    "proteinChain": {
+                        "count": num,
+                        "sequence": proteome_dict[orf]
+                    }
+                } for orf, num in zip(orf_list, orf_num_copies)
+            ]
+    }
+
+
 def proteome_json (proteome_dict: dict, outputdir:str, batch_size=30):
     '''Receives a dictionary and returns a list of dictionaries as .json file
             ARGS IN:
@@ -61,8 +109,6 @@ def proteome_json (proteome_dict: dict, outputdir:str, batch_size=30):
  
     keys = list (proteome_dict.keys())
     orf_combinations = combinations(keys, 2)
-
-  
   
     tmp_batch = []
     file_idx = 0
@@ -77,7 +123,7 @@ def proteome_json (proteome_dict: dict, outputdir:str, batch_size=30):
             tmp_batch = []
             file_idx += 1
         
-        tmp_job = get_af3_input(orf1, orf2, proteome_dict=proteome_dict)
+        tmp_job = create_af3_input_json(orf1, orf2, proteome_dict=proteome_dict)
         tmp_batch.append(tmp_job)
     
     ## Writing the remaining
