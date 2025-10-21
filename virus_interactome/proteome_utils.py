@@ -1,9 +1,12 @@
 
 #------------------------------ IMPORTS -------------------------------------
 import json
+import subprocess
 import os
 import numpy as np
+from pathlib import Path
 import concurrent.futures
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import pandas as pd
 from glob import glob
 import tqdm
@@ -342,7 +345,7 @@ def process_interactome(folder_path:str, output_path:str, **kwargs):
     ##TODO: skip this is .csv exists
     interactome_df_list = []
     cluster_df_list = []
-    with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=4) as executor:
     # with concurrent.futures.ProcessPoolExecutor(**kwargs) as executor:
          # map devuelve los resultados en orden de la lista
         for res in tqdm.tqdm(executor.map(process_cif_file, all_cif_files)): #For testing
@@ -427,6 +430,145 @@ def process_boxplot_data(df, value_column:str)->tuple[np.ndarray, np.ndarray]:
     orf_labels = np.array(orf_labels)[sort_idx]
     
     return value_matrix, orf_labels
+
+
+def run_single_ipsae(cmd, folder):
+    """Run a single ipSAE command in its folder."""
+    subprocess.run(cmd, shell=True, cwd=folder)
+
+def run_ipsae_for_all_parallel(base_dir, ipsae_script="ipsae.py", pae_cutoff=15, dist_cutoff=10, dry_run=False, n_cores=4):
+    """
+    Run ipSAE scoring on all AlphaFold3 models (json + cif) in subfolders in parallel with tqdm progress bar.
+    """
+    base_dir = Path(base_dir)
+    ipsae_script = Path(ipsae_script)
+    commands_run = []
+
+    # Collect all commands
+    for folder in base_dir.rglob("*"):
+        if not folder.is_dir():
+            continue
+        json_files = list(folder.glob("*.json"))
+        cif_files = list(folder.glob("*.cif"))
+        for json_file in json_files:
+            for cif_file in cif_files:
+                cmd = f"python {ipsae_script} {json_file} {cif_file} {pae_cutoff} {dist_cutoff}"
+                commands_run.append((cmd, folder))
+
+    print(f"Found {len(commands_run)} commands for AF3 models.")
+
+    if dry_run:
+        for cmd, folder in commands_run:
+            print(f"[DRY RUN] {cmd}  (folder: {folder})")
+        return [c[0] for c in commands_run]
+
+    # Run in parallel with progress bar
+    results = []
+    with ProcessPoolExecutor(max_workers=n_cores) as executor:
+        futures = {executor.submit(run_single_ipsae, cmd, folder): (cmd, folder) for cmd, folder in commands_run}
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Running ipSAE", unit="model"):
+            try:
+                future.result()  # will raise exceptions if any
+            except Exception as e:
+                cmd, folder = futures[future]
+                print(f"Error running {cmd} in {folder}: {e}")
+            results.append(futures[future][0])
+
+    return results
+
+
+def merge_ipsae_results(base_dir, pae_cutoff=15, dist_cutoff=10, save_local=True, save_summary=True):
+    """
+    Process ipSAE results across multiple subfolders.
+
+    This function:
+      - Scans all subdirectories inside the base directory
+      - Reads ipSAE result files (*_<pae>_<dist>.txt and *_byres.txt)
+      - Saves one combined CSV per subfolder (if save_local=True)
+      - Optionally generates a global summary CSV combining all data (if save_summary=True)
+
+    Parameters
+    ----------
+    base_dir : str or Path
+        Path to the main directory containing the ipSAE result folders.
+    pae_cutoff : int, optional
+        PAE cutoff value used in file names (default is 15).
+    dist_cutoff : int, optional
+        Distance cutoff value used in file names (default is 10).
+    save_local : bool, optional
+        If True, save individual CSVs inside each subfolder.
+    save_summary : bool, optional
+        If True, save global summary CSVs in the base directory.
+
+    Returns
+    -------
+    df_global_all : pandas.DataFrame
+        Combined DataFrame with all global interaction scores.
+    df_byres_all : pandas.DataFrame
+        Combined DataFrame with all residue-level scores.
+    """
+
+    base_dir = Path(base_dir)
+    dfs_global, dfs_byres = [], []
+
+    pattern_global = f"*_{pae_cutoff}_{dist_cutoff}.txt"
+    pattern_byres = f"*_{pae_cutoff}_{dist_cutoff}_byres.txt"
+
+    # Loop through all subfolders 
+    for folder in base_dir.iterdir():
+        if not folder.is_dir():
+            continue
+        
+        folder_global, folder_byres = [], []
+        for file in folder.glob(pattern_global):
+            if "byres" in file.name:
+                continue
+            model = file.stem.split("_model_")[-1].split("_")[0]
+            try:
+                df = pd.read_csv(file, sep=r"\s+", engine="python")
+                df["Folder"] = folder.name
+                df["Model"] = model
+                folder_global.append(df)
+                dfs_global.append(df)
+            except Exception as e:
+                print(f"Error reading {file}: {e}")
+
+        for file in folder.glob(pattern_byres):
+            model = file.stem.split("_model_")[-1].split("_")[0]
+            try:
+                df = pd.read_csv(file, sep=r"\s+", engine="python")
+                df["Folder"] = folder.name
+                df["Model"] = model
+                folder_byres.append(df)
+                dfs_byres.append(df)
+            except Exception as e:
+                print(f"Error reading {file}: {e}")
+
+        # Save local CSVs inside each subfolder
+        if save_local:
+            if folder_global:
+                pd.concat(folder_global).to_csv(folder / f"{folder.name}_ipSAE_global.csv", index=False)
+            if folder_byres:
+                pd.concat(folder_byres).to_csv(folder / f"{folder.name}_ipSAE_byres.csv", index=False)
+
+    # Combine everything
+    df_global_all = pd.concat(dfs_global, ignore_index=True) if dfs_global else pd.DataFrame()
+    df_byres_all = pd.concat(dfs_byres, ignore_index=True) if dfs_byres else pd.DataFrame()
+
+    # Save global summary in the base directory
+    if save_summary:
+        if not df_global_all.empty:
+            df_global_all.to_csv(base_dir / "ipSAE_global_all.csv", index=False)
+        if not df_byres_all.empty:
+            df_byres_all.to_csv(base_dir / "ipSAE_byres_all.csv", index=False)
+
+    print(f"Processed {len(list(base_dir.iterdir()))} subfolders")
+    print(f"{len(df_global_all)} global rows, {len(df_byres_all)} by-residue rows")
+
+    return df_global_all, df_byres_all
+
+
+
 
 
 
