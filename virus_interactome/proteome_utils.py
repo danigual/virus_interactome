@@ -433,13 +433,41 @@ def process_boxplot_data(df, value_column:str)->tuple[np.ndarray, np.ndarray]:
 
 
 def run_single_ipsae(cmd, folder):
-    """Run a single ipSAE command in its folder."""
+    '''
+    
+    Executes a single ipSAE command within the specified folder.
+
+    Parameters:
+    cmd (str): The command to execute, typically a call to the 'ipsae.py' script with arguments.
+    folder (str or Path): The directory in which the command should be executed.
+
+    Returns:
+    None
+
+    '''
     subprocess.run(cmd, shell=True, cwd=folder)
 
-def run_ipsae_for_all_parallel(base_dir, ipsae_script="ipsae.py", pae_cutoff=15, dist_cutoff=10, dry_run=False, n_cores=4):
-    """
-    Run ipSAE scoring on all AlphaFold3 models (json + cif) in subfolders in parallel with tqdm progress bar.
-    """
+def run_ipsae_for_all_parallel(base_dir: str, ipsae_script: str, 
+                               pae_cutoff: int =15, dist_cutoff: int =10, 
+                               dry_run: bool=False, n_cores: int=4)->list:
+    '''
+
+    Runs ipSAE scoring in parallel on all AlphaFold3 models (JSON + CIF files) found in subdirectories of 'base_dir'.
+    Displays a tqdm progress bar during execution.
+
+    Parameters:
+    base_dir (str or Path): the root directory containing subfolders with AlphaFold3 model files.
+    ipsae_script (str or Path): path to the ipSAE script to be executed.
+    pae_cutoff (int): PAE cutoff value used in scoring. Default is 15.
+    dist_cutoff (int): distance cutoff value used in scoring. Default is 10.
+    dry_run (bool): if True, prints the commands without executing them. Default is False.
+    n_cores (int): number of parallel processes to use. Default is 4.
+
+    Returns:
+    List[str]: a list of executed (or printed, if dry_run=True) commands.
+
+    '''
+    
     base_dir = Path(base_dir)
     ipsae_script = Path(ipsae_script)
     commands_run = []
@@ -477,7 +505,10 @@ def run_ipsae_for_all_parallel(base_dir, ipsae_script="ipsae.py", pae_cutoff=15,
     return results
 
 
-def merge_ipsae_results(base_dir, pae_cutoff=15, dist_cutoff=10, save_local=True, save_summary=True):
+def merge_ipsae_results(base_dir: str, pae_cutoff: int =15, 
+                        dist_cutoff: int =10,
+                        save_local: bool =True, 
+                        save_summary: bool =True)-> tuple:
     """
     Process ipSAE results across multiple subfolders.
 
