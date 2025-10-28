@@ -14,6 +14,10 @@ def dummy_fasta_with_repeated_protein_id_path():
 def dummy_fasta_with_repeated_protein_id_path():
     return Path(__file__).parent / "data" / "dummy_proteome_repeated_protein_id.fasta"
 
+@pytest.fixture
+def dummy_non_fasta_proteome():
+    return Path(__file__).parent / "data" / "dummy_proteome_repeated_non_fasta.fasta"
+
 ## Testing load_proteome function
 
 def test_load_proteome_missing_file():
@@ -50,6 +54,17 @@ def test_load_proteome_with_repeated_protein_id(dummy_fasta_with_repeated_protei
     assert isinstance(proteome, dict)
     assert proteome == expected_proteome
 
+def test_load_non_fasta_file(dummy_non_fasta_proteome):
+    proteome = load_proteome(str(dummy_non_fasta_proteome))
+    expected_proteome = {
+        "Protein1_isoformB": "RQDILDMKTAYIAKQRQISFVKSHFS",
+        "Protein2": "GVALSKGEEAVRLFK",
+        "Protein3_variantA": "LLKSDGQVLKAV",
+        "Protein4_isoformC": "MKQLQKDLGK"
+    }
+    assert isinstance(proteome, dict)
+    assert proteome == expected_proteome
+
 ## Testing create_af3_input_json_v2 function
 
 def test_missing_protein_id_raises_keyerror():
@@ -76,7 +91,7 @@ def test_two_consecutive_integers_raises_valueerror():
     with pytest.raises(ValueError):
         create_af3_input_json_v2("Protein1", 2, 3, proteome_dict=proteome)
 
-### Testing corretness of output
+### Testing correctness of output
 
 def test_single_orf_default_copy():
     proteome = {"Protein1": "SEQ1"}
