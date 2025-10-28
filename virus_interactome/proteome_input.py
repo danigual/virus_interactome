@@ -30,8 +30,7 @@ def load_proteome (fasta_file:str): ## Moving this to proteome_input
         proteome_dict[short_id] = sequence
     return proteome_dict
 
-def create_af3_input_json_v2(*args, proteome_dict:dict, proteome_label=None):
-    print("HERE")
+def create_af3_input_json_v2(*args, proteome_dict:dict, prefix=None, suffix=None):
     orf_list = []
     orf_num_copies = []
     idx = 0
@@ -49,7 +48,6 @@ def create_af3_input_json_v2(*args, proteome_dict:dict, proteome_label=None):
             raise ValueError(f"Expected string at position {idx}, got {type(args[idx])}")
     
     # Check all orfs are in the proteome_dict
-    print(orf_list, orf_num_copies)
     for orf in orf_list:
         if orf not in proteome_dict:
             raise KeyError(f"ORF {orf} is missing from proteome_dict")
@@ -60,11 +58,17 @@ def create_af3_input_json_v2(*args, proteome_dict:dict, proteome_label=None):
             raise ValueError(f"Number of copies must be a positive integer, got {num}")
 
     # Generate the json
-    if proteome_label is not None:
-        proteome_label = proteome_label + "_" 
+    if prefix is not None:
+        prefix = prefix + "_" 
     else:
-        proteome_label = ""
-    header = proteome_label + "__".join(orf_list)
+        prefix = ""
+    
+    if suffix is not None:
+        suffix = "___" + suffix  
+    else:
+        suffix = ""
+
+    header = prefix + "__".join(orf_list) + suffix
 
     return {
         "name": header,
@@ -125,9 +129,10 @@ def proteome_json (proteome_dict: dict, outputdir:str, batch_size=30):
         tmp_batch.append(tmp_job)
     
     ## Writing the remaining
-    tmp_output_name = os.path.join(outputdir, f"{file_idx}.json")
-    with open(tmp_output_name, "w") as f:
-        json.dump(tmp_batch, f, indent=4)
+    if len(tmp_batch) > 0:
+        tmp_output_name = os.path.join(outputdir, f"{file_idx}.json")
+        with open(tmp_output_name, "w") as f:
+            json.dump(tmp_batch, f, indent=4)
 
 def generate_heterodimers_jobs(proteome_dict:dict):
     proteome_ids = list (proteome_dict.keys())
@@ -136,12 +141,13 @@ def generate_heterodimers_jobs(proteome_dict:dict):
     for orf1, orf2 in orf_combinations:
         yield create_af3_input_json_v2(orf1, orf2, proteome_dict=proteome_dict)
 
-def generate_n_homo_mers_jobs(proteome_dict:dict, max_n_homo_mers:int=0):
+def generate_n_homo_mers_jobs(proteome_dict:dict, max_n_homo_mers:int=0, **kwargs):
     proteome_ids = list (proteome_dict.keys())
 
     for orf in proteome_ids:
-        for number_proteins in range(2, max_n_homo_mers):
-            yield create_af3_input_json_v2(orf, number_proteins, proteome_dict=proteome_dict)
+        for number_proteins in range(2, max_n_homo_mers+1):
+            yield create_af3_input_json_v2(orf, number_proteins, proteome_dict=proteome_dict, **kwargs)
+            # yield create_af3_input_json_v2(orf, number_proteins, proteome_dict=proteome_dict, suffix=f"{number_proteins}mer")
 
 def write_batch(job_generator, outputdir:str, label:str="", batch_size:int=30):
     file_idx = 0
@@ -156,7 +162,7 @@ def write_batch(job_generator, outputdir:str, label:str="", batch_size:int=30):
             tmp_jobs = []
             file_idx += 1
 
-    tmp_output_name = os.path.join(outputdir, f"HETERO_{file_idx}.json")
+    tmp_output_name = os.path.join(outputdir, f"{label}_{file_idx}.json")
     with open(tmp_output_name, "w") as f:
         json.dump(tmp_jobs, f, indent=4)
     tmp_jobs = []
