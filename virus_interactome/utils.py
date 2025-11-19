@@ -92,17 +92,18 @@ def process_full_data_af3(json_path: str)-> dict:
     
     chain_boundaries_by_atom = []
    
-    for atom_id in atom_chain_lengths.values():
+    for atom_id in atom_chain_lengths.keys():
+    # for atom_id in atom_chain_lengths.values():
     
         atom_chain_indexes = np.where(np.array(atom_chain_ids) == atom_id)
         
         chain_boundaries_by_atom.append((np.min(atom_chain_indexes), np.max(atom_chain_indexes)))
    
-    
     ## Convert pae, atom_plddts and contact_probs to np arrays
     full_data["pae"] = np.array(full_data["pae"])
     full_data ["atom_plddts"] = np.array(full_data["atom_plddts"])
     full_data["contact_probs"] = np.array(full_data["contact_probs"])
+    full_data["token_chain_ids"] = np.array(full_data["token_chain_ids"])
     
     full_data["chain_lengths"] = chain_lengths 
     full_data["chain_boundaries"] = chain_boundaries

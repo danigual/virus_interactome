@@ -13,7 +13,8 @@ import tqdm
 from sklearn.cluster import DBSCAN
 from .utils import process_full_data_af3
 from .plotting import plot_boxplots, plot_iptm_vs_ptm, plot_pae_clusters
-
+from moleculekit.molecule import Molecule
+from .metrics import calculate_all_metrics
 #------------------------------FUNCTIONS -----------------------------
 
 def cluster_pae (pae_submatrix, threshold:int=15, eps:int=10)-> tuple:
@@ -95,23 +96,24 @@ def cluster_info (low_coords, cluster_labels)-> pd.DataFrame:
         cluster_coords = low_coords[cluster_labels == label]
 
         # Clustering functions (x 1 y 0)
-        x_min = np.min(cluster_coords[:, 1])
-        y_max = np.max(cluster_coords[:, 0])
-        x_max = np.max(cluster_coords[:, 1])
-        y_min = np.min(cluster_coords[:, 0])
+        x_min = np.min(cluster_coords[:, 0])
+        y_max = np.max(cluster_coords[:, 1])
+        x_max = np.max(cluster_coords[:, 0])
+        y_min = np.min(cluster_coords[:, 1])
 
         cluster_center = np.mean(cluster_coords, axis=0)
 
         #Percentiles to reduce the impact of outliers
         top_percentile = np.percentile(cluster_coords, 99.5, axis=0)
         lower_percentile = np.percentile(cluster_coords, .5, axis=0)
-        per_x_min = lower_percentile[1]
-        per_y_min = lower_percentile[0]
-        per_x_max = top_percentile[1]
-        per_y_max = top_percentile[0]
+        per_x_min = lower_percentile[0]
+        per_y_min = lower_percentile[1]
+        per_x_max = top_percentile[0]
+        per_y_max = top_percentile[1]
 
         cluster_info_list.append({
             "cluster_id": label,
+            "num_points": len(cluster_coords),
             "x_min": x_min,
             "x_max": x_max,
             "y_min": y_min,
@@ -129,7 +131,6 @@ def cluster_info (low_coords, cluster_labels)-> pd.DataFrame:
     return cluster_data_from_model
     
 def process_cif_file (cif_file: str)-> tuple[list, pd.DataFrame]:
-
     """
     Processes an AlphaFold3 CIF model file and extracts structural and confidence metrics.
 
@@ -162,10 +163,10 @@ def process_cif_file (cif_file: str)-> tuple[list, pd.DataFrame]:
     ValueError
         If the CIF file path format is invalid or model number cannot be extracted.
     """
-    
+    print(cif_file)
     # Extract folder name and model number
     folder_path = "/".join(cif_file.split("/")[1:-1])
-    ppi_id = cif_file.split("/")[-2].replace("adv5_", "")
+    ppi_id = cif_file.split("/")[-2].replace("adv5_", "") ## This should be general
     orf_a, orf_b = ppi_id.split("__")
     model_number = int(cif_file.split("/")[-1].split("_")[-1].replace(".cif", ""))
     # Name for summary confidences file
@@ -182,57 +183,64 @@ def process_cif_file (cif_file: str)-> tuple[list, pd.DataFrame]:
         pTM = summary_data["ptm"]
     # Process full data file (json file)
     full_data = process_full_data_af3(full_data_file)
-  
+
+    mol = Molecule(cif_file)
+    all_metrics = calculate_all_metrics(mol, full_data)
     # Extract the length of chain A and chains B
-    chain_lenghts = full_data["chain_lengths"]
-    chain_lenght_A = chain_lenghts["A"]
-    chain_lenght_B = chain_lenghts["B"]
+    # chain_lenghts = full_data["chain_lengths"]
+    # chain_lenght_A = chain_lenghts["A"]
+    # chain_lenght_B = chain_lenghts["B"]
 
-    ## Add plddt mean 
-    plddt_mean = np.mean(full_data["atom_plddts"])
+    # ## Add plddt mean 
+    # plddt_mean = np.mean(full_data["atom_plddts"])
 
-    ## Add plddt_mean_chain_A
-    ## Extract the start and end of atoms boundaries for chain A
-    start_a_atoms, end_a_atoms = full_data["chain_boundaries_by_atom"][0]
-    end_a_atoms += 1
-    ## Indexing in atom_plddts using the boundaries in order to calculate the mean
-    plddt_mean_chain_A = np.mean(full_data["atom_plddts"][start_a_atoms:end_a_atoms])
+    # ## Add plddt_mean_chain_A
+    # ## Extract the start and end of atoms boundaries for chain A
+    # start_a_atoms, end_a_atoms = full_data["chain_boundaries_by_atom"][0]
+    # end_a_atoms += 1
+    # ## Indexing in atom_plddts using the boundaries in order to calculate the mean
+    # plddt_mean_chain_A = np.mean(full_data["atom_plddts"][start_a_atoms:end_a_atoms])
     
-    ## Add plddt_mean_chain_B
-    ## Extract the start and end of atoms boundaries for chain B
-    start_b_atoms, end_b_atoms = full_data["chain_boundaries_by_atom"][1]
-    end_b_atoms += 1
-    ## Indexing in atom_plddts using the boundaries in oder to calculate the mean
-    plddt_mean_chain_B = np.mean(full_data["atom_plddts"][start_b_atoms:end_b_atoms])
+    # ## Add plddt_mean_chain_B
+    # ## Extract the start and end of atoms boundaries for chain B
+    # start_b_atoms, end_b_atoms = full_data["chain_boundaries_by_atom"][1]
+    # end_b_atoms += 1
+    # ## Indexing in atom_plddts using the boundaries in oder to calculate the mean
+    # plddt_mean_chain_B = np.mean(full_data["atom_plddts"][start_b_atoms:end_b_atoms])
     
-    ## Add mean PAE
-    mean_pae = np.mean(full_data["pae"])
+    # ## Add mean PAE
+    # mean_pae = np.mean(full_data["pae"])
     
-    ## Add mean PAE chain A
-    ## Extract the start and end of residues boundaries for chain A
-    start_a_residues, end_a_residues = full_data["chain_boundaries"][0]
-    end_a_residues += 1
-    ## Generate the pae matrix for chain A 
-    pae_chain_A = full_data["pae"][start_a_residues:end_a_residues,start_a_residues:end_a_residues]
-    mean_pae_chain_A = np.mean(pae_chain_A)
+    # ## Add mean PAE chain A
+    # ## Extract the start and end of residues boundaries for chain A
+    # start_a_residues, end_a_residues = full_data["chain_boundaries"][0]
+    # end_a_residues += 1
+    # ## Generate the pae matrix for chain A 
+    # pae_chain_A = full_data["pae"][start_a_residues:end_a_residues,start_a_residues:end_a_residues]
+    # mean_pae_chain_A = np.mean(pae_chain_A)
 
-    ## Add mean PAE chain B
-    ## Extract the start and end of residues boundaries for chain B
-    start_b_residues, end_b_residues = full_data["chain_boundaries"][1]
-    end_b_residues += 1
-    ## Generate the pae matrix for chain B
-    pae_chain_B = full_data["pae"][start_b_residues:end_b_residues,start_b_residues:end_b_residues]
-    mean_pae_chain_B = np.mean(pae_chain_B)
+    # ## Add mean PAE chain B
+    # ## Extract the start and end of residues boundaries for chain B
+    # start_b_residues, end_b_residues = full_data["chain_boundaries"][1]
+    # end_b_residues += 1
+    # ## Generate the pae matrix for chain B
+    # pae_chain_B = full_data["pae"][start_b_residues:end_b_residues,start_b_residues:end_b_residues]
+    # mean_pae_chain_B = np.mean(pae_chain_B)
 
-    ## Add mean PAE pair A-B
-    ## Generate the pae matrix for chain A-B
-    pae_chain_A_B = full_data["pae"][start_a_residues:end_a_residues,start_b_residues:end_b_residues]
-    mean_pae_chain_A_B = np.mean(pae_chain_A_B)   
+    # ## Add mean PAE pair A-B
+    # ## Generate the pae matrix for chain A-B
+    # pae_chain_A_B = full_data["pae"][start_a_residues:end_a_residues,start_b_residues:end_b_residues]
+    # mean_pae_chain_A_B = np.mean(pae_chain_A_B)   
     
+
     ## Here, we do cluster of PAE AB submatrix, we already have the submatrix
-    submatrix = pae_chain_A_B
+    chain_by_res = full_data["token_chain_ids"]
+    pae = full_data["pae"]
+    pae_submatrix_1 = pae[chain_by_res == "A"][:, chain_by_res == "B"]
+    pae_submatrix_2 = pae[chain_by_res == "B"][:, chain_by_res == "A"].T
+    submatrix = np.min([pae_submatrix_1, pae_submatrix_2], axis=0) ## Maybe we want the mean?
 
-    ## here we do the clutering
+    ## Clustering
     low_coords, cluster_labels = cluster_pae(submatrix)
 
     ## here we do the plot of the pae clusters
@@ -245,14 +253,11 @@ def process_cif_file (cif_file: str)-> tuple[list, pd.DataFrame]:
         cluster_data.loc[:, "PPI"] = ppi_id 
         cluster_data.loc[:, "Model_num"] = model_number 
 
-    
-    return [ppi_id, orf_a, orf_b, folder_path, model_number, fraction_disordered, iPTM, 
-                        pTM, chain_lenght_A, chain_lenght_B, 
-                        # contact_probs,
-                         plddt_mean, plddt_mean_chain_A, plddt_mean_chain_B,
-                          mean_pae, mean_pae_chain_A, mean_pae_chain_B,
-                        #   min_pae_chain_A, min_pae_chain_B, 
-                          mean_pae_chain_A_B], cluster_data
+    return {"PPI": ppi_id, "ORF_A": orf_a, "ORF_B":orf_b, "Folder": folder_path, 
+            "Model_num": model_number, "Fraction_disordered": fraction_disordered, "iPTM": iPTM, 
+            "pTM": pTM, "chain_length_A": np.sum(chain_by_res == "A"), "chain_length_B":np.sum(chain_by_res == "B"), 
+            **all_metrics
+            }, cluster_data
 
 ## Creating simplified dataframe with info of individual proteins
 def get_info_for_proteins(df)-> pd.DataFrame:
@@ -272,7 +277,7 @@ def get_info_for_proteins(df)-> pd.DataFrame:
     -------
     pd.DataFrame
         A DataFrame with unified columns:
-        ["ORF", "PPI", "Model_num", "plddt_mean_ORF", "pae_mean_ORF"]
+        ["ORF", "PPI", "Model_num", "pLDDT_mean_ORF", "pae_mean_ORF"]
 
     Raises
     ------
@@ -280,23 +285,17 @@ def get_info_for_proteins(df)-> pd.DataFrame:
         If expected columns are missing in the input DataFrame.
     """
 
-    info_from_chain_a = df.loc[:, ["ORF_A", "PPI", "Model_num", 
-                                   "plddt_mean_chain_A", "mean_pae_chain_A"]]
+    info_from_chain_a = df.loc[:, ["ORF_A", "PPI", "Model_num", "pLDDT_mean_A", "pae_mean_A"]]
+    info_from_chain_b = df.loc[:, ["ORF_B", "PPI", "Model_num", "pLDDT_mean_B", "pae_mean_B"]]
+    info_from_chain_a.columns = ["ORF", "PPI", "Model_num", "pLDDT_mean_ORF", "pae_mean_ORF"]
+    info_from_chain_b.columns = ["ORF", "PPI", "Model_num", "pLDDT_mean_ORF", "pae_mean_ORF"]
 
-    info_from_chain_b = df.loc[:, ["ORF_B", "PPI", "Model_num", 
-                                   "plddt_mean_chain_B", "mean_pae_chain_B"]]
+    by_protein_df = pd.concat([info_from_chain_a, info_from_chain_b],  ignore_index=True) 
 
-    info_from_chain_a.columns = ["ORF", "PPI", "Model_num", 
-                                 "plddt_mean_ORF", "pae_mean_ORF"]
-
-    info_from_chain_b.columns = ["ORF", "PPI", "Model_num", 
-                                 "plddt_mean_ORF", "pae_mean_ORF"]
-    by_protein_df = pd.concat([info_from_chain_a, info_from_chain_b], 
-                              ignore_index=True) 
     return by_protein_df   
    
 
-def process_interactome(folder_path:str, output_path:str, **kwargs):    
+def process_interactome(folder_path:str, output_path:str, prefix="", **kwargs):    
     
     """
     Processes an AlphaFold3 interactome folder and generates summary data, cluster analysis, and visualizations.
@@ -325,47 +324,58 @@ def process_interactome(folder_path:str, output_path:str, **kwargs):
     FileNotFoundError
         If required JSON files associated with CIF models are missing.
     """
-
     ## TODO:Check and create the output path
+    os.makedirs(output_path, exist_ok=True)
+    os.makedirs(f"{output_path}/plots/", exist_ok=True)
 
     # Extract the .cif files (list with all cif files)
-    all_cif_files = glob(f"{folder_path}/*/*cif") ## For testing  
+    all_cif_files = np.array(glob(f"{folder_path}/{prefix}*/*cif")) ## For testing  
     # all_cif_files = glob(f"{folder_path}/*/*cif")
 
- 
     if len(all_cif_files)==0:
         raise ValueError(f"""No files found in the directory {folder_path}.
                          Please make sure it follows the AF3 output directory convention""")
     
-    print(all_cif_files)
-
+    ##Load output.csv and filter out processed data
+    interactome_df = pd.DataFrame()
+    clusters_df = pd.DataFrame()
+    if os.path.exists(f'{output_path}/interactome_data.csv',):
+        print("Loading existing data...")
+        interactome_df = pd.read_csv(f'{output_path}/interactome_data.csv')
+        folder_names = pd.Series([os.path.dirname(i) for i in all_cif_files])
+        all_cif_files = all_cif_files[~folder_names.isin(interactome_df.Folder)]
+        clusters_df = pd.read_csv(f'{output_path}/clusters_data.csv')
+ 
     # Paralelización
-
     #List of tuples -> every tuple has list,df
     ##TODO: skip this is .csv exists
     interactome_df_list = []
     cluster_df_list = []
-    with concurrent.futures.ProcessPoolExecutor(max_workers=4) as executor:
-    # with concurrent.futures.ProcessPoolExecutor(**kwargs) as executor:
+    # with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
+    with concurrent.futures.ProcessPoolExecutor(**kwargs) as executor:
          # map devuelve los resultados en orden de la lista
         for res in tqdm.tqdm(executor.map(process_cif_file, all_cif_files)): #For testing
             interactome_df_list.append(res[0])
             cluster_df_list.append(res[1])
     # Create the df with the info of all PPIs
     # interactome_df_list = [list[0] for list in results] 
-    interactome_df = pd.DataFrame(interactome_df_list,
-                     columns=["PPI", "ORF_A", "ORF_B", "Folder", "Model_num","Fraction_disordered","iPTM","pTM",
-                             "chain_lenght_A","chain_lenght_B", 
-                             #    "contact_probs",
-                             "plddt_mean", "plddt_mean_chain_A","plddt_mean_chain_B",
-                             "mean_pae", "mean_pae_chain_A", "mean_pae_chain_B",
-                             #    "min_pae_chain_A", "min_pae_chain_B",
-                             "mean_pae_chain_A_B"])
-    interactome_df.reset_index(inplace=True, drop=True)
+    # interactome_df = pd.DataFrame(interactome_df_list,
+    #                  columns=["PPI", "ORF_A", "ORF_B", "Folder", "Model_num","Fraction_disordered","iPTM","pTM",
+    #                          "chain_lenght_A","chain_lenght_B", 
+    #                          #    "contact_probs",
+    #                          "plddt_mean", "plddt_mean_chain_A","plddt_mean_chain_B",
+    #                          "mean_pae", "mean_pae_chain_A", "mean_pae_chain_B",
+    #                          #    "min_pae_chain_A", "min_pae_chain_B",
+    #                          "mean_pae_chain_A_B"])
+    interactome_df = pd.concat([interactome_df, pd.DataFrame.from_dict(interactome_df_list)], ignore_index=True)
+    # interactome_df = pd.DataFrame.from_dict(interactome_df_list)
+    # interactome_df.reset_index(inplace=True, drop=True)
 
     # Join the dfs of the clusters in a single df
     # non_empty_cluster_info = filter(lambda x: len(x)>0, cluster_df_list)
-    clusters_df = pd.concat(cluster_df_list, ignore_index=True)
+    if len(cluster_df_list) > 0:
+        filtered_cluster_df_list = [ i for i in cluster_df_list if i.shape[0]>0 ]
+        clusters_df = pd.concat([clusters_df, pd.concat(filtered_cluster_df_list)], ignore_index=True)
     # clusters_df = pd.concat(non_empty_cluster_info, ignore_index=True)
     # clusters_df = pd.concat([df[1] for df in results], ignore_index=True)
 
@@ -377,7 +387,7 @@ def process_interactome(folder_path:str, output_path:str, **kwargs):
 
     ## Plotting boxplots
     output_folder = f"{output_path}/plots"
-    plddt_array, labels_array1 = process_boxplot_data(by_protein_df, "plddt_mean_ORF")
+    plddt_array, labels_array1 = process_boxplot_data(by_protein_df, "pLDDT_mean_ORF")
     pae_array, labels_array2 = process_boxplot_data(by_protein_df, "pae_mean_ORF")
     plot_boxplots("plddt",plddt_array, labels_array1, output_path=output_folder)
     plot_boxplots("pae",pae_array,labels_array2, output_path=output_folder)
@@ -432,171 +442,171 @@ def process_boxplot_data(df, value_column:str)->tuple[np.ndarray, np.ndarray]:
     return value_matrix, orf_labels
 
 
-def run_single_ipsae(cmd, folder):
-    '''
+# def run_single_ipsae(cmd, folder):
+#     '''
     
-    Executes a single ipSAE command within the specified folder.
+#     Executes a single ipSAE command within the specified folder.
 
-    Parameters:
-    cmd (str): The command to execute, typically a call to the 'ipsae.py' script with arguments.
-    folder (str or Path): The directory in which the command should be executed.
+#     Parameters:
+#     cmd (str): The command to execute, typically a call to the 'ipsae.py' script with arguments.
+#     folder (str or Path): The directory in which the command should be executed.
 
-    Returns:
-    None
+#     Returns:
+#     None
 
-    '''
-    subprocess.run(cmd, shell=True, cwd=folder)
+#     '''
+#     subprocess.run(cmd, shell=True, cwd=folder)
 
-def run_ipsae_for_all_parallel(base_dir: str, ipsae_script: str, 
-                               pae_cutoff: int =15, dist_cutoff: int =10, 
-                               dry_run: bool=False, n_cores: int=4)->list:
-    '''
+# def run_ipsae_for_all_parallel(base_dir: str, ipsae_script: str, 
+#                                pae_cutoff: int =15, dist_cutoff: int =10, 
+#                                dry_run: bool=False, n_cores: int=4)->list:
+#     '''
 
-    Runs ipSAE scoring in parallel on all AlphaFold3 models (JSON + CIF files) found in subdirectories of 'base_dir'.
-    Displays a tqdm progress bar during execution.
+#     Runs ipSAE scoring in parallel on all AlphaFold3 models (JSON + CIF files) found in subdirectories of 'base_dir'.
+#     Displays a tqdm progress bar during execution.
 
-    Parameters:
-    base_dir (str or Path): the root directory containing subfolders with AlphaFold3 model files.
-    ipsae_script (str or Path): path to the ipSAE script to be executed.
-    pae_cutoff (int): PAE cutoff value used in scoring. Default is 15.
-    dist_cutoff (int): distance cutoff value used in scoring. Default is 10.
-    dry_run (bool): if True, prints the commands without executing them. Default is False.
-    n_cores (int): number of parallel processes to use. Default is 4.
+#     Parameters:
+#     base_dir (str or Path): the root directory containing subfolders with AlphaFold3 model files.
+#     ipsae_script (str or Path): path to the ipSAE script to be executed.
+#     pae_cutoff (int): PAE cutoff value used in scoring. Default is 15.
+#     dist_cutoff (int): distance cutoff value used in scoring. Default is 10.
+#     dry_run (bool): if True, prints the commands without executing them. Default is False.
+#     n_cores (int): number of parallel processes to use. Default is 4.
 
-    Returns:
-    List[str]: a list of executed (or printed, if dry_run=True) commands.
+#     Returns:
+#     List[str]: a list of executed (or printed, if dry_run=True) commands.
 
-    '''
+#     '''
     
-    base_dir = Path(base_dir)
-    ipsae_script = Path(ipsae_script)
-    commands_run = []
+#     base_dir = Path(base_dir)
+#     ipsae_script = Path(ipsae_script)
+#     commands_run = []
 
-    # Collect all commands
-    for folder in base_dir.rglob("*"):
-        if not folder.is_dir():
-            continue
-        json_files = list(folder.glob("*.json"))
-        cif_files = list(folder.glob("*.cif"))
-        for json_file in json_files:
-            for cif_file in cif_files:
-                cmd = f"python {ipsae_script} {json_file} {cif_file} {pae_cutoff} {dist_cutoff}"
-                commands_run.append((cmd, folder))
+#     # Collect all commands
+#     for folder in base_dir.rglob("*"):
+#         if not folder.is_dir():
+#             continue
+#         json_files = list(folder.glob("*.json"))
+#         cif_files = list(folder.glob("*.cif"))
+#         for json_file in json_files:
+#             for cif_file in cif_files:
+#                 cmd = f"python {ipsae_script} {json_file} {cif_file} {pae_cutoff} {dist_cutoff}"
+#                 commands_run.append((cmd, folder))
 
-    print(f"Found {len(commands_run)} commands for AF3 models.")
+#     print(f"Found {len(commands_run)} commands for AF3 models.")
 
-    if dry_run:
-        for cmd, folder in commands_run:
-            print(f"[DRY RUN] {cmd}  (folder: {folder})")
-        return [c[0] for c in commands_run]
+#     if dry_run:
+#         for cmd, folder in commands_run:
+#             print(f"[DRY RUN] {cmd}  (folder: {folder})")
+#         return [c[0] for c in commands_run]
 
-    # Run in parallel with progress bar
-    results = []
-    with ProcessPoolExecutor(max_workers=n_cores) as executor:
-        futures = {executor.submit(run_single_ipsae, cmd, folder): (cmd, folder) for cmd, folder in commands_run}
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Running ipSAE", unit="model"):
-            try:
-                future.result()  # will raise exceptions if any
-            except Exception as e:
-                cmd, folder = futures[future]
-                print(f"Error running {cmd} in {folder}: {e}")
-            results.append(futures[future][0])
+#     # Run in parallel with progress bar
+#     results = []
+#     with ProcessPoolExecutor(max_workers=n_cores) as executor:
+#         futures = {executor.submit(run_single_ipsae, cmd, folder): (cmd, folder) for cmd, folder in commands_run}
+#         for future in tqdm(as_completed(futures), total=len(futures), desc="Running ipSAE", unit="model"):
+#             try:
+#                 future.result()  # will raise exceptions if any
+#             except Exception as e:
+#                 cmd, folder = futures[future]
+#                 print(f"Error running {cmd} in {folder}: {e}")
+#             results.append(futures[future][0])
 
-    return results
+#     return results
 
 
-def merge_ipsae_results(base_dir: str, pae_cutoff: int =15, 
-                        dist_cutoff: int =10,
-                        save_local: bool =True, 
-                        save_summary: bool =True)-> tuple:
-    """
-    Process ipSAE results across multiple subfolders.
+# def merge_ipsae_results(base_dir: str, pae_cutoff: int =15, 
+#                         dist_cutoff: int =10,
+#                         save_local: bool =True, 
+#                         save_summary: bool =True)-> tuple:
+#     """
+#     Process ipSAE results across multiple subfolders.
 
-    This function:
-      - Scans all subdirectories inside the base directory
-      - Reads ipSAE result files (*_<pae>_<dist>.txt and *_byres.txt)
-      - Saves one combined CSV per subfolder (if save_local=True)
-      - Optionally generates a global summary CSV combining all data (if save_summary=True)
+#     This function:
+#       - Scans all subdirectories inside the base directory
+#       - Reads ipSAE result files (*_<pae>_<dist>.txt and *_byres.txt)
+#       - Saves one combined CSV per subfolder (if save_local=True)
+#       - Optionally generates a global summary CSV combining all data (if save_summary=True)
 
-    Parameters
-    ----------
-    base_dir : str or Path
-        Path to the main directory containing the ipSAE result folders.
-    pae_cutoff : int, optional
-        PAE cutoff value used in file names (default is 15).
-    dist_cutoff : int, optional
-        Distance cutoff value used in file names (default is 10).
-    save_local : bool, optional
-        If True, save individual CSVs inside each subfolder.
-    save_summary : bool, optional
-        If True, save global summary CSVs in the base directory.
+#     Parameters
+#     ----------
+#     base_dir : str or Path
+#         Path to the main directory containing the ipSAE result folders.
+#     pae_cutoff : int, optional
+#         PAE cutoff value used in file names (default is 15).
+#     dist_cutoff : int, optional
+#         Distance cutoff value used in file names (default is 10).
+#     save_local : bool, optional
+#         If True, save individual CSVs inside each subfolder.
+#     save_summary : bool, optional
+#         If True, save global summary CSVs in the base directory.
 
-    Returns
-    -------
-    df_global_all : pandas.DataFrame
-        Combined DataFrame with all global interaction scores.
-    df_byres_all : pandas.DataFrame
-        Combined DataFrame with all residue-level scores.
-    """
+#     Returns
+#     -------
+#     df_global_all : pandas.DataFrame
+#         Combined DataFrame with all global interaction scores.
+#     df_byres_all : pandas.DataFrame
+#         Combined DataFrame with all residue-level scores.
+#     """
 
-    base_dir = Path(base_dir)
-    dfs_global, dfs_byres = [], []
+#     base_dir = Path(base_dir)
+#     dfs_global, dfs_byres = [], []
 
-    pattern_global = f"*_{pae_cutoff}_{dist_cutoff}.txt"
-    pattern_byres = f"*_{pae_cutoff}_{dist_cutoff}_byres.txt"
+#     pattern_global = f"*_{pae_cutoff}_{dist_cutoff}.txt"
+#     pattern_byres = f"*_{pae_cutoff}_{dist_cutoff}_byres.txt"
 
-    # Loop through all subfolders 
-    for folder in base_dir.iterdir():
-        if not folder.is_dir():
-            continue
+#     # Loop through all subfolders 
+#     for folder in base_dir.iterdir():
+#         if not folder.is_dir():
+#             continue
         
-        folder_global, folder_byres = [], []
-        for file in folder.glob(pattern_global):
-            if "byres" in file.name:
-                continue
-            model = file.stem.split("_model_")[-1].split("_")[0]
-            try:
-                df = pd.read_csv(file, sep=r"\s+", engine="python")
-                df["Folder"] = folder.name
-                df["Model"] = model
-                folder_global.append(df)
-                dfs_global.append(df)
-            except Exception as e:
-                print(f"Error reading {file}: {e}")
+#         folder_global, folder_byres = [], []
+#         for file in folder.glob(pattern_global):
+#             if "byres" in file.name:
+#                 continue
+#             model = file.stem.split("_model_")[-1].split("_")[0]
+#             try:
+#                 df = pd.read_csv(file, sep=r"\s+", engine="python")
+#                 df["Folder"] = folder.name
+#                 df["Model"] = model
+#                 folder_global.append(df)
+#                 dfs_global.append(df)
+#             except Exception as e:
+#                 print(f"Error reading {file}: {e}")
 
-        for file in folder.glob(pattern_byres):
-            model = file.stem.split("_model_")[-1].split("_")[0]
-            try:
-                df = pd.read_csv(file, sep=r"\s+", engine="python")
-                df["Folder"] = folder.name
-                df["Model"] = model
-                folder_byres.append(df)
-                dfs_byres.append(df)
-            except Exception as e:
-                print(f"Error reading {file}: {e}")
+#         for file in folder.glob(pattern_byres):
+#             model = file.stem.split("_model_")[-1].split("_")[0]
+#             try:
+#                 df = pd.read_csv(file, sep=r"\s+", engine="python")
+#                 df["Folder"] = folder.name
+#                 df["Model"] = model
+#                 folder_byres.append(df)
+#                 dfs_byres.append(df)
+#             except Exception as e:
+#                 print(f"Error reading {file}: {e}")
 
-        # Save local CSVs inside each subfolder
-        if save_local:
-            if folder_global:
-                pd.concat(folder_global).to_csv(folder / f"{folder.name}_ipSAE_global.csv", index=False)
-            if folder_byres:
-                pd.concat(folder_byres).to_csv(folder / f"{folder.name}_ipSAE_byres.csv", index=False)
+#         # Save local CSVs inside each subfolder
+#         if save_local:
+#             if folder_global:
+#                 pd.concat(folder_global).to_csv(folder / f"{folder.name}_ipSAE_global.csv", index=False)
+#             if folder_byres:
+#                 pd.concat(folder_byres).to_csv(folder / f"{folder.name}_ipSAE_byres.csv", index=False)
 
-    # Combine everything
-    df_global_all = pd.concat(dfs_global, ignore_index=True) if dfs_global else pd.DataFrame()
-    df_byres_all = pd.concat(dfs_byres, ignore_index=True) if dfs_byres else pd.DataFrame()
+#     # Combine everything
+#     df_global_all = pd.concat(dfs_global, ignore_index=True) if dfs_global else pd.DataFrame()
+#     df_byres_all = pd.concat(dfs_byres, ignore_index=True) if dfs_byres else pd.DataFrame()
 
-    # Save global summary in the base directory
-    if save_summary:
-        if not df_global_all.empty:
-            df_global_all.to_csv(base_dir / "ipSAE_global_all.csv", index=False)
-        if not df_byres_all.empty:
-            df_byres_all.to_csv(base_dir / "ipSAE_byres_all.csv", index=False)
+#     # Save global summary in the base directory
+#     if save_summary:
+#         if not df_global_all.empty:
+#             df_global_all.to_csv(base_dir / "ipSAE_global_all.csv", index=False)
+#         if not df_byres_all.empty:
+#             df_byres_all.to_csv(base_dir / "ipSAE_byres_all.csv", index=False)
 
-    print(f"Processed {len(list(base_dir.iterdir()))} subfolders")
-    print(f"{len(df_global_all)} global rows, {len(df_byres_all)} by-residue rows")
+#     print(f"Processed {len(list(base_dir.iterdir()))} subfolders")
+#     print(f"{len(df_global_all)} global rows, {len(df_byres_all)} by-residue rows")
 
-    return df_global_all, df_byres_all
+#     return df_global_all, df_byres_all
 
 
 

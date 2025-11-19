@@ -49,42 +49,7 @@ def load_proteome (fasta_file:str): ## Moving this to proteome_input
         proteome_dict[short_id] = sequence
     return proteome_dict
 
-<<<<<<< HEAD
 def create_af3_input_json_v2(*args, proteome_dict:dict, prefix=None, suffix=None):
-=======
-
-def create_af3_input_json_v2(*args, proteome_dict:dict, proteome_label=None):
-    
-    """
-    Creates a JSON-compatible dictionary for AlphaFold3 input based on selected ORFs and copy counts.
-
-    This function receives a variable number of arguments representing ORF names and optional copy counts.
-    It validates the input, checks for ORF presence in the proteome dictionary, and constructs a structured
-    dictionary suitable for AlphaFold3 input. If no copy count is provided for an ORF, it defaults to 1.
-
-    Parameters
-    ----------
-    *args : str and int
-        A sequence of ORF names followed optionally by integers indicating the number of copies.
-    proteome_dict : dict
-        Dictionary mapping ORF names to amino acid sequences.
-    proteome_label : str, optional
-        Label to prefix the generated input name.
-
-    Returns
-    -------
-    dict
-        A dictionary containing the input name and a list of protein chains with sequence and copy count.
-
-    Raises
-    ------
-    ValueError
-        If the argument sequence is malformed or copy counts are invalid.
-    KeyError
-        If any ORF is not found in the proteome dictionary.
-    """
-
->>>>>>> 55a59b3c6a11cdc74aff4ad760ebd9c072fb38fc
     orf_list = []
     orf_num_copies = []
     idx = 0
@@ -214,28 +179,7 @@ def generate_heterodimers_jobs(proteome_dict:dict):
     for orf1, orf2 in orf_combinations:
         yield create_af3_input_json_v2(orf1, orf2, proteome_dict=proteome_dict)
 
-<<<<<<< HEAD
 def generate_n_homo_mers_jobs(proteome_dict:dict, max_n_homo_mers:int=0, **kwargs):
-=======
-def generate_n_homo_mers_jobs(proteome_dict:dict, max_n_homo_mers:int=0):
-    
-    """
-    Yields AlphaFold3 input jobs for homomeric assemblies of each ORF up to a specified size.
-
-    Parameters
-    ----------
-    proteome_dict : dict
-        Dictionary mapping ORF names to amino acid sequences.
-    max_n_homo_mers : int, optional
-        Maximum number of copies per homomer (default is 0, which yields nothing).
-
-    Yields
-    ------
-    dict
-        AlphaFold3 input job dictionary for each homomer configuration.
-    """
-
->>>>>>> 55a59b3c6a11cdc74aff4ad760ebd9c072fb38fc
     proteome_ids = list (proteome_dict.keys())
 
     for orf in proteome_ids:
