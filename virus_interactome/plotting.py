@@ -6,12 +6,10 @@ from pathlib import Path
 from matplotlib.patches import Rectangle
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from glob import glob
-from .utils import load_json, process_full_data_af3
+from .utils import load_json, process_full_data_af3, process_full_data_boltz
 
 
-def plot_paes (summary_confidences_path: str, fulldata_path: str, save_name: str = None):
-
- 
+def plot_paes (summary_confidences_path: str, fulldata_path: str, model_type="af3", save_name: str = None):
     """
     Generates a Predicted Aligned Error (PAE) heatmap using AlphaFold3 output data.
 
@@ -50,11 +48,19 @@ def plot_paes (summary_confidences_path: str, fulldata_path: str, save_name: str
         If the PAE matrix is malformed or inconsistent with chain metadata.
     """
 
+    if isinstance(summary_confidences_path, str):
+        summary_data = load_json(summary_confidences_path)
+    else:
+        summary_data = summary_confidences_path
 
-    summary_data = load_json(summary_confidences_path)
+    if isinstance(fulldata_path, str) and model_type=="af3":
+        full_data = process_full_data_af3(fulldata_path)
+    elif isinstance(fulldata_path, str) and model_type=="boltz2":
+        full_data = process_full_data_boltz(fulldata_path)
+    else:
+        full_data = {} 
+        full_data["pae"] = fulldata_path
 
-    full_data = process_full_data_af3(fulldata_path)
-    
     pae_matrix = full_data["pae"] 
     chain_boundaries = full_data["chain_boundaries"] 
     chain_lengths = full_data["chain_lengths"]         
@@ -63,8 +69,6 @@ def plot_paes (summary_confidences_path: str, fulldata_path: str, save_name: str
     im = ax.imshow(pae_matrix, cmap='Greens_r', origin='upper', vmin=0, vmax=25)
 
     for _, end_idx in chain_boundaries:
-        # ax.axhline(end_idx - 0.5, color='black', linewidth=1)
-        # ax.axvline(end_idx - 0.5, color='black', linewidth=1)
         ax.axhline(end_idx + 0.5, color='black', linewidth=1)
         ax.axvline(end_idx + 0.5, color='black', linewidth=1)
 
@@ -208,7 +212,7 @@ def batch_plotting(results_dir: str):
     return outputs
 
 
-def plot_pLDDT (fulldata_path: str, save_name: str = None):
+def plot_pLDDT (fulldata_path: str, model_type="af3", save_name: str = None):
     
     """
     Generates a pLDDT confidence plot for atoms in a predicted protein structure.
@@ -236,13 +240,17 @@ def plot_pLDDT (fulldata_path: str, save_name: str = None):
     KeyError
         If expected keys are missing in the input data.
     """
-    
-    full_data = process_full_data_af3 (fulldata_path)
+    if isinstance(fulldata_path, str) and model_type=="af3":
+        full_data = process_full_data_af3(fulldata_path)
+    elif isinstance(fulldata_path, str) and model_type=="boltz2":
+        full_data = process_full_data_boltz(fulldata_path)
+    else:
+        full_data = {} 
+        full_data["pae"] = fulldata_path
     chain_boundaries_by_atom = full_data["chain_boundaries_by_atom"]
     atom_plddts = full_data["atom_plddts"]
     
     fig, ax = plt.subplots(figsize=(20, 5))
-
    
     max_length = len(atom_plddts)
     position = [n + 1 for n in range(len(atom_plddts))]

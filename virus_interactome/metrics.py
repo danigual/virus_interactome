@@ -70,7 +70,7 @@ def classify_chains(chains, residue_types):
     
     return chain_types
 
-def calculate_pdockq(mol_file, plddt_by_atom, pDockQ_cutoff=8.0):
+def calculate_pdockq(mol_file, plddt_by_res, pDockQ_cutoff=8.0):
     mol = None
     if isinstance(mol_file, Molecule):
         mol = mol_file
@@ -80,7 +80,8 @@ def calculate_pdockq(mol_file, plddt_by_atom, pDockQ_cutoff=8.0):
         except:
             raise FileNotFoundError(f"File {mol_file} does not exists")
     cb_mask = np.logical_or(mol.name == "CB", np.logical_and(mol.resname == "GLY",  mol.name == "CA"))
-    cb_plddt = plddt_by_atom[cb_mask]
+    # cb_plddt = plddt_by_atom[cb_mask]
+    cb_plddt = plddt_by_res
     unique_chains = [str(i) for i in np.unique(mol.chain)]
 
     coordinates = mol.coords[cb_mask].reshape(-1,3) 
@@ -109,7 +110,7 @@ def calculate_pdockq(mol_file, plddt_by_atom, pDockQ_cutoff=8.0):
 
     return pDockQ
 
-def calculate_pdockq2(mol_file, plddt_by_atom, pae_matrix, pDockQ_cutoff=8.0):
+def calculate_pdockq2(mol_file, plddt_by_res, pae_matrix, pDockQ_cutoff=8.0):
     mol = None
     if isinstance(mol_file, Molecule):
         mol = mol_file
@@ -120,7 +121,8 @@ def calculate_pdockq2(mol_file, plddt_by_atom, pae_matrix, pDockQ_cutoff=8.0):
             raise FileNotFoundError(f"File {mol_file} does not exists")
         
     cb_mask = np.logical_or(mol.name == "CB", np.logical_and(mol.resname == "GLY",  mol.name == "CA"))
-    cb_plddt = plddt_by_atom[cb_mask]
+    # cb_plddt = plddt_by_atom[cb_mask]
+    cb_plddt = plddt_by_res
     unique_chains = [str(i) for i in np.unique(mol.chain)]
 
     coordinates = mol.coords[cb_mask].reshape(-1,3) 
@@ -266,7 +268,7 @@ def calculate_ipsae(mol_file, pae_matrix, pae_cutoff=10, dist_cutoff=10.0):
             ipsae = pd.concat([ipsae, pd.DataFrame({"chain1": [chain1], "chain2": [chain2], 
                                                     "ipSAE": [0], "ipSAE_d0chn": [0],
                                                     "ipSAE_d0dom": [0]})])
-    return ipsae
+    return ipsae.reset_index(drop=True)
 
 
 def calculate_all_metrics(mol_file, all_metrics):
@@ -280,18 +282,26 @@ def calculate_all_metrics(mol_file, all_metrics):
             raise FileNotFoundError(f"File {mol_file} does not exists")
 
     pae = all_metrics["pae"]
-    plddt_by_atom = all_metrics["atom_plddts"]
+    # plddt_by_atom = all_metrics["atom_plddts"]
+    plddt_by_residue = all_metrics["res_plddts"]
     chain_by_res = np.array(all_metrics["token_chain_ids"])
+
+    # import pdb;pdb.set_trace()
 
     ipsae = calculate_ipsae(mol, pae)
     LIS = calculate_LIS(mol, pae)
-    pdockq = calculate_pdockq(mol, plddt_by_atom=plddt_by_atom)
-    pdockq2 = calculate_pdockq2(mol, plddt_by_atom=plddt_by_atom, pae_matrix=pae)
+    # pdockq = calculate_pdockq(mol, plddt_by_atom=plddt_by_atom)
+    # pdockq2 = calculate_pdockq2(mol, plddt_by_atom=plddt_by_atom, pae_matrix=pae)
+    pdockq = calculate_pdockq(mol, plddt_by_res=plddt_by_residue)
+    pdockq2 = calculate_pdockq2(mol, plddt_by_res=plddt_by_residue, pae_matrix=pae)
 
     return {
-        "pLDDT_mean": np.mean(plddt_by_atom),
-        "pLDDT_mean_A": np.mean(plddt_by_atom[mol.chain == "A"]),
-        "pLDDT_mean_B": np.mean(plddt_by_atom[mol.chain == "B"]),
+        # "pLDDT_mean": np.mean(plddt_by_atom),
+        # "pLDDT_mean_A": np.mean(plddt_by_atom[mol.chain == "A"]),
+        # "pLDDT_mean_B": np.mean(plddt_by_atom[mol.chain == "B"]),
+        "pLDDT_mean": np.mean(plddt_by_residue),
+        "pLDDT_mean_A": np.mean(plddt_by_residue[chain_by_res == "A"]),
+        "pLDDT_mean_B": np.mean(plddt_by_residue[chain_by_res == "B"]),
         "pae_mean": np.mean(pae),
         "pae_mean_A": np.mean(pae[chain_by_res == "A"][:, chain_by_res == "A"]),
         "pae_mean_B": np.mean(pae[chain_by_res == "B"][:, chain_by_res == "B"]),

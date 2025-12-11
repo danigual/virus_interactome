@@ -7,7 +7,6 @@ from pathlib import Path
 from Bio import SeqIO
 
 def load_proteome (fasta_file:str): ## Moving this to proteome_input
-    
     """
     Loads a FASTA file and extracts protein sequences into a dictionary.
 
@@ -48,6 +47,68 @@ def load_proteome (fasta_file:str): ## Moving this to proteome_input
         sequence = str(protein.seq)
         proteome_dict[short_id] = sequence
     return proteome_dict
+
+def create_boltz_input_yaml(seq_list, output_path):
+    ## seq_lit array of sequences
+
+    import yaml
+    id_list = "ABCDEFGHIJKLMNOPQRSTUVXYZ"
+    seqs2yaml = []
+    for idx, i in enumerate(seq_list):
+        seqs2yaml.append({"protein": {"id": id_list[idx], "sequence": i}})
+
+    data = {
+        "version": 1,
+        "sequences": seqs2yaml
+    }
+
+    with open(output_path, 'w') as outfile:
+        yaml.dump(data, outfile, default_flow_style=False)
+
+# def create_boltz_input_yaml(seq_list, proteome_dict, output_path):
+#     ## seq_lit array of sequences
+
+#     import yaml
+#     id_list = "ABCDEFGHIJKLMNOPQRSTUVXYZ"
+#     seqs2yaml = []
+#     for idx, i in enumerate(seq_list):
+#         seqs2yaml.append({"protein": {"id": id_list[idx], "sequence": proteome_dict[i]}})
+
+#     data = {
+#         "version": 1,
+#         "sequences": seqs2yaml
+#     }
+
+#     with open(output_path, 'w') as outfile:
+#         yaml.dump(data, outfile, default_flow_style=False)
+
+def write_interactome_boltz_yaml(proteome:Union[str, dict], outputdir:str):
+    """
+    Generates YAML files for all pairwise ORF combinations in a proteome for Boltzmann input.
+
+    This function accepts either a proteome dictionary or a path to a FASTA file, and creates
+    YAML files for all possible heterodimer combinations (pairs of ORFs). The files are saved
+    in the specified output directory.
+
+    Parameters
+    ----------
+    proteome : Union[str, dict]
+        Either a path to a FASTA file or a dictionary mapping ORF names to sequences.
+    outputdir : str
+        Directory where the YAML files will be saved.
+    """
+    if isinstance(proteome, dict):
+        proteome_dict = proteome
+    elif isinstance(proteome, str):
+        proteome_dict = load_proteome(proteome)
+    os.makedirs(outputdir, exist_ok= True) 
+    
+    keys = list (proteome_dict.keys())
+    orf_combinations = combinations(keys, 2)
+  
+    for orf1, orf2 in orf_combinations:
+        output_path = os.path.join(outputdir, f"{orf1}__{orf2}.yaml")
+        create_boltz_input_yaml([orf1, orf2], proteome_dict, output_path)
 
 def create_af3_input_json_v2(*args, proteome_dict:dict, prefix=None, suffix=None):
     orf_list = []
