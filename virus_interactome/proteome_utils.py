@@ -285,13 +285,13 @@ def get_info_for_proteins(df)-> pd.DataFrame:
     Parameters
     ----------
     df : pd.DataFrame
-        DataFrame containing columns for ORF_A, ORF_B, PPI, Model_num, and chain-specific metrics.
+        DataFrame containing columns for ORF_A, ORF_B, PPI, model_num, and chain-specific metrics.
 
     Returns
     -------
     pd.DataFrame
         A DataFrame with unified columns:
-        ["ORF", "PPI", "Model_num", "pLDDT_mean_ORF", "pae_mean_ORF"]
+        ["ORF", "PPI", "model_num", "pLDDT_mean_ORF", "pae_mean_ORF"]
 
     Raises
     ------
@@ -299,10 +299,10 @@ def get_info_for_proteins(df)-> pd.DataFrame:
         If expected columns are missing in the input DataFrame.
     """
 
-    info_from_chain_a = df.loc[:, ["ORF_A", "PPI", "Model_num", "pLDDT_mean_A", "pae_mean_A"]]
-    info_from_chain_b = df.loc[:, ["ORF_B", "PPI", "Model_num", "pLDDT_mean_B", "pae_mean_B"]]
-    info_from_chain_a.columns = ["ORF", "PPI", "Model_num", "pLDDT_mean_ORF", "pae_mean_ORF"]
-    info_from_chain_b.columns = ["ORF", "PPI", "Model_num", "pLDDT_mean_ORF", "pae_mean_ORF"]
+    info_from_chain_a = df.loc[:, ["ORF_A", "PPI", "model_num", "pLDDT_mean_A", "pae_mean_A"]]
+    info_from_chain_b = df.loc[:, ["ORF_B", "PPI", "model_num", "pLDDT_mean_B", "pae_mean_B"]]
+    info_from_chain_a.columns = ["ORF", "PPI", "model_num", "pLDDT_mean_ORF", "pae_mean_ORF"]
+    info_from_chain_b.columns = ["ORF", "PPI", "model_num", "pLDDT_mean_ORF", "pae_mean_ORF"]
 
     by_protein_df = pd.concat([info_from_chain_a, info_from_chain_b],  ignore_index=True) 
 
@@ -361,7 +361,7 @@ def process_interactome(folder_path:str, output_path:str, model_type="af3", pref
         print("Loading existing data...")
         interactome_df = pd.read_csv(f'{output_path}/interactome_data.csv')
         folder_names = pd.Series([os.path.dirname(i) for i in all_ppi_models])
-        all_ppi_models = all_ppi_models[~folder_names.isin(interactome_df.Folder)]
+        all_ppi_models = all_ppi_models[~folder_names.isin(interactome_df.path)]
         clusters_df = pd.read_csv(f'{output_path}/clusters_data.csv')
  
     # Paralelización
