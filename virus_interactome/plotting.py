@@ -8,8 +8,16 @@ from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from glob import glob
 from .utils import load_json, process_full_data_af3, process_full_data_boltz
 
-
-def plot_paes (summary_confidences_path: str, fulldata_path: str, model_type="af3", save_name: str = None):
+def plot_paes(
+    pae_matrix: np.ndarray,
+    chain_boundaries: list = None,
+    chain_ids: list = None,
+    title: str = None,
+    # ptm: float = None,
+    # iptm: float = None,
+    save_name: str = None,
+    ax=None
+):
     """
     Generates a Predicted Aligned Error (PAE) heatmap using AlphaFold3 output data.
 
@@ -37,65 +45,50 @@ def plot_paes (summary_confidences_path: str, fulldata_path: str, model_type="af
     - Chain boundaries are marked with black lines.
     - Chain labels are placed at the midpoint of each chain.
     - The plot title includes pTM and ipTM values extracted from the summary file.
-
-    Raises
-    ------
-    FileNotFoundError
-        If either input JSON file does not exist.
-    KeyError
-        If expected keys are missing in the input data.
-    ValueError
-        If the PAE matrix is malformed or inconsistent with chain metadata.
     """
-
-    if isinstance(summary_confidences_path, str):
-        summary_data = load_json(summary_confidences_path)
+    if ax is not None:
+        plt.sca(ax)
     else:
-        summary_data = summary_confidences_path
-
-    if isinstance(fulldata_path, str) and model_type=="af3":
-        full_data = process_full_data_af3(fulldata_path)
-    elif isinstance(fulldata_path, str) and model_type=="boltz2":
-        full_data = process_full_data_boltz(fulldata_path)
-    else:
-        full_data = {} 
-        full_data["pae"] = fulldata_path
-
-    pae_matrix = full_data["pae"] 
-    chain_boundaries = full_data["chain_boundaries"] 
-    chain_lengths = full_data["chain_lengths"]         
+        fig, ax = plt.subplots(figsize=(8, 6))
     
-    fig, ax = plt.subplots(figsize=(8,6))
+    # Plot the matrix
     im = ax.imshow(pae_matrix, cmap='Greens_r', origin='upper', vmin=0, vmax=25)
 
-    for _, end_idx in chain_boundaries:
-        ax.axhline(end_idx + 0.5, color='black', linewidth=1)
-        ax.axvline(end_idx + 0.5, color='black', linewidth=1)
+    # Draw chain boundaries
+    if chain_boundaries is not None:
+        for _, end_idx in chain_boundaries:
+            ax.axhline(end_idx + 0.5, color='black', linewidth=0.75, linestyle="dashed")
+            ax.axvline(end_idx + 0.5, color='black', linewidth=0.75, linestyle="dashed")
 
-    midpoints = [(start_idx + end_idx) / 2 for start_idx, end_idx in chain_boundaries]
-    chain_ids = list(chain_lengths.keys())
- 
-    ax.set_xticks(midpoints)
-    ax.set_yticks(midpoints)
-    ax.set_xticklabels(chain_ids)
-    ax.set_yticklabels(chain_ids)
+        # Label axes
+        midpoints = [(start + end) / 2 for start, end in chain_boundaries]
+        ax.set_xticks(midpoints)
+        ax.set_yticks(midpoints)
+
+        if chain_ids is not None:
+            ax.set_xticklabels(chain_ids)
+            ax.set_yticklabels(chain_ids)
+
+    # Colorbar
+    axins = inset_axes(ax, width="100%", height="2.5%", loc="lower center", borderpad=-5)
+    cbar = fig.colorbar(im, cax=axins, orientation="horizontal")
+    cbar.set_label("Expected position error (Ångströms)")
+
+    if title is not None:
+        ax.set_title(title, loc="center")
     
-    axins = inset_axes(ax, width="100%", height="5%", loc="lower center", borderpad=-7)
-    cbar = fig.colorbar(im, cax=axins, orientation="horizontal")  
-    cbar_label = "Expected position error (Ångströms)"
-    cbar.set_label(cbar_label)
-
-    ax.set_title(f'pTM:{summary_data["ptm"]}| ipTM:{summary_data["iptm"]}', loc ="center")
     ax.set_xlabel("Residue Index")
     ax.set_ylabel("Residue Index")
-    
-    if save_name is None:
-        plt.show()
-    else:
-        plt.savefig(save_name, dpi=300, bbox_inches="tight")
-    plt.close(fig)
 
-    return save_name
+    if save_name:
+        plt.savefig(save_name, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        return save_name
+    else:
+        plt.show()
+        plt.close(fig)
+
+    return ax
 
 def plot_af3_output(af3_folder: list):
    
@@ -211,9 +204,10 @@ def batch_plotting(results_dir: str):
 
     return outputs
 
-
-def plot_pLDDT (fulldata_path: str, model_type="af3", save_name: str = None):
-    
+def plot_plddt(plddts: np.ndarray, 
+               chain_boundaries: list = None,
+               chain_ids: list = None,
+               save_name: str = None, ax=None):
     """
     Generates a pLDDT confidence plot for atoms in a predicted protein structure.
 
@@ -240,20 +234,14 @@ def plot_pLDDT (fulldata_path: str, model_type="af3", save_name: str = None):
     KeyError
         If expected keys are missing in the input data.
     """
-    if isinstance(fulldata_path, str) and model_type=="af3":
-        full_data = process_full_data_af3(fulldata_path)
-    elif isinstance(fulldata_path, str) and model_type=="boltz2":
-        full_data = process_full_data_boltz(fulldata_path)
+
+    if ax is not None:
+        plt.sca(ax)
     else:
-        full_data = {} 
-        full_data["pae"] = fulldata_path
-    chain_boundaries_by_atom = full_data["chain_boundaries_by_atom"]
-    atom_plddts = full_data["atom_plddts"]
-    
-    fig, ax = plt.subplots(figsize=(20, 5))
-   
-    max_length = len(atom_plddts)
-    position = [n + 1 for n in range(len(atom_plddts))]
+        fig, ax = plt.subplots(figsize=(20, 5))
+
+    max_length = len(plddts)
+    position = [n + 1 for n in range(len(plddts))]
 
     ax.add_patch(Rectangle((0, 90), max_length, 10, color="#024fcc"))
     ax.add_patch(Rectangle((0, 70), max_length, 20, color="#60c2e8"))
@@ -262,29 +250,35 @@ def plot_pLDDT (fulldata_path: str, model_type="af3", save_name: str = None):
 
     ax.plot(
         position,
-        atom_plddts,
+        plddts,
         color="black",
         linewidth=0.5,
         linestyle="-"
             )
-    ax.set_xlabel("Atom Position")
+    ax.set_xlabel("Position")
     
     ax.set_ylim(0, 100)
     ax.set_xlim(0, max(position) + 10)
     ax.spines[["right", "top"]].set_visible(False)
     ax.set_yticks([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100])
 
+    if chain_boundaries is not None:
+        for _, end in chain_boundaries:
+            if end == max_length: break
+            ax.axvline(x=end + 1, color="red", linestyle="dashed", linewidth=1)
 
-    for _, end in chain_boundaries_by_atom:
-        if end == max_length: break
-        ax.axvline(x=end + 1, color="red", linestyle="dashed", linewidth=1)
+        # Label axes
+        midpoints = [(start + end) / 2 for start, end in chain_boundaries]
+        ax.set_xticks(midpoints)
 
+        if chain_ids is not None:
+            ax.set_xticklabels(chain_ids)
 
     plddt_legend = {
-        "Very high (pLDDT > 90)": "#024fcc",
-        "High (90 > pLDDT > 70)": "#60c2e8",
-        "Low (70 > pLDDT > 50)": "#f37842",
-        "Very low (pLDDT < 50)": "#f9d613",
+        "Very high (pLDDT > 90)": "#024fcc86",
+        "High (90 > pLDDT > 70)": "#60c2e886",
+        "Low (70 > pLDDT > 50)": "#f3784286",
+        "Very low (pLDDT < 50)": "#f9d61386",
     }
 
     ax.legend(plddt_legend, title="pLDDT Confidence", prop={'size': 10}, 
@@ -304,7 +298,7 @@ def plot_pLDDT (fulldata_path: str, model_type="af3", save_name: str = None):
     
     plt.close(fig)
 
-    return save_name
+    return ax
 
 def plot_pae_clusters(submatrix, low_pae_coords: list, cluster_labels_pae: list, save_name:str = None):
 
