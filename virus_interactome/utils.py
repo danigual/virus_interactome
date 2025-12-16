@@ -42,7 +42,6 @@ def process_full_data_boltz(mol_file: str,
                             pde_file: str | None = None,
                             confidence_file: str | None = None,
                             )-> dict:
-    
     """
     Process Boltz output files and return structural confidence data.
 
@@ -138,7 +137,7 @@ def process_full_data_boltz(mol_file: str,
             "ptm": confidence_data.get("ptm", None),
             "iptm": confidence_data.get("iptm", None)}
 
-def process_full_data_af3(json_path: str)-> dict:
+def process_full_data_af3(mol_path: str)-> dict: ## Maybe this should be a mol_file also?
     
     """
     Processes AlphaFold3 full data JSON and extracts structural metadata.
@@ -171,7 +170,10 @@ def process_full_data_af3(json_path: str)-> dict:
     """
     from moleculekit.molecule import Molecule
 
+    json_path = mol_path.replace("_model_", "_full_data_").replace(".cif", ".json")
     full_data = load_json(json_path)
+    summary_path = json_path.replace("_full_data_", "_summary_confidences_")
+    summary_data = load_json(summary_path)
     token_chain_ids = full_data["token_chain_ids"]
     atom_chain_ids = full_data["atom_chain_ids"] 
     
@@ -208,6 +210,8 @@ def process_full_data_af3(json_path: str)-> dict:
 
     ## Convert pae, atom_plddts and contact_probs to np arrays
     full_data["pae"] = np.array(full_data["pae"])
+    full_data["ptm"] = summary_data["ptm"]
+    full_data["iptm"] = summary_data["iptm"]
     full_data["atom_plddts"] = np.array(full_data["atom_plddts"])
     full_data["res_plddts"] = np.array(cb_plddt)
     # full_data["contact_probs"] = np.array(full_data["contact_probs"])
