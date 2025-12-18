@@ -1,4 +1,5 @@
 import json
+import yaml
 from collections import OrderedDict
 import numpy as np
 from typing import Union
@@ -35,6 +36,50 @@ def load_json(json_path: str)-> Union[dict, list]:
     with open (json_path,"r") as j:
         data = json.load(j)
     return data
+
+def load_yaml(yaml_path: str):
+    with open(yaml_path, 'r') as f:
+        data = yaml.load(f, Loader=yaml.SafeLoader)
+    return data
+
+def load_boltz_input(yaml_path: str, job_name: str | None  = None):
+    """
+    This has to follow the same convention as af3 JSONs
+
+    [{
+        "name": <name>,
+        "sequences": [{
+            "proteinChain": {
+                "count": <count>,
+                "sequence": <sequence>
+            }
+        }]
+    }] 
+    It is only going to be one, but for compatibility with AF3, we put it in a list.
+    """
+    data = load_yaml(yaml_path)
+
+    if job_name is None:
+        job_name = os.path.splitext(os.path.basename(yaml_path))[0]
+
+    sequence_info = []
+    for seq in data["sequences"]:
+        count = seq.get("protein").get("count")
+        count = count if count is not None else 1
+        tmp_sequence_info = {
+            "proteinChain":{
+                "sequence": seq.get("protein").get("sequence"),
+                "count": count,
+            }
+        }
+        sequence_info.append(tmp_sequence_info)
+    job = [
+        {
+            "name": job_name,
+            "sequences": sequence_info
+        }
+    ]
+    return job
 
 def process_full_data_boltz(mol_file: str, 
                             pae_file: str | None = None,
@@ -130,14 +175,17 @@ def process_full_data_boltz(mol_file: str,
     
     return {"pae": pae_data, 
             "atom_plddts": mol.beta,
-            "res_plddts": plddt_data,
+            "cb_plddts": plddt_data,
+            "ca_plddts": plddt_data,
             "chain_boundaries_by_res": chain_boundaries,
             "chain_boundaries_by_atom": chain_boundaries_by_atom,
             "token_chain_ids": chain_by_res,
             "ptm": confidence_data.get("ptm", None),
             "iptm": confidence_data.get("iptm", None)}
 
-def process_full_data_af3(mol_path: str)-> dict: ## Maybe this should be a mol_file also?
+def process_full_data_af3(mol_file: str,
+                          json_path: str | None = None,
+                          summary_json_path: str | None = None,)-> dict: ## Maybe this should be a mol_file also?
     
     """
     Processes AlphaFold3 full data JSON and extracts structural metadata.
@@ -170,54 +218,54 @@ def process_full_data_af3(mol_path: str)-> dict: ## Maybe this should be a mol_f
     """
     from moleculekit.molecule import Molecule
 
-    json_path = mol_path.replace("_model_", "_full_data_").replace(".cif", ".json")
-    full_data = load_json(json_path)
-    summary_path = json_path.replace("_full_data_", "_summary_confidences_")
-    summary_data = load_json(summary_path)
-    token_chain_ids = full_data["token_chain_ids"]
-    atom_chain_ids = full_data["atom_chain_ids"] 
-    
-    chain_lengths = OrderedDict()
-    for chain_id in token_chain_ids:
-        if chain_id not in chain_lengths:
-            chain_lengths[chain_id] = 0
-        chain_lengths[chain_id] += 1
-    
-    atom_chain_lengths = OrderedDict()
-    for atom_id in atom_chain_ids:
-        if atom_id not in atom_chain_lengths:
-            atom_chain_lengths[atom_id] = 0
-        atom_chain_lengths[atom_id] += 1
+    if json_path is None:
+        json_path = mol_file.replace("_model_", "_full_data_").replace(".cif", ".json")
+    if summary_json_path is None:
+        summary_json_path = mol_file.replace("_model_", "_summary_confidences_").replace(".cif", ".json")
 
-    chain_boundaries = []
-  
-    for chain_id in chain_lengths.keys():
-        chain_indexes = np.where(np.array(token_chain_ids) == chain_id)
-        chain_boundaries.append((np.min(chain_indexes), np.max(chain_indexes)))
+    # Validate file existence
+    for file_path, description in [
+        (mol_file, "molecule CIF/PDB"),
+        (json_path, "full data JSON"),
+        (summary_json_path, "confidence JSON"),
+    ]:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Missing {description} file: {file_path}")
+    full_data = load_json(json_path)
+    summary_data = load_json(summary_json_path)
+    token_chain_ids = np.array(full_data.get("token_chain_ids"))
+    atom_chain_ids = np.array(full_data.get("atom_chain_ids"))
     
-    chain_boundaries_by_atom = []
-   
-    for atom_id in atom_chain_lengths.keys():
-    # for atom_id in atom_chain_lengths.values():
-        atom_chain_indexes = np.where(np.array(atom_chain_ids) == atom_id)
-        chain_boundaries_by_atom.append((np.min(atom_chain_indexes), np.max(atom_chain_indexes)))
-    
-    # import pdb;pdb.set_trace()
-    mol_path = json_path.replace("full_data", "model").replace(".json", ".cif")
-    mol = Molecule(mol_path)
+    mol = Molecule(mol_file)
+    chain_by_res = mol.chain[mol.name == "CA"]
+
+    # mol_path = json_path.replace("full_data", "model").replace(".json", ".cif")
+    mol = Molecule(mol_file)
+    ca_mask = mol.name == "CA"
     cb_mask = np.logical_or(mol.name == "CB", np.logical_and(mol.resname == "GLY",  mol.name == "CA"))
-    cb_plddt = np.array(full_data ["atom_plddts"])[cb_mask]
+    cb_plddt = np.array(full_data.get("atom_plddts"))[cb_mask]
+    ca_plddt = np.array(full_data.get("atom_plddts"))[ca_mask]
+    
+    chain_boundaries = {}
+    chain_boundaries_by_atom = {}
+    for chain_id in np.unique(token_chain_ids):
+        chain_indexes = np.where(np.array(chain_by_res) == chain_id)
+        chain_boundaries[str(chain_id)] = (int(np.min(chain_indexes)), int(np.max(chain_indexes)))
+        
+        atom_chain_indexes = np.where(atom_chain_ids == chain_id)
+        chain_boundaries_by_atom[str(chain_id)] = (np.min(atom_chain_indexes), np.max(atom_chain_indexes))
 
     ## Convert pae, atom_plddts and contact_probs to np arrays
     full_data["pae"] = np.array(full_data["pae"])
     full_data["ptm"] = summary_data["ptm"]
     full_data["iptm"] = summary_data["iptm"]
     full_data["atom_plddts"] = np.array(full_data["atom_plddts"])
-    full_data["res_plddts"] = np.array(cb_plddt)
+    full_data["cb_plddts"] = np.array(cb_plddt)
+    full_data["ca_plddts"] = np.array(ca_plddt)
     # full_data["contact_probs"] = np.array(full_data["contact_probs"])
-    full_data["token_chain_ids"] = np.array(full_data["token_chain_ids"])
+    full_data["token_chain_ids"] = token_chain_ids
     
-    full_data["chain_lengths"] = chain_lengths 
+    # full_data["chain_lengths"] = chain_lengths 
     full_data["chain_boundaries_by_res"] = chain_boundaries
     full_data["chain_boundaries_by_atom"] = chain_boundaries_by_atom
     return full_data

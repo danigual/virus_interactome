@@ -2,14 +2,142 @@ import os
 import tqdm
 import pandas as pd
 import concurrent.futures
+from glob import glob
 
 from sklearn.cluster import DBSCAN
 from functools import partial
 
+from .utils import load_json, load_boltz_input
 from .proteome_manager import ProteomeManager
 from .molecule import MoleculeModel
 from .metrics import calculate_all_metrics
 from .plotting import plot_boxplots, plot_iptm_vs_ptm, plot_pae_clusters
+
+class InteractomeWriter:
+    def __init__(self, proteome_a: str | ProteomeManager, proteome_b: str | ProteomeManager | None = None):
+        self.proteome_a = None
+        self.proteome_b = None
+        self.mode = "intra" # intra (intrainteractome) or inter (interactome between two proteomes)
+
+        if isinstance(proteome_a, str):
+            self.proteome_a = ProteomeManager(proteome_a)
+        elif isinstance(proteome_a, ProteomeManager):
+            self.proteome_a = proteome_a
+        else:
+            raise ValueError("proteome_a must be a string path or a ProteomeManager instance")
+        
+        if isinstance(proteome_b, str):
+            self.proteome_b = ProteomeManager(proteome_b)
+            self.mode = "inter"
+        elif isinstance(proteome_b, ProteomeManager):
+            self.proteome_b = proteome_b
+            self.mode = "inter"
+        else:
+            self.mode = "intra"
+        
+        self.job_info = self.check_run()
+    
+    def write_af3_input(self, output_path: str = ".", prefix: str = "", batch_size: int = 30):
+        pass
+
+    def write_boltz_input(self, output_path: str = ".", prefix: str = ""):
+        pass
+
+    def plot_ppi_sizes(self):
+        pass
+
+
+class InteractomeRunner:
+    def __init__(self, path_of_inputs, path_of_outputs, mode="boltz2"):
+        self._available_modes = ["af3", "boltz2"]
+        if mode not in self._available_modes:
+            raise ValueError(f"Mode should be in {' '.join(self._available_modes)}")
+        else:
+            self.mode = mode
+    
+        if self.mode == "af3":
+            self.inputs = glob(f"{path_of_inputs}/*json")
+        elif self.mode == "boltz2":
+            self.inputs = glob(f"{path_of_inputs}/*yaml")
+
+        self.path_of_inputs = path_of_inputs
+        self.path_of_outputs = path_of_outputs
+        self.outputs = glob(f"{path_of_outputs}/*/")
+
+        self.parse_job_dictionary = {
+            "af3": self._parse_af3_job,
+            "boltz2": self._parse_boltz2_job,
+        }
+        self.status = self.check_run()
+
+    def _parse_af3_job(self, input_json):
+        return load_json(input_json)
+
+    def _parse_boltz2_job(self, input_yaml):
+        return load_boltz_input(input_yaml)
+    
+    def check_run(self):
+        parse_job = self.parse_job_dictionary[self.mode]
+
+        all_job_info = []
+        for model_input in self.inputs:
+            ## Parse de job
+            batch_jobs = parse_job(model_input)
+            ## AF3 may return several, but Boltz2 only one
+
+            ## For each job we get: job_id, #proteins, #aa
+            for tmp_job in batch_jobs:
+                all_job_info.append(
+                    [tmp_job.get("name"), ## Job name
+                     sum([i.get("proteinChain").get("count") for i in tmp_job.get("sequences")]), ## Number of chains
+                     sum([len(i.get("proteinChain").get("sequence")) for i in tmp_job.get("sequences")]), ## Total number of residues
+                     ]
+                )
+        df = pd.DataFrame(all_job_info, columns = ["PPI", "num_chain", "num_aa"])
+
+        ## Check number of models
+        num_models = []
+        for tmp_job_name, _, _ in all_job_info:
+            tmp_num_models = len(glob(f"{self.path_of_outputs}/{tmp_job_name}/*model*cif"))
+            num_models.append(tmp_num_models)
+        
+        df.loc[:, "num_models"] = num_models
+        df.loc[:, "status"] = "PENDING"
+
+        mode_num_models = int(df.num_models.mode().values)
+        df.loc[df.num_models == mode_num_models, "status"] = "COMPLETED"
+        df.loc[df.num_models != mode_num_models, "status"] = "PENDING"
+        df.loc[df.num_models == 0, "status"] = "FAILED"
+
+        custom_order = ['FAILED', 'PENDING', 'COMPLETED']
+        df['status'] = pd.Categorical(df['status'], categories=custom_order, ordered=True)
+        df.sort_values(['status', 'num_aa'], inplace=True)
+        
+        return df
+    
+    def write_status(self, file_name: str | None = None):
+        if file_name is None:
+            file_name = f"{self.path_of_inputs}/JOB_STATUS.csv"
+        self.status.to_csv(file_name, index=False)## Write status 
+    
+    def write_missing_jobs(self, output_path: str | None = None):
+        import shutil
+        if self.mode == "af3":
+            raise ValueError("This functions is only supported for Boltz2 runs... for the moment")
+        
+        tmp_jobs = self.status.loc[ self.status.status != "COMPLETED", "PPI"].values
+
+        if len(tmp_jobs) == 0:
+            raise Warning("No pending jobs. Exiting doing nothing")
+        
+        if output_path is None:
+            output_path = f"{self.path_of_inputs}/../input_missing/"
+        os.makedirs(output_path, exist_ok=True)
+    
+        print(f"Safe missing jobs to {output_path}")
+        for ppi_id in tmp_jobs:
+            shutil.copy(f"{self.path_of_inputs}/{ppi_id}.yaml", f"{output_path}/{ppi_id}.yaml")
+
 
 class InteractomeProcessor:
     def __init__(self, model_list: list[str]):
@@ -133,30 +261,18 @@ class InteractomeProcessor:
         ## Plotting scatterplots
         plot_iptm_vs_ptm(interactome_df, output_path=output_folder)
 
-class InteractomeWriter:
-    def __init__(self, proteome_a: str | ProteomeManager, proteome_b: str | ProteomeManager | None = None):
-        self.proteome_a = None
-        self.proteome_b = None
-        self.mode = "intra" # intra (intrainteractome) or inter (interactome between two proteomes)
-
-        if isinstance(proteome_a, str):
-            self.proteome_a = ProteomeManager(proteome_a)
-        elif isinstance(proteome_a, ProteomeManager):
-            self.proteome_a = proteome_a
-        else:
-            raise ValueError("proteome_a must be a string path or a ProteomeManager instance")
-        
-        if isinstance(proteome_b, str):
-            self.proteome_b = ProteomeManager(proteome_b)
-            self.mode = "inter"
-        elif isinstance(proteome_b, ProteomeManager):
-            self.proteome_b = proteome_b
-            self.mode = "inter"
-        else:
-            self.mode = "intra"
-    
-    def write_af3_input(self, output_path: str = ".", prefix: str = "", batch_size: int = 30):
+class InteractomeAnalyzer:
+    def __init__(self):
         pass
 
-    def write_boltz_input(self, output_path: str = ".", prefix: str = ""):
+    def calculate_network(self):
+        pass
+
+    def basic_plots(self):
+        pass
+
+    def protein_peptide_analysis(self):
+        pass
+
+    def cluster_analysis(self):
         pass
