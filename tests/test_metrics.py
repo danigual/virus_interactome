@@ -18,8 +18,8 @@ def test_calculate_pdockq(dummy_mol_path, dummy_json_path):
         full_data = json.load(f)
     # Ensure the dummy full_data has the expected structure
     from virus_interactome.utils import process_full_data_af3
-    full_data = process_full_data_af3(str(dummy_json_path))
-    plddt_by_res = np.array(full_data['res_plddts'])
+    full_data = process_full_data_af3(str(dummy_mol_path))
+    plddt_by_res = np.array(full_data['cb_plddts'])
     calculated_pdockq = calculate_pdockq(str(dummy_mol_path), plddt_by_res)
 
     expected_pdockq = pd.DataFrame({"chain1": ["A"], "chain2": ["B"], "pDockQ": [0.4685032816442164]})
@@ -30,8 +30,8 @@ def test_calculate_pdockq2(dummy_mol_path, dummy_json_path):
         full_data = json.load(f)
     # Modify the pLDDT values to test different scenarios
     from virus_interactome.utils import process_full_data_af3
-    full_data = process_full_data_af3(str(dummy_json_path))
-    plddt_by_res = np.array(full_data['res_plddts'])
+    full_data = process_full_data_af3(str(dummy_mol_path))
+    plddt_by_res = np.array(full_data['cb_plddts'])
     pae = np.array(full_data['pae'])
     calculated_pdockq2 = calculate_pdockq2(str(dummy_mol_path), plddt_by_res, pae)
 
