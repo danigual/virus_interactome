@@ -188,8 +188,11 @@ def process_ppi(model_file: str, model_type="af3", prefix="")-> tuple[list, pd.D
         full_data = process_full_data_af3(full_data_file)
     elif model_type == "boltz2":
         summary_file = model_file.replace(".cif", ".json").replace(f"{ppi_id}_model", f"confidence_{ppi_id}_model")
+        print(">>", summary_file)
+        # import pdb;pdb.set_trace()
         summary_data = load_json(summary_file)
-        full_data = process_full_data_boltz(os.path.dirname(model_file))
+        full_data = process_full_data_boltz(model_file)
+        # full_data = process_full_data_boltz(os.path.dirname(model_file))
     
     # import pdb;pdb.set_trace()
     iPTM = summary_data["iptm"]
@@ -348,11 +351,10 @@ def process_interactome(folder_path:str, output_path:str, model_type="af3", pref
         all_ppi_models = np.array(glob(f"{folder_path}/{prefix}*/*cif")) ## For testing  
     elif model_type == "boltz2":
         all_ppi_models = np.array(glob(f"{folder_path}/predictions/{prefix}*/*cif"))
-    # all_cif_files = glob(f"{folder_path}/*/*cif")
 
     if len(all_ppi_models)==0:
         raise ValueError(f"""No files found in the directory {folder_path}.
-                         Please make sure it follows the AF3 output directory convention""")
+                         Please make sure it follows the {model_type} output directory convention""")
     
     ##Load output.csv and filter out processed data
     interactome_df = pd.DataFrame()
@@ -366,7 +368,6 @@ def process_interactome(folder_path:str, output_path:str, model_type="af3", pref
  
     # Paralelización
     #List of tuples -> every tuple has list,df
-    ##TODO: skip this is .csv exists
     interactome_df_list = []
     cluster_df_list = []
     # with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
