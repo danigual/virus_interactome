@@ -283,7 +283,7 @@ def calculate_all_metrics(mol_file, all_metrics):
 
     pae = all_metrics["pae"]
     # plddt_by_atom = all_metrics["atom_plddts"]
-    plddt_by_residue = all_metrics["res_plddts"]
+    plddt_by_residue = all_metrics["cb_plddts"]
     chain_by_res = np.array(all_metrics["token_chain_ids"])
 
     # import pdb;pdb.set_trace()
