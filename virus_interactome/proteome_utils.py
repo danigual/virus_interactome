@@ -167,6 +167,8 @@ def process_ppi(model_file: str, model_type="af3", prefix="")-> tuple[list, pd.D
     """
     print(model_file)
     # Extract folder name and model number
+
+    ##TODO: save the data and load it here, to skip the process stage
     ppi_id = model_file.split("/")[-2].replace(prefix, "") ## This should be general
     model_number = int(model_file.split("/")[-1].split("_")[-1].replace(".cif", ""))
     orf_a, orf_b = ppi_id.split("__")
@@ -268,6 +270,7 @@ def process_ppi(model_file: str, model_type="af3", prefix="")-> tuple[list, pd.D
         cluster_data.loc[:, "model_num"] = model_number 
         cluster_data.loc[:, "path"] = model_file 
 
+    ## TODO: save the data here (one line for each ppi as a csv or json)
     return {"PPI": ppi_id, "ORF_A": orf_a, "ORF_B":orf_b, "path": folder_path, 
             "model_num": model_number, 
             # "Fraction_disordered": fraction_disordered, 
