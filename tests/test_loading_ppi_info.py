@@ -158,5 +158,4 @@ def test_process_full_data_af3_with_dummy_data(
     assert data["ptm"] == 0.54
     assert "iptm" in data
     assert data["iptm"] == 0.86
-    import pdb;pdb.set_trace()
     assert "token_chain_ids" in data    

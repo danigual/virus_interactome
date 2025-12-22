@@ -118,7 +118,7 @@ class ProteomeManager:
         self.sequences = proteome_dict
         self.file_path = fasta_file
         logger.info(f"Proteome loaded successfully with {len(proteome_dict)} proteins.")
-        logger.info(f"Proteome loaded successfully with {len(proteome_dict)} proteins.")
+        # logger.info(f"Proteome loaded successfully with {len(proteome_dict)} proteins.")
         # self.sequence_properties = self.compute_properties()
         return proteome_dict
     

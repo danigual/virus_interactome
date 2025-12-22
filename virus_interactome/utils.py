@@ -8,6 +8,10 @@ import numpy as np
 import os
 from moleculekit.molecule import Molecule
 
+def check_sequence_validity(seq: str) -> bool:
+    VALID_AMINO_ACIDS = set("ACDEFGHIKLMNPQRSTVWY")
+    return all(residue in VALID_AMINO_ACIDS for residue in seq)
+
 def load_json(json_path: str)-> Union[dict, list]:
     """
     Loads and parses a JSON file from the specified path.
@@ -64,8 +68,8 @@ def load_boltz_input(yaml_path: str, job_name: str | None  = None):
 
     sequence_info = []
     for seq in data["sequences"]:
-        count = seq.get("protein").get("count")
-        count = count if count is not None else 1
+        count = seq.get("protein").get("multiple_chains")
+        count = count.count(",")+2 if count is not None else 1
         tmp_sequence_info = {
             "proteinChain":{
                 "sequence": seq.get("protein").get("sequence"),
@@ -269,13 +273,3 @@ def process_full_data_af3(mol_file: str,
     full_data["chain_boundaries_by_res"] = chain_boundaries
     full_data["chain_boundaries_by_atom"] = chain_boundaries_by_atom
     return full_data
-
-
-
-
-
-
-
-
-
-

@@ -1,17 +1,42 @@
 import os
 import tqdm
 import pandas as pd
+import yaml
+import json
 import concurrent.futures
-from glob import glob
+import warnings
 
+from glob import glob
 from sklearn.cluster import DBSCAN
 from functools import partial
 
-from .utils import load_json, load_boltz_input
+from .utils import load_json, load_boltz_input, check_sequence_validity
 from .proteome_manager import ProteomeManager
-from .molecule import MoleculeModel
+# from .molecule import MoleculeModel
 from .metrics import calculate_all_metrics
 from .plotting import plot_boxplots, plot_iptm_vs_ptm, plot_pae_clusters
+
+def check_input(seq_list, residue_threshold: int = 5000):
+    total_res = 0
+    if len(seq_list) == 0:
+        return False, "Sequence list cannot be empty."
+    
+    for chain_id, seq, count in seq_list:
+        if count < 1:
+            return False, "Count needs to be at least 1."
+        seq_clean = check_sequence_validity(seq)
+        # _validate_seq(seq_clean, strict=strict)
+        if not seq_clean:
+            return False, f"{chain_id} is not a valid protein sequnce."
+        total_res += len(seq) * count
+
+    if total_res > residue_threshold:
+        msg = (
+            f"Total residues {total_res} exceed recommended maximum ({residue_threshold})."
+        )
+        warnings.warn(msg, category=UserWarning, stacklevel=2)
+    
+    return True, None
 
 class InteractomeWriter:
     def __init__(self, proteome_a: str | ProteomeManager, proteome_b: str | ProteomeManager | None = None):
@@ -37,15 +62,94 @@ class InteractomeWriter:
         
         self.job_info = self.check_run()
     
-    def write_af3_input(self, output_path: str = ".", prefix: str = "", batch_size: int = 30):
-        pass
+    @staticmethod
+    def get_af3_input(seq_list: list, job_name: str = "AF3_job", residue_threshold: int = 5000, save_path: str | None = None):
+        '''
+        Docstring for get_af3_input
+        
+        Parameters
+        ----------
+        seq_list : list 
+            List tuples of type [(id, seq, count)] 
+            e.g., [("A", "MSE...", 1), ("B", "AAAA", 2)]
+        param save_path : str
+            Path to save the job in json format.
+        
+        Returns
+        -------
+        Dictionary of the format 
+            {
+            "name": <name>,
+            "sequences": [{
+                "proteinChain": {
+                    "count": <count>,
+                    "sequence": <sequence>
+                    }
+                }]
+            }
+        '''
+        is_good_input, err_msg = check_input(seq_list, residue_threshold=residue_threshold)
+        
+        if is_good_input == False:
+            raise ValueError(err_msg)
+        
+        sequences = []
 
-    def write_boltz_input(self, output_path: str = ".", prefix: str = ""):
-        pass
+        for chain_id, seq, count in seq_list:
+            sequences.append(
+                {"proteinChain": {"id": chain_id, "count": count, "sequence": seq}}
+            )
 
-    def plot_ppi_sizes(self):
-        pass
+        data = {
+            "name": job_name,
+            "sequences": sequences
+            }
+        
+        if save_path is not None:
+            with open(save_path, 'w') as outfile:
+                json.dump(data, outfile, indent=4)
 
+        return data
+
+    @staticmethod
+    def get_boltz2_input(seq_list: list, residue_threshold=1600, save_path: str | None = None):
+        '''
+        Docstring for get_boltz2_input
+        
+        Parameters
+        ----------
+        seq_list : list 
+            List tuples of type [(id, seq, count)] 
+        param save_path : str
+            Path to save the job in json format.
+        '''
+        is_good_input, err_msg = check_input(seq_list, residue_threshold=residue_threshold)
+      
+        if is_good_input == False:
+            raise ValueError(err_msg)
+        
+        id_list = "ABCDEFGHIJKLMNOPQRSTUVXYZ"
+        seqs2yaml = []
+        chain_idx = 0
+
+        for chain_id, seq, counts in seq_list:
+            tmp_job = {"protein": {"id": id_list[chain_idx], "sequence": seq, }}
+            if counts>1:
+                multiple_chains = ",".join(id_list[chain_idx + 1 : chain_idx + counts])
+                tmp_job["protein"]["multiple_chains"] = multiple_chains
+            chain_idx += counts
+            seqs2yaml.append(tmp_job)
+
+        data = {
+            "version": 1,
+            "sequences": seqs2yaml
+        }
+
+        if save_path is not None:
+            with open(save_path, 'w') as outfile:
+                yaml.dump(data, outfile, default_flow_style=False)
+
+        return data
 
 class InteractomeRunner:
     def __init__(self, path_of_inputs, path_of_outputs, mode="boltz2"):
@@ -137,7 +241,6 @@ class InteractomeRunner:
         print(f"Safe missing jobs to {output_path}")
         for ppi_id in tmp_jobs:
             shutil.copy(f"{self.path_of_inputs}/{ppi_id}.yaml", f"{output_path}/{ppi_id}.yaml")
-
 
 class InteractomeProcessor:
     def __init__(self, model_list: list[str]):
