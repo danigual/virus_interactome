@@ -56,12 +56,20 @@ def plot_paes(
 
     # Draw chain boundaries
     if chain_boundaries is not None:
-        for _, end_idx in chain_boundaries:
+        chain_ids = []
+        midpoints = []
+        for chain_id, (start_idx, end_idx) in chain_boundaries.items():
             ax.axhline(end_idx + 0.5, color='black', linewidth=0.75, linestyle="dashed")
             ax.axvline(end_idx + 0.5, color='black', linewidth=0.75, linestyle="dashed")
+            chain_ids.append(chain_id)
+            midpoints.append((start_idx + end_idx) / 2)
 
+        # if chain_ids is not None:
+        #     ax.set_xticklabels(chain_ids)
+        
+        ax.set_xticklabels(chain_ids)
         # Label axes
-        midpoints = [(start + end) / 2 for start, end in chain_boundaries]
+        # midpoints = [(start + end) / 2 for start, end in chain_boundaries]
         ax.set_xticks(midpoints)
         ax.set_yticks(midpoints)
 
@@ -250,7 +258,7 @@ def plot_plddt(plddts: np.ndarray,
 
     ax.plot(
         position,
-        plddts,
+        plddts*100,
         color="black",
         linewidth=0.5,
         linestyle="-"
@@ -263,16 +271,21 @@ def plot_plddt(plddts: np.ndarray,
     ax.set_yticks([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100])
 
     if chain_boundaries is not None:
-        for _, end in chain_boundaries:
+        chain_ids = []
+        midpoints = []
+        for chain_id, (start, end) in chain_boundaries.items():
             if end == max_length: break
             ax.axvline(x=end + 1, color="red", linestyle="dashed", linewidth=1)
+            chain_ids.append(chain_id)
+            midpoints.append((start + end) / 2)
 
         # Label axes
-        midpoints = [(start + end) / 2 for start, end in chain_boundaries]
         ax.set_xticks(midpoints)
 
-        if chain_ids is not None:
-            ax.set_xticklabels(chain_ids)
+        # if chain_ids is not None:
+        #     ax.set_xticklabels(chain_ids)
+        
+        ax.set_xticklabels(chain_ids)
 
     plddt_legend = {
         "Very high (pLDDT > 90)": "#024fcc86",
