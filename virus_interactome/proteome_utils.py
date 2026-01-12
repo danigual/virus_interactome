@@ -118,10 +118,11 @@ def cluster_info (low_coords, cluster_labels)-> pd.DataFrame:
             "x_max": x_max,
             "y_min": y_min,
             "y_max": y_max,
-            "percentile_x_min": per_x_min,
-            "percentile_x_max": per_x_max,
-            "percentile_y_min": per_y_min,
-            "percentile_y_max": per_y_max,
+            # "percentile_x_min": per_x_min,
+            # "percentile_x_max": per_x_max,
+            # "percentile_y_min": per_y_min,
+            # "percentile_y_max": per_y_max,
+            ## TODO: include Cluster_ratio, x_len, y_len, peptide_start, peptide_end
             "center_x": cluster_center[1],
         })
 

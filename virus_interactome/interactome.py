@@ -14,6 +14,7 @@ from functools import partial
 from itertools import combinations, product
 from typing import Dict, Iterable, List, Tuple, Optional
 from pathlib import Path
+from moleculekit.molecule import Molecule
 
 from .utils import load_json, load_boltz_input, check_sequence_validity, process_full_data_af3, process_full_data_boltz
 from .proteome_manager import ProteomeManager
@@ -197,6 +198,7 @@ class InteractomeWriter:
                     idA, idB = entry
                     # seq_list = seq_list_for_pair(self.proteome_a, self.proteome_b if self.mode == "inter" else None,
                     #                             (idA, idB), counts_map=counts_map)
+                    ## TODO: sort idA idB alphabetically or somehow
                     name = f"{idA}__{idB}"
                 elif kind == "homo":
                     pid, copies = entry
@@ -220,7 +222,7 @@ class InteractomeWriter:
 
                 if save_path:
                     if engine.lower() == "af3":
-                        payload = self.get_af3_input(seq_list, job_name=f"{engine}_{name}",
+                        payload = self.get_af3_input(seq_list, job_name=name,
                                                     save_path=save_path, 
                                                     residue_threshold=af3_threshold)
                     else:
@@ -600,16 +602,197 @@ class InteractomeProcessor:
 
 class InteractomeAnalyzer:
     def __init__(self):
-        pass
+        self._interactome_path = None
+        self._interactome_data = None
+        self._cluster_path = None
+        self._cluster_data = None
+        self._candidate_clusters = None
+    
+    ## Getters and setters
+    @property
+    def interactome_path(self):
+        return self._interactome_path
+    
+    @property
+    def interactome_data(self):
+        return self._interactome_data 
+    
+    @interactome_path.setter
+    def interactome_path(self, interactome_data_path: str):
+        if not os.path.exists(interactome_data_path):
+            raise ValueError(f"File {interactome_data_path} not found")
+        
+        self._interactome_path = interactome_data_path
 
-    def calculate_network(self):
-        pass
+        self._interactome_data = pd.read_csv(interactome_data_path)
+        ## Here we expect a very specific data
 
-    def basic_plots(self):
-        pass
+        ## If the lenght is zero, also return errors
 
-    def protein_peptide_analysis(self):
-        pass
+    @property
+    def cluster_path(self):
+        return self._cluster_path 
+    
+    @property
+    def cluster_data(self):
+        return self._cluster_data 
+    
+    @cluster_path.setter
+    def cluster_path(self, cluster_data_path: str):
+        if not os.path.exists(cluster_data_path):
+            raise ValueError(f"File {cluster_data_path} not found")
+        
+        self._cluster_path = cluster_data_path
 
-    def cluster_analysis(self):
-        pass
+        self._cluster_data = pd.read_csv(cluster_data_path)
+        ## Here we expect a very specific data
+
+        ## If the lenght is zero, also return errors
+
+        ## If we find protein ids not found in interactome data
+
+    def __str__(self):
+        # Resumen bonito para el usuario
+        interactome_state = self._interactome_path if self._interactome_path is not None else "Interactome path: Empty"
+        interactome_len = len(self._interactome_data) if self._interactome_data is not None else 0
+        cluster_state = self._cluster_path if self._cluster_path is not None else "Interactome path: Empty"
+        cluster_len = len(self._cluster_data) if self._cluster_data is not None else 0
+        return f"""<InteractomeAnalyzer>
+        Interactome path: {interactome_state}
+        Interactions: {interactome_len}
+        -------------
+        Interactome path: {cluster_state}
+        Interactions: {cluster_len}
+        """
+    
+    def __len__(self):
+        if self._interactome_data is not None:
+            return len(self._interactome_data)
+        return 0
+    
+    def run_full_pipeline(self):
+        ## Plotting the iptm vs ptm
+
+        ## Study protein-peptides
+        self._analyze_peptide_proteins_pairs()
+    
+    def _get_candidate_clusters(self, cluster_ratio_threshold=5, 
+                                min_peptide_len = 5):
+        ## TODO: all of will be removed in the future because
+        # orf_patron = rf"(?:^|__){re.escape(ORF)}(?:__|$)"
+        # df = df[df['PPI'].str.contains(orf_patron, regex=True, case=False)]
+        # df = df[df["PPI"].str.contains(ORF, case=False, na=False)]
+        
+        ## cluster_data will already have it all
+        #Calculate clusters x and y lenght
+        df = self._cluster_data
+        df["y_len"] = df["x_max"] - df["x_min"]
+        df["x_len"] = df["y_max"] - df["y_min"]
+
+        #Calculate cluster ratio dealing with ZeroDivision error (replace 0 by 1)
+        df["Cluster_ratio"] = np.round(df[["x_len","y_len"]].max(axis=1) / df[["x_len","y_len"]].min(axis=1).replace(0, 1), 2)
+        
+        #Generate a copy of the df with candidate clusters
+        df = df[(df.x_len > 0) & (df.y_len > 0)]
+        candidate_clusters = df[df.Cluster_ratio > cluster_ratio_threshold].copy()
+        candidate_clusters = candidate_clusters.loc[
+            (candidate_clusters.x_len >= min_peptide_len) & 
+            (candidate_clusters.y_len >= min_peptide_len), :]
+        
+        peptide_start, peptide_end = [], []
+        orf_start, orf_end = [],[]
+        peptide_chain = []
+        orf_chain = []
+
+        for _, row in candidate_clusters.iterrows():
+            if row.x_len > row.y_len:
+            # if ORF.lower() == first_prot_name:
+                # Si el ORF está primero en el nombre -> Es Chain A
+                orf_chain.append("A")
+                peptide_chain.append("B")
+                peptide_start.append(int(row.x_min))
+                peptide_end.append(int(row.x_max))
+                orf_start.append(int(row.y_min))
+                orf_end.append(int(row.y_max))
+            else:
+                # Si el ORF está segundo (o el péptido va antes) -> Es Chain B
+                orf_chain.append("B")
+                peptide_chain.append("A")
+                peptide_start.append(int(row.y_min))
+                peptide_end.append(int(row.y_max))
+                orf_start.append(int(row.x_min))
+                orf_end.append(int(row.x_max))
+
+        candidate_clusters["Peptide_chain"] = peptide_chain
+        candidate_clusters[f"ORF_chain"] = orf_chain
+        candidate_clusters["Peptide_start"] = peptide_start
+        candidate_clusters["Peptide_end"] = peptide_end
+        candidate_clusters[f"ORF_start"] = orf_start
+        candidate_clusters[f"ORF_end"] = orf_end
+        return candidate_clusters.reset_index()
+
+    def _curate_protein_peptide_models(self, ppi_data: pd.DataFrame):
+        ## Get "the best" model (Higher plddt)
+        mol_list = [Molecule(i) for i in ppi_data.path]
+        plddt = np.array([np.mean(mol.beta) for mol in mol_list])
+        best_idx = np.argmax(plddt)
+
+        reference_mol = mol_list[best_idx].copy()
+        reference_mol.filter("chain A and beta > 70")
+
+        ## Standarize molecule chains
+        for idx, mol in enumerate(mol_list):
+            if ppi_data.Peptide_chain.values[0] == "B":
+                break ##Already with the intended naming
+
+            mol.set("chain", "C", "chain A")
+            mol.set("chain", "A", "chain B")  ## chain A is binder
+            mol.set("chain", "B", "chain C") ## chain B is peptide
+
+            ## Filter to get only the peptide of chain B
+            import pdb;pdb.set_trace()
+            mol.filter(f"(chain A) or (chain B and resid {ppi_data['Peptide_start'].values[idx] + 1} to {ppi_data['Peptide_end'].values[idx] + 1})")
+            ## Maybe we want the longest peptide possible
+
+        
+        ## Saving the filtered molecules
+        output_folder = f"{os.path.dirname(ppi_data.path.values[0])}/prot_peptide/"
+        print(output_folder)
+        os.makedirs(output_folder, exist_ok=True)
+        reference_mol.write(f"{output_folder}/reference.pdb")
+
+        for idx, mol in enumerate(mol_list):
+            mol.write(f"{output_folder}/{ppi_data.PPI.values[0]}_{ppi_data.model_num.values[idx]}.pdb")
+
+    def _analyze_peptide_proteins_pairs(self):
+        ## Find candidates clusters
+        self._candidate_clusters = self._get_candidate_clusters()
+
+        df = self._candidate_clusters.loc[:, ["PPI", "model_num", "x_len", "y_len", "Peptide_chain", "ORF_chain", 
+                                             "Peptide_start", "Peptide_end", "ORF_start", "ORF_end", "path"]]
+        
+        ## This will be removed... but we will have to handle it somehow
+        df.loc[: , "path"] = df.path.str.replace("/media/DATA/ppi_data/", "/home/daniel/ppi_data_remote/")
+        df.loc[: , "PPI"] = df.PPI + "_" + self._candidate_clusters.cluster_id.astype(str)
+        ppis = df.PPI.unique()
+        
+        ## I want to iterate over ppi_cluster
+        for ppi in ppis:
+            clean_ppi = ppi[1:] ## Patch, we have a trailing _ at the beggining of the name
+            ppi_data = df.loc[df.PPI == ppi,:]
+            self._curate_protein_peptide_models(ppi_data)
+
+
+            ## Clustering coordinates
+
+#     def calculate_network(self):
+#         pass
+
+#     def basic_plots(self):
+#         pass
+
+#     def protein_peptide_analysis(self):
+#         pass
+
+#     def cluster_analysis(self):
+#         pass

@@ -152,7 +152,7 @@ def process_full_data_boltz(mol_file: str,
     mol = Molecule(mol_file)
     pae_data = np.load(pae_file)["pae"]
     pde_data = np.load(pde_file)["pde"]
-    plddt_data = np.load(plddt_file)["plddt"]
+    plddt_data = np.load(plddt_file)["plddt"] * 100 ## In AF3 we have range 1-100
     confidence_data = load_json(confidence_file)
     chain_by_res = mol.chain[mol.name == "CA"]
 
