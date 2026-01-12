@@ -104,12 +104,12 @@ def cluster_info (low_coords, cluster_labels)-> pd.DataFrame:
         cluster_center = np.mean(cluster_coords, axis=0)
 
         #Percentiles to reduce the impact of outliers
-        top_percentile = np.percentile(cluster_coords, 99.5, axis=0)
-        lower_percentile = np.percentile(cluster_coords, .5, axis=0)
-        per_x_min = lower_percentile[0]
-        per_y_min = lower_percentile[1]
-        per_x_max = top_percentile[0]
-        per_y_max = top_percentile[1]
+        # top_percentile = np.percentile(cluster_coords, 99.5, axis=0)
+        # lower_percentile = np.percentile(cluster_coords, .5, axis=0)
+        # per_x_min = lower_percentile[0]
+        # per_y_min = lower_percentile[1]
+        # per_x_max = top_percentile[0]
+        # per_y_max = top_percentile[1]
 
         cluster_info_list.append({
             "cluster_id": label,
@@ -129,8 +129,6 @@ def cluster_info (low_coords, cluster_labels)-> pd.DataFrame:
     # Generate the pd.df
     cluster_data_from_model = pd.DataFrame(cluster_info_list)
 
-
-    
     return cluster_data_from_model
     
 def process_ppi(model_file: str, model_type="af3", prefix="")-> tuple[list, pd.DataFrame]:
