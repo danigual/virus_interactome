@@ -5,6 +5,7 @@ from Bio import pairwise2, SeqIO
 from Bio.SeqUtils import molecular_weight, IsoelectricPoint
 from Bio.SeqUtils.ProtParam import ProteinAnalysis
 from pathlib import Path
+from typing import Tuple, Optional
 import logging
 import numpy as np
 import pandas as pd
@@ -38,9 +39,25 @@ class ProteomeManager:
         self.file_path = None
         self.identity_matrix = None
         self.sequence_properties = None
+        self._ids_cache: Optional[Tuple[str, ...]] = None
 
         if fasta_file:
             self.load_proteome(fasta_file)
+
+
+    @property
+    def ids(self) -> Tuple[str, ...]:
+        """
+        Immutable tuple of valid protein IDs.
+        Deterministic order: FASTA insertion order or alphabetical (configurable).
+        """
+        if self._ids_cache is None:
+            if self._order_mode == "sorted":
+                self._ids_cache = tuple(sorted(self.sequences.keys()))
+            else:
+                # dict preserves insertion order (CPython 3.7+)
+                self._ids_cache = tuple(self.sequences.keys())
+        return self._ids_cache
 
     @staticmethod
     def _check_sequence_validity(seq: str) -> bool:
@@ -66,6 +83,10 @@ class ProteomeManager:
             f"  Invalid sequences: {summary_data['invalid_sequences']}\n"
             f"  High similarity pairs: {summary_data['high_similarity_pairs']}"
         )
+    
+    def __len__(self) -> int:
+        return len(self.sequences)
+
 
     # -------------------------
     # 1. Loading and validation
