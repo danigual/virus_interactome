@@ -538,7 +538,7 @@ class InteractomeProcessor:
             y_min = np.min(cluster_coords[:, 0])
 
             cluster_center = np.mean(cluster_coords, axis=0)
-            import pdb;pdb.set_trace()
+            # import pdb;pdb.set_trace()
 
             #Percentiles to reduce the impact of outliers
             # top_percentile = np.percentile(cluster_coords, 99.5, axis=0)
