@@ -260,6 +260,7 @@ def calculate_ipsae(mol_file, pae_matrix, pae_cutoff=10, dist_cutoff=10.0):
             interface_ptm_d0res = ptm_matrix_d0res[chains == chain1][:, chains == chain2]
             interface_ptm_d0res[np.logical_not(interface_pae_mask)] = np.nan
             ipsae_d0res_byres = np.nanmean(interface_ptm_d0res, axis=1)
+            print(ipsae_d0res_byres.shape)
             tmp_ipSAE_d0res = np.nanmax(ipsae_d0res_byres)
             ipsae = pd.concat([ipsae, pd.DataFrame({"chain1": [chain1], "chain2": [chain2], 
                                                     "ipSAE": [tmp_ipSAE_d0res], "ipSAE_d0chn": [tmp_ipSAE_d0chn],
@@ -289,6 +290,9 @@ def calculate_all_metrics(mol_file, all_metrics):
     # import pdb;pdb.set_trace()
 
     ipsae = calculate_ipsae(mol, pae)
+
+    ipSAE_AB = ipsae.loc[(ipsae.chain1 == "A") & (ipsae.chain2 == "B"), "ipSAE"].values[0],
+    ipSAE_BA = ipsae.loc[(ipsae.chain1 == "B") & (ipsae.chain2 == "A"), "ipSAE"].values[0],
     LIS = calculate_LIS(mol, pae)
     # pdockq = calculate_pdockq(mol, plddt_by_atom=plddt_by_atom)
     # pdockq2 = calculate_pdockq2(mol, plddt_by_atom=plddt_by_atom, pae_matrix=pae)
@@ -313,8 +317,9 @@ def calculate_all_metrics(mol_file, all_metrics):
         "pDockQ2_BA": pdockq2.loc[(pdockq2.chain1 == "B") & (pdockq2.chain2 == "A"), "pDockQ2"].values[0],
         "LIS_AB": LIS.loc[(LIS.chain1 == "A") & (LIS.chain2 == "B"), "LIS"].values[0],
         "LIS_BA": LIS.loc[(LIS.chain1 == "B") & (LIS.chain2 == "A"), "LIS"].values[0],
-        "ipSAE_AB": ipsae.loc[(ipsae.chain1 == "A") & (ipsae.chain2 == "B"), "ipSAE"].values[0],
-        "ipSAE_BA": ipsae.loc[(ipsae.chain1 == "B") & (ipsae.chain2 == "A"), "ipSAE"].values[0],
+        "ipSAE_AB": ipSAE_AB,
+        "ipSAE_BA": ipSAE_BA, 
+        "max_ipSAE": np.max([ipSAE_AB, ipSAE_BA]),
         "ipSAE_d0chn_AB": ipsae.loc[(ipsae.chain1 == "A") & (ipsae.chain2 == "B"), "ipSAE_d0chn"].values[0],
         "ipSAE_d0chn_BA": ipsae.loc[(ipsae.chain1 == "B") & (ipsae.chain2 == "A"), "ipSAE_d0chn"].values[0],
         "ipSAE_d0dom_AB": ipsae.loc[(ipsae.chain1 == "A") & (ipsae.chain2 == "B"), "ipSAE_d0dom"].values[0],
