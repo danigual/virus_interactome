@@ -18,7 +18,7 @@ from moleculekit.molecule import Molecule
 
 from .utils import load_json, load_boltz_input, check_sequence_validity, process_full_data_af3, process_full_data_boltz
 from .proteome_manager import ProteomeManager
-from .proteome_utils import cluster_pae
+# from .proteome_utils import cluster_pae
 # from .molecule import MoleculeModel
 from .metrics import calculate_all_metrics
 from .plotting import plot_boxplots, plot_iptm_vs_ptm, plot_pae_clusters, plot_paes, plot_plddt
@@ -454,6 +454,127 @@ class InteractomeProcessor:
         # self.process_models()
     
     @staticmethod
+    def cluster_pae(pae_submatrix, threshold:int=15, eps:int=10)-> tuple:
+        """
+        Clusters low PAE regions in a PAE submatrix using DBSCAN.
+
+        This function identifies coordinates in the PAE matrix where the predicted aligned error
+        is below a given threshold, and applies DBSCAN clustering to group them. It returns the
+        coordinates of low PAE values and their corresponding cluster labels.
+
+        Parameters
+        ----------
+        pae_submatrix : np.ndarray
+            A 2D array representing a subset of the PAE matrix.
+        threshold : int, optional
+            Maximum PAE value to consider for clustering (default is 15).
+        eps : int, optional
+            Maximum distance between points in a cluster for DBSCAN (default is 10).
+
+        Returns
+        -------
+        tuple
+            A tuple containing:
+            - low_pae_coords (np.ndarray): Coordinates of low PAE values.
+            - labels (np.ndarray or list): Cluster labels assigned by DBSCAN.
+
+        Raises
+        ------
+        ValueError
+            If the input matrix is invalid or clustering fails.
+        """
+
+        low_pae_coords = np.column_stack(np.where(pae_submatrix < threshold))
+        if len(low_pae_coords)>0: ##Maybe we want something higher so we get rid of shit
+            #Apply DBSCAN clustering
+            clustering = DBSCAN(eps=eps, min_samples=5).fit(low_pae_coords)
+            labels = clustering.labels_
+        else:
+            low_pae_coords, labels = [], []
+
+        return  low_pae_coords, labels
+
+    @staticmethod
+    def cluster_info(low_coords, cluster_labels)-> pd.DataFrame:
+        
+        """
+        Extracts and summarizes geometric information from clustered low PAE coordinates.
+
+        This function processes the output of a clustering algorithm (e.g., DBSCAN) applied to low PAE regions.
+        For each cluster (excluding noise), it computes bounding box coordinates, percentiles to reduce outlier
+        impact, and the cluster center. The results are returned as a pandas DataFrame.
+
+        Parameters
+        ----------
+        low_coords : np.ndarray
+            Array of coordinates (row, column) where PAE values are below a threshold.
+        cluster_labels : np.ndarray
+            Array of cluster labels assigned to each coordinate.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame containing geometric and statistical information for each cluster.
+
+        Raises
+        ------
+        ValueError
+            If input arrays are mismatched or improperly formatted.
+        """
+
+        cluster_info_list = []
+        unique_labels = np.unique(cluster_labels)
+
+        for label in unique_labels:
+            if label == -1:
+                continue  # Ignorar ruido
+
+            cluster_coords = low_coords[cluster_labels == label]
+
+            # Clustering functions (x 1 y 0)
+            x_min = np.min(cluster_coords[:, 1])
+            y_max = np.max(cluster_coords[:, 0])
+            x_max = np.max(cluster_coords[:, 1])
+            y_min = np.min(cluster_coords[:, 0])
+
+            cluster_center = np.mean(cluster_coords, axis=0)
+            import pdb;pdb.set_trace()
+
+            #Percentiles to reduce the impact of outliers
+            # top_percentile = np.percentile(cluster_coords, 99.5, axis=0)
+            # lower_percentile = np.percentile(cluster_coords, .5, axis=0)
+            # per_x_min = lower_percentile[0]
+            # per_y_min = lower_percentile[1]
+            # per_x_max = top_percentile[0]
+            # per_y_max = top_percentile[1]
+            x_len = x_max - x_min
+            y_len = y_max - y_min
+            cluster_ratio = max(x_len, y_len) / min(x_len, y_len) if min(x_len, y_len) > 0 else 0
+            cluster_info_list.append({
+                "cluster_id": label,
+                "num_points": len(cluster_coords),
+                "x_len": x_len,
+                "y_len": y_len,
+                "x_min": x_min,
+                "x_max": x_max,
+                "y_min": y_min,
+                "y_max": y_max,
+                # "percentile_x_min": per_x_min,
+                # "percentile_x_max": per_x_max,
+                # "percentile_y_min": per_y_min,
+                # "percentile_y_max": per_y_max,
+                ## TODO: include Cluster_ratio, x_len, y_len, peptide_start, peptide_end
+                "center_x": round(cluster_center[1], 2),
+                "center_y": round(cluster_center[0], 2),
+                "Cluster_ratio": round(cluster_ratio, 2)
+            })
+
+        # Generate the pd.df
+        cluster_data_from_model = pd.DataFrame(cluster_info_list)
+        
+        return cluster_data_from_model
+    
+    @staticmethod
     def process_ppi(model_file: str, model_type: str = "AF3", mode: str = "heteromers", prefix: str = "")-> tuple[dict, pd.DataFrame]:
         """
         Processes an AlphaFold3 CIF model file and extracts structural and confidence metrics.
@@ -475,6 +596,7 @@ class InteractomeProcessor:
             - A dictionary with summary metrics.
             - A DataFrame with cluster details.
         """
+        print(f"Processing {model_file}...")
         # Parse metadata from the file path
         dir_name = os.path.dirname(model_file)
         base_name = os.path.basename(model_file).replace(".cif", "").replace(".pdb", "")
@@ -510,6 +632,7 @@ class InteractomeProcessor:
         if len(set(full_data["token_chain_ids"])) == 2: ## We have two chains
             # Calculate all metrics
             all_metrics = calculate_all_metrics(model_file, full_data)
+            import pdb;pdb.set_trace()
             # all_metrics = calculate_all_metrics(molecule_model)
 
             chain_by_res = full_data["token_chain_ids"]
@@ -519,11 +642,19 @@ class InteractomeProcessor:
             submatrix = np.mean([pae_submatrix_1, pae_submatrix_2], axis=0) ## Maybe we want the mean?
 
             ## Clustering
-            low_coords, cluster_labels = cluster_pae(submatrix)
+            low_coords, cluster_labels = InteractomeProcessor.cluster_pae(submatrix)
 
             ## here we do the plot of the pae clusters
             plot_pae_clusters(submatrix,low_coords, cluster_labels, save_name=model_file.replace(".cif", "_cluster.png")) 
-        
+
+            cluster_data = InteractomeProcessor.cluster_info(low_coords=low_coords, cluster_labels=cluster_labels)
+            # Incluir en el df de los clusters el ppi_id
+            if len(cluster_data)>0:
+                cluster_data.loc[:, "PPI"] = ppi_id 
+                cluster_data.loc[:, "model_num"] = model_number 
+                cluster_data.loc[:, "path"] = model_file 
+               
+
         # Return summary metrics and cluster details
         return {"PPI": ppi_id, "ORF_A": orf_a, "ORF_B": orf_b, "Folder": dir_name, 
                 "Model_num": model_number, 
@@ -531,13 +662,16 @@ class InteractomeProcessor:
                 "pTM": full_data["ptm"], 
                 # "chain_length_A": np.sum(chain_by_res == "A"), "chain_length_B":np.sum(chain_by_res == "B"), 
                 **all_metrics
-                }, all_metrics.get("cluster_info", pd.DataFrame())
+                }, cluster_data
     
     def process_models(self, output_path: str = ".", model_type: str = "AF3", prefix: str = "", **kwargs):
         ##Load output.csv and filter out processed data
         interactome_df = pd.DataFrame()
         clusters_df = pd.DataFrame()
         all_ppi_models = self.model_list.copy()
+
+        os.makedirs(output_path, exist_ok=True)
+
         if os.path.exists(f'{output_path}/interactome_data.csv',):
             print("Loading existing data...")
             interactome_df = pd.read_csv(f'{output_path}/interactome_data.csv')
@@ -583,7 +717,12 @@ class InteractomeProcessor:
         # clusters_df = pd.concat([df[1] for df in results], ignore_index=True)
 
         # Save dfs to .csv
+        interactome_df.round(2)
         interactome_df.to_csv(f'{output_path}/interactome_data.csv', index=False)
+        ordered_columns = ['PPI', 'model_num', 'path', 'cluster_id', 'num_points', 'x_len', 'y_len', 'x_min', 'x_max', 'y_min',
+                    'y_max', 'center_x', 'center_y', 'Cluster_ratio']
+        clusters_df.round(2)
+        clusters_df = clusters_df.loc[:, ordered_columns]
         clusters_df.to_csv(f'{output_path}/clusters_data.csv', index=False)
 
         ## TODO: move this to the analyzer class
