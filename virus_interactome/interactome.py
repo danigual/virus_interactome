@@ -632,7 +632,7 @@ class InteractomeProcessor:
         if len(set(full_data["token_chain_ids"])) == 2: ## We have two chains
             # Calculate all metrics
             all_metrics = calculate_all_metrics(model_file, full_data)
-            import pdb;pdb.set_trace()
+            # import pdb;pdb.set_trace()
             # all_metrics = calculate_all_metrics(molecule_model)
 
             chain_by_res = full_data["token_chain_ids"]
