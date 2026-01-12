@@ -67,11 +67,11 @@ def plot_paes(
         # if chain_ids is not None:
         #     ax.set_xticklabels(chain_ids)
         
-        ax.set_xticklabels(chain_ids)
         # Label axes
         # midpoints = [(start + end) / 2 for start, end in chain_boundaries]
         ax.set_xticks(midpoints)
         ax.set_yticks(midpoints)
+        ax.set_xticklabels(chain_ids)
 
         if chain_ids is not None:
             ax.set_xticklabels(chain_ids)
@@ -258,7 +258,7 @@ def plot_plddt(plddts: np.ndarray,
 
     ax.plot(
         position,
-        plddts*100,
+        plddts,
         color="black",
         linewidth=0.5,
         linestyle="-"
