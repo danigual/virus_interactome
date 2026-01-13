@@ -532,10 +532,15 @@ class InteractomeProcessor:
             cluster_coords = low_coords[cluster_labels == label]
 
             # Clustering functions (x 1 y 0)
-            x_min = np.min(cluster_coords[:, 1])
-            y_max = np.max(cluster_coords[:, 0])
-            x_max = np.max(cluster_coords[:, 1])
-            y_min = np.min(cluster_coords[:, 0])
+            # x_min = np.min(cluster_coords[:, 1])
+            # y_max = np.max(cluster_coords[:, 0])
+            # x_max = np.max(cluster_coords[:, 1])
+            # y_min = np.min(cluster_coords[:, 0])
+            ## we are going crazy over this
+            x_min = np.min(cluster_coords[:, 0])
+            y_max = np.max(cluster_coords[:, 1])
+            x_max = np.max(cluster_coords[:, 0])
+            y_min = np.min(cluster_coords[:, 1])
 
             cluster_center = np.mean(cluster_coords, axis=0)
             # import pdb;pdb.set_trace()
