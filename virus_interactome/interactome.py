@@ -831,32 +831,40 @@ class InteractomeAnalyzer:
             (candidate_clusters.y_len >= min_peptide_len), :]
         
         peptide_start, peptide_end = [], []
-        orf_start, orf_end = [],[]
+        binder_start, binder_end = [],[]
+        binder_name, peptide_name = [], []
         peptide_chain = []
-        orf_chain = []
+        binder_chain = []
 
         for _, row in candidate_clusters.iterrows():
+            orf_a, orf_b = row.PPI.split("__")
             if row.x_len > row.y_len:
-                orf_chain.append("A")
+                binder_chain.append("A")
                 peptide_chain.append("B")
                 peptide_start.append(int(row.y_min))
                 peptide_end.append(int(row.y_max))
-                orf_start.append(int(row.x_min))
-                orf_end.append(int(row.x_max))
+                binder_start.append(int(row.x_min))
+                binder_end.append(int(row.x_max))
+                binder_name.append(orf_a)
+                peptide_name.append(orf_b)
             else:
-                orf_chain.append("B")
+                binder_chain.append("B")
                 peptide_chain.append("A")
                 peptide_start.append(int(row.x_min))
                 peptide_end.append(int(row.x_max))
-                orf_start.append(int(row.y_min))
-                orf_end.append(int(row.y_max))
+                binder_start.append(int(row.y_min))
+                binder_end.append(int(row.y_max))
+                binder_name.append(orf_b)
+                peptide_name.append(orf_a)
 
+        candidate_clusters[f"Binder_chain"] = binder_chain
+        candidate_clusters["Binder_name"] = binder_name
         candidate_clusters["Peptide_chain"] = peptide_chain
-        candidate_clusters[f"ORF_chain"] = orf_chain
+        candidate_clusters["Peptide_name"] = peptide_name
         candidate_clusters["Peptide_start"] = peptide_start
         candidate_clusters["Peptide_end"] = peptide_end
-        candidate_clusters[f"ORF_start"] = orf_start
-        candidate_clusters[f"ORF_end"] = orf_end
+        candidate_clusters[f"Binder_start"] = binder_start
+        candidate_clusters[f"Binder_end"] = binder_end
         return candidate_clusters.reset_index()
 
     def _curate_protein_peptide_models(self, ppi_data: pd.DataFrame):
@@ -901,12 +909,29 @@ class InteractomeAnalyzer:
         for idx, mol in enumerate(mol_list):
             mol.write(f"{output_folder}/{ppi_data.PPI.values[0]}_{ppi_data.model_num.values[idx]}.pdb")
 
+    def _create_binder_alignments(self, ppi_data):
+        ## Get all models where is binder is the same protein
+        all_structs = []
+        for ppi in ppi_data.PPI.unique():
+            import pdb;pdb.set_trace()
+            tmp_structs = glob()
+            all_structs.append(tmp_structs)
+
+        ## Set on reference as the template for the rest
+        reference_mol_path = next((s for s in all_structs if "reference" in s), None)
+        reference_mol = Molecule(reference_mol_path)
+
+        ## Align all structure to that template
+        pass
+    
     def _analyze_peptide_proteins_pairs(self):
         ## Find candidates clusters
         self._candidate_clusters = self._get_candidate_clusters()
 
-        df = self._candidate_clusters.loc[:, ["PPI", "model_num", "x_len", "y_len", "Peptide_chain", "ORF_chain", 
-                                             "Peptide_start", "Peptide_end", "ORF_start", "ORF_end", "path"]]
+        df = self._candidate_clusters.loc[:, ["PPI", "model_num", "x_len", "y_len", 
+                                              "Binder_name", "Binder_chain", "Binder_start", "Binder_end",
+                                              "Peptide_name", "Peptide_chain", 
+                                             "Peptide_start", "Peptide_end",  "path"]]
         
         ## This will be removed... but we will have to handle it somehow
         df.loc[: , "path"] = df.path.str.replace("/media/DATA/ppi_data/", "/home/daniel/ppi_data_remote/")
@@ -917,10 +942,15 @@ class InteractomeAnalyzer:
         for ppi in ppis:
             clean_ppi = ppi[1:] ## Patch, we have a trailing _ at the beggining of the name
             ppi_data = df.loc[df.PPI == ppi,:]
-            self._curate_protein_peptide_models(ppi_data)
+            # self._curate_protein_peptide_models(ppi_data) ## Temporary comment
 
-
+        for binder in self._candidate_clusters.Binder_name.unique():
             ## Clustering coordinates
+            ppi_data = self._candidate_clusters.loc[self._candidate_clusters.Binder_name == binder,:]
+            ## 
+            self._create_binder_alignments(ppi_data)
+        import pdb;pdb.set_trace()
+
 
 #     def calculate_network(self):
 #         pass
