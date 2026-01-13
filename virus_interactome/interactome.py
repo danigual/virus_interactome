@@ -822,21 +822,8 @@ class InteractomeAnalyzer:
     
     def _get_candidate_clusters(self, cluster_ratio_threshold=5, 
                                 min_peptide_len = 5):
-        ## TODO: all of will be removed in the future because
-        # orf_patron = rf"(?:^|__){re.escape(ORF)}(?:__|$)"
-        # df = df[df['PPI'].str.contains(orf_patron, regex=True, case=False)]
-        # df = df[df["PPI"].str.contains(ORF, case=False, na=False)]
-        
-        ## cluster_data will already have it all
-        #Calculate clusters x and y lenght
-        df = self._cluster_data
-        df["y_len"] = df["x_max"] - df["x_min"]
-        df["x_len"] = df["y_max"] - df["y_min"]
-
-        #Calculate cluster ratio dealing with ZeroDivision error (replace 0 by 1)
-        df["Cluster_ratio"] = np.round(df[["x_len","y_len"]].max(axis=1) / df[["x_len","y_len"]].min(axis=1).replace(0, 1), 2)
-        
         #Generate a copy of the df with candidate clusters
+        df = self._cluster_data
         df = df[(df.x_len > 0) & (df.y_len > 0)]
         candidate_clusters = df[df.Cluster_ratio > cluster_ratio_threshold].copy()
         candidate_clusters = candidate_clusters.loc[
@@ -850,22 +837,19 @@ class InteractomeAnalyzer:
 
         for _, row in candidate_clusters.iterrows():
             if row.x_len > row.y_len:
-            # if ORF.lower() == first_prot_name:
-                # Si el ORF está primero en el nombre -> Es Chain A
                 orf_chain.append("A")
                 peptide_chain.append("B")
-                peptide_start.append(int(row.x_min))
-                peptide_end.append(int(row.x_max))
-                orf_start.append(int(row.y_min))
-                orf_end.append(int(row.y_max))
-            else:
-                # Si el ORF está segundo (o el péptido va antes) -> Es Chain B
-                orf_chain.append("B")
-                peptide_chain.append("A")
                 peptide_start.append(int(row.y_min))
                 peptide_end.append(int(row.y_max))
                 orf_start.append(int(row.x_min))
                 orf_end.append(int(row.x_max))
+            else:
+                orf_chain.append("B")
+                peptide_chain.append("A")
+                peptide_start.append(int(row.x_min))
+                peptide_end.append(int(row.x_max))
+                orf_start.append(int(row.y_min))
+                orf_end.append(int(row.y_max))
 
         candidate_clusters["Peptide_chain"] = peptide_chain
         candidate_clusters[f"ORF_chain"] = orf_chain
@@ -876,29 +860,38 @@ class InteractomeAnalyzer:
         return candidate_clusters.reset_index()
 
     def _curate_protein_peptide_models(self, ppi_data: pd.DataFrame):
-        ## Get "the best" model (Higher plddt)
         mol_list = [Molecule(i) for i in ppi_data.path]
         plddt = np.array([np.mean(mol.beta) for mol in mol_list])
         best_idx = np.argmax(plddt)
 
-        reference_mol = mol_list[best_idx].copy()
-        reference_mol.filter("chain A and beta > 70")
-
         ## Standarize molecule chains
         for idx, mol in enumerate(mol_list):
-            if ppi_data.Peptide_chain.values[0] == "B":
-                break ##Already with the intended naming
+            if ppi_data.Peptide_chain.values[0] == "A":
+                # break ##Already with the intended naming
 
-            mol.set("chain", "C", "chain A")
-            mol.set("chain", "A", "chain B")  ## chain A is binder
-            mol.set("chain", "B", "chain C") ## chain B is peptide
+                mol.set("chain", "C", "chain A")
+                mol.set("chain", "A", "chain B")  ## chain A is binder
+                mol.set("chain", "B", "chain C") ## chain B is peptide
 
+        ## Get the "best" folded partner    
+        reference_mol = mol_list[best_idx].copy()
+        reference_mol.filter("chain A")
+        reference_resids = reference_mol.resid[reference_mol.name == "CA"][reference_mol.beta[reference_mol.name == "CA"]>70]
+        reference_resids = reference_resids.astype(str)
+        reference_resid_str = ' '.join(reference_resids)
+
+        reference_mol.filter(f"resid {reference_resid_str}")
+
+        for idx, mol in enumerate(mol_list):
             ## Filter to get only the peptide of chain B
-            import pdb;pdb.set_trace()
-            mol.filter(f"(chain A) or (chain B and resid {ppi_data['Peptide_start'].values[idx] + 1} to {ppi_data['Peptide_end'].values[idx] + 1})")
-            ## Maybe we want the longest peptide possible
+            mol.filter(f"(chain A and resid {reference_resid_str}) or (chain B and resid {ppi_data['Peptide_start'].values[idx] + 1} to {ppi_data['Peptide_end'].values[idx] + 1})")
+            # mol.filter(f"(chain A) or (chain B and resid {ppi_data['Peptide_start'].values[idx] + 1} to {ppi_data['Peptide_end'].values[idx] + 1})")
+            
+            ## We align to the reference structure
+            mol.align(f"chain A and name CA",
+                      refmol=reference_mol,
+                      refsel=f"chain A and name CA")
 
-        
         ## Saving the filtered molecules
         output_folder = f"{os.path.dirname(ppi_data.path.values[0])}/prot_peptide/"
         print(output_folder)
