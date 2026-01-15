@@ -751,6 +751,7 @@ class InteractomeAnalyzer:
         self._cluster_path = None
         self._cluster_data = None
         self._candidate_clusters = None
+        self._models_path = None
     
     ## Getters and setters
     @property
@@ -789,11 +790,29 @@ class InteractomeAnalyzer:
         self._cluster_path = cluster_data_path
 
         self._cluster_data = pd.read_csv(cluster_data_path)
+
+        self._models_path = os.path.commonpath(self.cluster_data.path.values.tolist())
         ## Here we expect a very specific data
 
         ## If the lenght is zero, also return errors
 
         ## If we find protein ids not found in interactome data
+
+    @property
+    def models_path(self):
+        return self._models_path 
+
+    @models_path.setter
+    def models_path(self, new_model_path):
+        old_models_path = self._models_path
+        self._cluster_data.loc[: , "path"] = self._cluster_data.path.str.replace(self._models_path, new_model_path)
+        self._interactome_data.loc[: , "Folder"] = self._interactome_data.Folder.str.replace(self._models_path, new_model_path)
+        self._models_path = new_model_path
+
+        print(f"INFO: Changing model_path in cluster_data.path and interactome_data.Folder")
+        print(f"INFO: from {old_models_path} to {new_model_path}")
+
+        return self._cluster_path 
 
     def __str__(self):
         # Resumen bonito para el usuario
@@ -865,6 +884,11 @@ class InteractomeAnalyzer:
         candidate_clusters["Peptide_end"] = peptide_end
         candidate_clusters[f"Binder_start"] = binder_start
         candidate_clusters[f"Binder_end"] = binder_end
+
+        ## Filter by Binder quality
+        ## for each binder get a df with their metrics 
+        ## like mean_PAE, 
+
         return candidate_clusters.reset_index()
 
     def _curate_protein_peptide_models(self, ppi_data: pd.DataFrame):
@@ -896,9 +920,10 @@ class InteractomeAnalyzer:
             # mol.filter(f"(chain A) or (chain B and resid {ppi_data['Peptide_start'].values[idx] + 1} to {ppi_data['Peptide_end'].values[idx] + 1})")
             
             ## We align to the reference structure
-            mol.align(f"chain A and name CA",
-                      refmol=reference_mol,
-                      refsel=f"chain A and name CA")
+            ## NOPE; we doe alignment later
+            # mol.align(f"chain A and name CA",
+            #           refmol=reference_mol,
+            #           refsel=f"chain A and name CA")
 
         ## Saving the filtered molecules
         output_folder = f"{os.path.dirname(ppi_data.path.values[0])}/prot_peptide/"
@@ -909,20 +934,25 @@ class InteractomeAnalyzer:
         for idx, mol in enumerate(mol_list):
             mol.write(f"{output_folder}/{ppi_data.PPI.values[0]}_{ppi_data.model_num.values[idx]}.pdb")
 
-    def _create_binder_alignments(self, ppi_data):
+    def _create_binder_alignments(self, binder_name, ppi_data):
         ## Get all models where is binder is the same protein
         all_structs = []
         for ppi in ppi_data.PPI.unique():
-            import pdb;pdb.set_trace()
-            tmp_structs = glob()
-            all_structs.append(tmp_structs)
-
-        ## Set on reference as the template for the rest
-        reference_mol_path = next((s for s in all_structs if "reference" in s), None)
+            tmp_structs = glob(f"{self.models_path}/*{ppi}/prot_peptide/*pdb")
+            all_structs.extend(tmp_structs)
+        ## We use the first one as default
+        reference_mol_path = [p for p in all_structs if "reference" in p][0]
+        # reference_mol_path = filter(lambda x: "reference" in x, all_structs)
         reference_mol = Molecule(reference_mol_path)
-
+        
         ## Align all structure to that template
-        pass
+        for tmp_mol_path in all_structs:
+            tmp_mol = Molecule(tmp_mol_path)
+            tmp_mol.align(f"chain A",
+                      refmol=reference_mol,
+                      refsel=f"chain A",
+                      mode="structure")
+            tmp_mol.write(tmp_mol.topoloc.replace(".pdb", "_toref.pdb"))
     
     def _analyze_peptide_proteins_pairs(self):
         ## Find candidates clusters
@@ -934,22 +964,22 @@ class InteractomeAnalyzer:
                                              "Peptide_start", "Peptide_end",  "path"]]
         
         ## This will be removed... but we will have to handle it somehow
-        df.loc[: , "path"] = df.path.str.replace("/media/DATA/ppi_data/", "/home/daniel/ppi_data_remote/")
-        df.loc[: , "PPI"] = df.PPI + "_" + self._candidate_clusters.cluster_id.astype(str)
+        # df.loc[: , "path"] = df.path.str.replace("/media/DATA/ppi_data/", "/home/daniel/ppi_data_remote/")
+        df.loc[: , "PPI"] = df.PPI + "_" +  self._candidate_clusters.cluster_id.astype(str)
         ppis = df.PPI.unique()
         
-        ## I want to iterate over ppi_cluster
+        ## I want to iterate over ppi_clusters
         for ppi in ppis:
             clean_ppi = ppi[1:] ## Patch, we have a trailing _ at the beggining of the name
             ppi_data = df.loc[df.PPI == ppi,:]
             # self._curate_protein_peptide_models(ppi_data) ## Temporary comment
 
+        ## Iterate over binder
         for binder in self._candidate_clusters.Binder_name.unique():
             ## Clustering coordinates
             ppi_data = self._candidate_clusters.loc[self._candidate_clusters.Binder_name == binder,:]
             ## 
-            self._create_binder_alignments(ppi_data)
-        import pdb;pdb.set_trace()
+            # self._create_binder_alignments(binder, ppi_data)
 
 
 #     def calculate_network(self):
