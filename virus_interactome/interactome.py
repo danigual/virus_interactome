@@ -904,6 +904,9 @@ class InteractomeAnalyzer:
         return candidate_clusters.reset_index()
 
     def _curate_protein_peptide_models(self, ppi_data: pd.DataFrame):
+
+        # here we want to select select filter the peptide 
+        # and to change chain names 
         # mol_list = [Molecule(i) for i in ppi_data.path]
         # plddt = np.array([np.mean(mol.beta) for mol in mol_list])
         # best_idx = np.argmax(plddt)
@@ -992,9 +995,6 @@ class InteractomeAnalyzer:
             # for idx, mol in enumerate(mol_list):
             #     mol.write(f"{output_folder}/{ppi_data.PPI.values[0]}_{ppi_data.model_num.values[idx]}.pdb")
 
-
-
-<<<<<<< HEAD
     def _create_binder_alignments(self, models_to_aligns, reference_model):
     # def _create_binder_alignments(self, binder_name, ppi_data):
         ## Get all models where is binder is the same protein
@@ -1012,18 +1012,6 @@ class InteractomeAnalyzer:
         # reference_mol_path = [p for p in all_structs if "reference" in p][0]
         # # reference_mol_path = filter(lambda x: "reference" in x, all_structs)
         # reference_mol = Molecule(reference_mol_path)
-=======
-    def _create_binder_alignments(self, binder_name, ppi_data):
-        ## Get all models where the binder is the same protein
-        all_structs = []
-        for ppi in ppi_data.PPI.unique():
-            tmp_structs = glob(f"{self.models_path}/*{ppi}/prot_peptide/*pdb")
-            all_structs.extend(tmp_structs)
-        ## We use the first one as default
-        reference_mol_path = [p for p in all_structs if "reference" in p][0]
-        # reference_mol_path = filter(lambda x: "reference" in x, all_structs)
-        reference_mol = Molecule(reference_mol_path)
->>>>>>> 1d7f26458a52bf9f65817d8ded381bd008a9c46d
         
         ## Align all structure to that template
         aligned_models = []
@@ -1042,9 +1030,16 @@ class InteractomeAnalyzer:
             tmp_mol.write(tmp_aligned_path)
         return aligned_models
     
-    def analyze_peptide_proteins_pairs(self):
+    def _get_reference_structure_for_binder(self, all_structs: list[str]) -> str:
+        pass
+
+    def analyze_peptide_proteins_pairs(self, output_path: str = "."):
+        os.makedirs(output_path, exist_ok=True)
         ## Find candidates clusters
         self._candidate_clusters = self._get_candidate_clusters()
+
+        for binder in self._candidate_clusters.Binder_name.unique():
+            os.makedirs(f"{output_path}/{binder}/", exist_ok=True)
 
         df = self._candidate_clusters.loc[:, ["PPI", "model_num", "x_len", "y_len", 
                                               "Binder_name", "Binder_chain", "Binder_start", "Binder_end",
@@ -1056,20 +1051,28 @@ class InteractomeAnalyzer:
         df.loc[: , "PPI"] = df.PPI + "_" +  self._candidate_clusters.cluster_id.astype(str)
         ppis = df.PPI.unique()
         
-        ## I want to iterate over ppi_clusters
-        for ppi in ppis:
-            clean_ppi = ppi[1:] ## Patch, we have a trailing _ at the beggining of the name
-            ppi_data = df.loc[df.PPI == ppi,:]
+        # ## I want to iterate over ppi_clusters
+        # for ppi in ppis:
+        #     clean_ppi = ppi[1:] ## Patch, we have a trailing _ at the beggining of the name
+        #     ppi_data = df.loc[df.PPI == ppi,:]
             # self._curate_protein_peptide_models(ppi_data) ## Temporary comment
 
         ## Iterate over each binder
         for binder in self._candidate_clusters.Binder_name.unique():
-            ## Clustering coordinates
+
             ppi_data = self._candidate_clusters.loc[self._candidate_clusters.Binder_name == binder,:]
             all_structs = []
             for ppi in ppi_data.PPI.unique():
                 tmp_structs = glob(f"{self.models_path}/*{ppi}/prot_peptide/*pdb")
                 all_structs.extend(tmp_structs)
+            
+            ## Get reference structure
+            reference_molecule = self._get_reference_structure_for_binder(all_structs)
+            reference_molecule.write(f"{output_path}/{binder}/reference_{binder}.pdb")
+
+            ## Trimmed bound to peptide limits, align to reference
+            algined_models = self._create_binder_alignments(all_structs, reference_molecule)
+
             ## 
             # self._create_binder_alignments(binder, ppi_data)
             # self._create_binder_alignments should take list of models and reference model
