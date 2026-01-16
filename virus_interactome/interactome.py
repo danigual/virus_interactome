@@ -23,27 +23,7 @@ from .proteome_manager import ProteomeManager
 from .metrics import calculate_all_metrics
 from .plotting import plot_boxplots, plot_iptm_vs_ptm, plot_pae_clusters, plot_paes, plot_plddt
 
-def check_input(seq_list, residue_threshold: int = 5000):
-    total_res = 0
-    if len(seq_list) == 0:
-        return False, "Sequence list cannot be empty."
-    
-    for chain_id, seq, count in seq_list:
-        if count < 1:
-            return False, "Count needs to be at least 1."
-        seq_clean = check_sequence_validity(seq)
-        # _validate_seq(seq_clean, strict=strict)
-        if not seq_clean:
-            return False, f"{chain_id} is not a valid protein sequnce."
-        total_res += len(seq) * count
 
-    if total_res > residue_threshold:
-        msg = (
-            f"Total residues {total_res} exceed recommended maximum ({residue_threshold})."
-        )
-        warnings.warn(msg, category=UserWarning, stacklevel=2)
-    
-    return True, None
 
 class InteractomeWriter:
     def __init__(self, proteome_a: str | ProteomeManager, proteome_b: str | ProteomeManager | None = None):
@@ -252,6 +232,28 @@ class InteractomeWriter:
         ## TODO: write launch scripts for AF3 and Boltz2
 
         return metas
+    @staticmethod
+    def check_input(seq_list, residue_threshold: int = 5000):
+        total_res = 0
+        if len(seq_list) == 0:
+            return False, "Sequence list cannot be empty."
+        
+        for chain_id, seq, count in seq_list:
+            if count < 1:
+                return False, "Count needs to be at least 1."
+            seq_clean = check_sequence_validity(seq)
+            # _validate_seq(seq_clean, strict=strict)
+            if not seq_clean:
+                return False, f"{chain_id} is not a valid protein sequnce."
+            total_res += len(seq) * count
+
+        if total_res > residue_threshold:
+            msg = (
+                f"Total residues {total_res} exceed recommended maximum ({residue_threshold})."
+            )
+            warnings.warn(msg, category=UserWarning, stacklevel=2)
+        
+        return True, None
 
     @staticmethod
     def get_af3_input(seq_list: list, job_name: str = "AF3_job", residue_threshold: int = 5000, save_path: str | None = None):
@@ -279,7 +281,7 @@ class InteractomeWriter:
                 }]
             }
         '''
-        is_good_input, err_msg = check_input(seq_list, residue_threshold=residue_threshold)
+        is_good_input, err_msg = InteractomeWriter.check_input(seq_list, residue_threshold=residue_threshold)
         
         if is_good_input == False:
             raise ValueError(err_msg)
@@ -314,7 +316,7 @@ class InteractomeWriter:
         param save_path : str
             Path to save the job in json format.
         '''
-        is_good_input, err_msg = check_input(seq_list, residue_threshold=residue_threshold)
+        is_good_input, err_msg = InteractomeWriter.check_input(seq_list, residue_threshold=residue_threshold)
       
         if is_good_input == False:
             raise ValueError(err_msg)
@@ -754,8 +756,13 @@ class InteractomeAnalyzer:
         self._cluster_data = None
         self._candidate_clusters = None
         self._models_path = None
+        self._binder_data = None
     
     ## Getters and setters
+    @property
+    def binder_data(self):
+        return self._binder_data
+    
     @property
     def interactome_path(self):
         return self._interactome_path
@@ -817,7 +824,7 @@ class InteractomeAnalyzer:
         return self._cluster_path 
 
     def __str__(self):
-        # Resumen bonito para el usuario
+        # Summary for the user
         interactome_state = self._interactome_path if self._interactome_path is not None else "Interactome path: Empty"
         interactome_len = len(self._interactome_data) if self._interactome_data is not None else 0
         cluster_state = self._cluster_path if self._cluster_path is not None else "Interactome path: Empty"
@@ -839,7 +846,7 @@ class InteractomeAnalyzer:
         ## Plotting the iptm vs ptm
 
         ## Study protein-peptides
-        self._analyze_peptide_proteins_pairs()
+        self.analyze_peptide_proteins_pairs()
     
     def _get_candidate_clusters(self, cluster_ratio_threshold=5, 
                                 min_peptide_len = 5):
@@ -936,27 +943,42 @@ class InteractomeAnalyzer:
         for idx, mol in enumerate(mol_list):
             mol.write(f"{output_folder}/{ppi_data.PPI.values[0]}_{ppi_data.model_num.values[idx]}.pdb")
 
-    def _create_binder_alignments(self, binder_name, ppi_data):
+    def _create_binder_alignments(self, models_to_aligns, reference_model):
+    # def _create_binder_alignments(self, binder_name, ppi_data):
         ## Get all models where is binder is the same protein
-        all_structs = []
-        for ppi in ppi_data.PPI.unique():
-            tmp_structs = glob(f"{self.models_path}/*{ppi}/prot_peptide/*pdb")
-            all_structs.extend(tmp_structs)
-        ## We use the first one as default
-        reference_mol_path = [p for p in all_structs if "reference" in p][0]
-        # reference_mol_path = filter(lambda x: "reference" in x, all_structs)
-        reference_mol = Molecule(reference_mol_path)
+        # all_structs = []
+        # for ppi in ppi_data.PPI.unique():
+        #     tmp_structs = glob(f"{self.models_path}/*{ppi}/prot_peptide/*pdb")
+        #     all_structs.extend(tmp_structs)
+        # ## We use the first one as default
+        if isinstance(reference_model, str):
+            reference_mol = Molecule(reference_model)
+        elif isinstance(reference_model, Molecule):
+            reference_mol = reference_model
+        else:
+            raise ValueError("reference_model should be a path (str) or a Molecule instance")
+        # reference_mol_path = [p for p in all_structs if "reference" in p][0]
+        # # reference_mol_path = filter(lambda x: "reference" in x, all_structs)
+        # reference_mol = Molecule(reference_mol_path)
         
         ## Align all structure to that template
-        for tmp_mol_path in all_structs:
+        aligned_models = []
+        for tmp_mol_path in models_to_aligns:
+            tmp_aligned_path = tmp_mol_path.replace(".pdb", "_toref.pdb")
+            if os.path.exists(tmp_aligned_path):
+                print(f"Alignment for {tmp_mol_path} already exists. Skipping...")
+                aligned_models.append(tmp_aligned_path)
+                continue
             tmp_mol = Molecule(tmp_mol_path)
             tmp_mol.align(f"chain A",
                       refmol=reference_mol,
                       refsel=f"chain A",
                       mode="structure")
-            tmp_mol.write(tmp_mol.topoloc.replace(".pdb", "_toref.pdb"))
+            aligned_models.append(tmp_aligned_path)
+            tmp_mol.write(tmp_aligned_path)
+        return aligned_models
     
-    def _analyze_peptide_proteins_pairs(self):
+    def analyze_peptide_proteins_pairs(self):
         ## Find candidates clusters
         self._candidate_clusters = self._get_candidate_clusters()
 
@@ -976,13 +998,27 @@ class InteractomeAnalyzer:
             ppi_data = df.loc[df.PPI == ppi,:]
             # self._curate_protein_peptide_models(ppi_data) ## Temporary comment
 
-        ## Iterate over binder
+        ## Iterate over each binder
         for binder in self._candidate_clusters.Binder_name.unique():
             ## Clustering coordinates
             ppi_data = self._candidate_clusters.loc[self._candidate_clusters.Binder_name == binder,:]
+            all_structs = []
+            for ppi in ppi_data.PPI.unique():
+                tmp_structs = glob(f"{self.models_path}/*{ppi}/prot_peptide/*pdb")
+                all_structs.extend(tmp_structs)
             ## 
             # self._create_binder_alignments(binder, ppi_data)
+            # self._create_binder_alignments should take list of models and reference model
 
+            ## Skip if output exists
+
+            ## Clustering coordinates
+            self.cluster_protein_peptides(aligned_models)
+
+            ## Write chimerax script
+
+    def cluster_protein_peptides(self, aligned_models: list[str]):
+        pass
 
 #     def calculate_network(self):
 #         pass
