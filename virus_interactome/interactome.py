@@ -886,37 +886,80 @@ class InteractomeAnalyzer:
         candidate_clusters[f"Binder_end"] = binder_end
 
         ## Filter by Binder quality
-        ## for each binder get a df with their metrics 
-        ## like mean_PAE, 
+        ## For each binder get a df with their metrics 
+        ## pLDDT, PAE, minumun number of models per binder? Maybe it is interesting to use the median
+        ## for pLDDT and PAE in order to not be affected by outliers?
+        ## It may algo be interesting to filter within a PPI because we may have not so many models in a binder
+        ## but all of them may correspond to the same PPI.  
 
         return candidate_clusters.reset_index()
 
     def _curate_protein_peptide_models(self, ppi_data: pd.DataFrame):
-        mol_list = [Molecule(i) for i in ppi_data.path]
-        plddt = np.array([np.mean(mol.beta) for mol in mol_list])
-        best_idx = np.argmax(plddt)
+        # mol_list = [Molecule(i) for i in ppi_data.path]
+        # plddt = np.array([np.mean(mol.beta) for mol in mol_list])
+        # best_idx = np.argmax(plddt)
 
-        ## Standarize molecule chains
-        for idx, mol in enumerate(mol_list):
-            if ppi_data.Peptide_chain.values[0] == "A":
-                # break ##Already with the intended naming
+        ## En vez de esto de arriba, hay que definir la referencia por binder no por PPI
+        unique_binders = ppi_data.Binder_name.unique()
+        for binder in unique_binders:
+            ## Just selecting the rows for that binder
+            binder_group = ppi_data[ppi_data['Binder_name'] == binder_name].copy()
+            
+            # Load all molecules from that binder to search the beste
+            mol_list = [Molecule(path) for path in binder_group.path]
+        
+            ## Standarize molecule chains
+            for idx, mol in enumerate(mol_list):
+                
+                peptide_chain_id = binder_group.Peptide_chain.values[idx]
+                
+                if peptide_chain_id == "A":
+                # if ppi_data.Peptide_chain.values[0] == "A":
+                    # break ##Already with the intended naming
 
-                mol.set("chain", "C", "chain A")
-                mol.set("chain", "A", "chain B")  ## chain A is binder
-                mol.set("chain", "B", "chain C") ## chain B is peptide
+                    mol.set("chain", "C", "chain A")
+                    mol.set("chain", "A", "chain B")  ## chain A is binder
+                    mol.set("chain", "B", "chain C") ## chain B is peptide
+
+            ## Calculate pLDDTS just for binder (Chain A)
+            plddt_scores = []
+            for mol in mol_list:
+                ## Select the chain A which is the binder
+                binder_ca = mol.select("chain A")
+                # Calculate the median pLDDT just for the binder
+                score = np.median(binder_ca.getBetas())
+                plddt_scores.append(score)
+            
+            plddt_scores = np.array(plddt_scores)
+
+            # Select the best index for the best binder 
+            best_global_idx = np.argmax(plddt_scores)
+            best_score = plddt_scores[best_global_idx]
+
+            # Define the reference molecule, just one by binder
+            reference_mol = mol_list[best_global_idx].copy()
+            reference_mol.filter("chain A")
+            reference_resids = reference_mol.resid[reference_mol.name == "CA"][reference_mol.beta[reference_mol.name == "CA"]>70]
+            reference_resids = reference_resids.astype(str)
+            reference_resid_str = ' '.join(reference_resids)
+
+            reference_mol.filter(f"resid {reference_resid_str}")
+
 
         ## Get the "best" folded partner    
-        reference_mol = mol_list[best_idx].copy()
-        reference_mol.filter("chain A")
-        reference_resids = reference_mol.resid[reference_mol.name == "CA"][reference_mol.beta[reference_mol.name == "CA"]>70]
-        reference_resids = reference_resids.astype(str)
-        reference_resid_str = ' '.join(reference_resids)
+        # reference_mol = mol_list[best_idx].copy()
+        # reference_mol.filter("chain A")
+        # reference_resids = reference_mol.resid[reference_mol.name == "CA"][reference_mol.beta[reference_mol.name == "CA"]>70]
+        # reference_resids = reference_resids.astype(str)
+        # reference_resid_str = ' '.join(reference_resids)
 
-        reference_mol.filter(f"resid {reference_resid_str}")
+        # reference_mol.filter(f"resid {reference_resid_str}")
 
         for idx, mol in enumerate(mol_list):
             ## Filter to get only the peptide of chain B
-            mol.filter(f"(chain A and resid {reference_resid_str}) or (chain B and resid {ppi_data['Peptide_start'].values[idx] + 1} to {ppi_data['Peptide_end'].values[idx] + 1})")
+            pep_start = binder_group['Peptide_start'].values[idx] + 1
+            pep_end = binder_group['Peptide_end'].values[idx] + 1
+            mol.filter(f"(chain A and resid {reference_resid_str}) or (chain B and resid {pep_start} to {pep_end})")
             # mol.filter(f"(chain A) or (chain B and resid {ppi_data['Peptide_start'].values[idx] + 1} to {ppi_data['Peptide_end'].values[idx] + 1})")
             
             ## We align to the reference structure
@@ -925,17 +968,25 @@ class InteractomeAnalyzer:
             #           refmol=reference_mol,
             #           refsel=f"chain A and name CA")
 
-        ## Saving the filtered molecules
-        output_folder = f"{os.path.dirname(ppi_data.path.values[0])}/prot_peptide/"
-        print(output_folder)
-        os.makedirs(output_folder, exist_ok=True)
-        reference_mol.write(f"{output_folder}/reference.pdb")
+            ## Saving the filtered molecules
+            # output_folder = f"{os.path.dirname(ppi_data.path.values[0])}/prot_peptide/"
+            original_path = binder_group.path.values[idx]
+            output_folder = f"{os.path.dirname(original_path)}/prot_peptide/"
+            print(output_folder)
+            os.makedirs(output_folder, exist_ok=True)
+            # reference_mol.write(f"{output_folder}/reference.pdb")
+            reference_mol.write(f"{output_folder}/reference_{binder_id}.pdb")
+            # Save the filtered model
+            ppi_name = binder_group.PPI.values[idx]
+            model_num = binder_group.model_num.values[idx]
+            
+            # for idx, mol in enumerate(mol_list):
+            #     mol.write(f"{output_folder}/{ppi_data.PPI.values[0]}_{ppi_data.model_num.values[idx]}.pdb")
 
-        for idx, mol in enumerate(mol_list):
-            mol.write(f"{output_folder}/{ppi_data.PPI.values[0]}_{ppi_data.model_num.values[idx]}.pdb")
+
 
     def _create_binder_alignments(self, binder_name, ppi_data):
-        ## Get all models where is binder is the same protein
+        ## Get all models where the binder is the same protein
         all_structs = []
         for ppi in ppi_data.PPI.unique():
             tmp_structs = glob(f"{self.models_path}/*{ppi}/prot_peptide/*pdb")
