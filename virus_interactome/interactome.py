@@ -664,7 +664,9 @@ class InteractomeProcessor:
         return {"PPI": ppi_id, "ORF_A": orf_a, "ORF_B": orf_b, "Folder": dir_name, 
                 "Model_num": model_number, 
                 "ipTM": full_data["iptm"], 
-                "pTM": full_data["ptm"], 
+                "pTM": full_data["ptm"],
+                "pTM_chain_A": full_data.get("iptm_chain_pair")[0][0], 
+                "pTM_chain_B": full_data.get("iptm_chain_pair")[1][1], 
                 # "chain_length_A": np.sum(chain_by_res == "A"), "chain_length_B":np.sum(chain_by_res == "B"), 
                 **all_metrics
                 }, cluster_data

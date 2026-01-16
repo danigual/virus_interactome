@@ -177,6 +177,13 @@ def process_full_data_boltz(mol_file: str,
         chain_boundaries[chain_id] = (np.min(chain_indexes), np.max(chain_indexes))
         chain_boundaries_by_atom[chain_id] = (np.min(atom_chain_indexes), np.max(atom_chain_indexes))
     
+    iptm_by_chain = confidence_data.get("pair_chains_iptm", None)
+    ndim = len(iptm_by_chain)
+    iptm_by_chain_as_list = np.zeros((ndim, ndim))
+    for i in range(len(iptm_by_chain)):
+        for j in range(len(iptm_by_chain)):
+            iptm_by_chain_as_list[i,j] = iptm_by_chain[str(i)].get(str(j), None)
+
     return {"pae": pae_data, 
             "atom_plddts": mol.beta,
             "cb_plddts": plddt_data,
@@ -185,7 +192,8 @@ def process_full_data_boltz(mol_file: str,
             "chain_boundaries_by_atom": chain_boundaries_by_atom,
             "token_chain_ids": chain_by_res,
             "ptm": confidence_data.get("ptm", None),
-            "iptm": confidence_data.get("iptm", None)}
+            "iptm": confidence_data.get("iptm", None),
+            "iptm_chain_pair": iptm_by_chain_as_list}
 
 def process_full_data_af3(mol_file: str,
                           json_path: str | None = None,
@@ -263,6 +271,7 @@ def process_full_data_af3(mol_file: str,
     full_data["pae"] = np.array(full_data["pae"])
     full_data["ptm"] = summary_data["ptm"]
     full_data["iptm"] = summary_data["iptm"]
+    full_data["iptm_chain_pair"] = np.array(summary_data["chain_pair_iptm"])
     full_data["atom_plddts"] = np.array(full_data["atom_plddts"])
     full_data["cb_plddts"] = np.array(cb_plddt)
     full_data["ca_plddts"] = np.array(ca_plddt)

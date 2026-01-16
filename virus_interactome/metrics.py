@@ -305,6 +305,8 @@ def calculate_all_metrics(mol_file, all_metrics):
         "pLDDT_mean": np.mean(plddt_by_residue),
         "pLDDT_mean_A": np.mean(plddt_by_residue[chain_by_res == "A"]),
         "pLDDT_mean_B": np.mean(plddt_by_residue[chain_by_res == "B"]),
+        "pLDDT_median_A": np.median(plddt_by_residue[chain_by_res == "A"]),
+        "pLDDT_median_B": np.median(plddt_by_residue[chain_by_res == "B"]),
         "pae_mean": np.mean(pae),
         "pae_mean_A": np.mean(pae[chain_by_res == "A"][:, chain_by_res == "A"]),
         "pae_mean_B": np.mean(pae[chain_by_res == "B"][:, chain_by_res == "B"]),
