@@ -23,8 +23,6 @@ from .proteome_manager import ProteomeManager
 from .metrics import calculate_all_metrics
 from .plotting import plot_boxplots, plot_iptm_vs_ptm, plot_pae_clusters, plot_paes, plot_plddt
 
-
-
 class InteractomeWriter:
     def __init__(self, proteome_a: str | ProteomeManager, proteome_b: str | ProteomeManager | None = None):
         self.proteome_a = None
@@ -749,7 +747,7 @@ class InteractomeProcessor:
         # plot_iptm_vs_ptm(interactome_df, output_path=output_folder)
 
 class InteractomeAnalyzer:
-    def __init__(self):
+    def __init__(self, output_path = "."):
         self._interactome_path = None
         self._interactome_data = None
         self._cluster_path = None
@@ -757,6 +755,7 @@ class InteractomeAnalyzer:
         self._candidate_clusters = None
         self._models_path = None
         self._binder_data = None
+        self.output_path = output_path
     
     ## Getters and setters
     @property
@@ -843,7 +842,6 @@ class InteractomeAnalyzer:
         return 0
     
     def run_full_pipeline(self):
-        ## Plotting the iptm vs ptm
 
         ## Study protein-peptides
         self.analyze_peptide_proteins_pairs()
@@ -903,189 +901,256 @@ class InteractomeAnalyzer:
 
         return candidate_clusters.reset_index()
 
-    def _curate_protein_peptide_models(self, ppi_data: pd.DataFrame):
 
-        # here we want to select select filter the peptide 
-        # and to change chain names 
-        # mol_list = [Molecule(i) for i in ppi_data.path]
-        # plddt = np.array([np.mean(mol.beta) for mol in mol_list])
-        # best_idx = np.argmax(plddt)
+    def _curate_protein_peptide_models(self, data):
+        mol_path, peptide_chain , peptide_start, peptide_end = data[["path", "Peptide_chain", "Peptide_start", "Peptide_end"]]
 
-        ## En vez de esto de arriba, hay que definir la referencia por binder no por PPI
-        unique_binders = ppi_data.Binder_name.unique()
-        for binder in unique_binders:
-            ## Just selecting the rows for that binder
-            binder_group = ppi_data[ppi_data['Binder_name'] == binder_name].copy()
-            
-            # Load all molecules from that binder to search the beste
-            mol_list = [Molecule(path) for path in binder_group.path]
-        
-            ## Standarize molecule chains
-            for idx, mol in enumerate(mol_list):
+        mol = Molecule(mol_path)
+
+        if peptide_chain == "A":
+            mol.set("chain", "C", "chain A")
+            mol.set("chain", "A", "chain B")  ## chain A is binder
+            mol.set("chain", "B", "chain C") ## chain B is peptide
+
+        mol.filter(f"(chain A) or (chain B and resid {peptide_start} to {peptide_end})")
+        return mol
                 
-                peptide_chain_id = binder_group.Peptide_chain.values[idx]
-                
-                if peptide_chain_id == "A":
-                # if ppi_data.Peptide_chain.values[0] == "A":
-                    # break ##Already with the intended naming
-
-                    mol.set("chain", "C", "chain A")
-                    mol.set("chain", "A", "chain B")  ## chain A is binder
-                    mol.set("chain", "B", "chain C") ## chain B is peptide
-
-            ## Calculate pLDDTS just for binder (Chain A)
-            plddt_scores = []
-            for mol in mol_list:
-                ## Select the chain A which is the binder
-                binder_ca = mol.select("chain A")
-                # Calculate the median pLDDT just for the binder
-                score = np.median(binder_ca.getBetas())
-                plddt_scores.append(score)
-            
-            plddt_scores = np.array(plddt_scores)
-
-            # Select the best index for the best binder 
-            best_global_idx = np.argmax(plddt_scores)
-            best_score = plddt_scores[best_global_idx]
-
-            # Define the reference molecule, just one by binder
-            reference_mol = mol_list[best_global_idx].copy()
-            reference_mol.filter("chain A")
-            reference_resids = reference_mol.resid[reference_mol.name == "CA"][reference_mol.beta[reference_mol.name == "CA"]>70]
-            reference_resids = reference_resids.astype(str)
-            reference_resid_str = ' '.join(reference_resids)
-
-            reference_mol.filter(f"resid {reference_resid_str}")
-
-
-        ## Get the "best" folded partner    
-        # reference_mol = mol_list[best_idx].copy()
-        # reference_mol.filter("chain A")
-        # reference_resids = reference_mol.resid[reference_mol.name == "CA"][reference_mol.beta[reference_mol.name == "CA"]>70]
-        # reference_resids = reference_resids.astype(str)
-        # reference_resid_str = ' '.join(reference_resids)
-
-        # reference_mol.filter(f"resid {reference_resid_str}")
-
-        for idx, mol in enumerate(mol_list):
-            ## Filter to get only the peptide of chain B
-            pep_start = binder_group['Peptide_start'].values[idx] + 1
-            pep_end = binder_group['Peptide_end'].values[idx] + 1
-            mol.filter(f"(chain A and resid {reference_resid_str}) or (chain B and resid {pep_start} to {pep_end})")
-            # mol.filter(f"(chain A) or (chain B and resid {ppi_data['Peptide_start'].values[idx] + 1} to {ppi_data['Peptide_end'].values[idx] + 1})")
-            
-            ## We align to the reference structure
-            ## NOPE; we doe alignment later
-            # mol.align(f"chain A and name CA",
-            #           refmol=reference_mol,
-            #           refsel=f"chain A and name CA")
-
-            ## Saving the filtered molecules
-            # output_folder = f"{os.path.dirname(ppi_data.path.values[0])}/prot_peptide/"
-            original_path = binder_group.path.values[idx]
-            output_folder = f"{os.path.dirname(original_path)}/prot_peptide/"
-            print(output_folder)
-            os.makedirs(output_folder, exist_ok=True)
-            # reference_mol.write(f"{output_folder}/reference.pdb")
-            reference_mol.write(f"{output_folder}/reference_{binder_id}.pdb")
-            # Save the filtered model
-            ppi_name = binder_group.PPI.values[idx]
-            model_num = binder_group.model_num.values[idx]
-            
-            # for idx, mol in enumerate(mol_list):
-            #     mol.write(f"{output_folder}/{ppi_data.PPI.values[0]}_{ppi_data.model_num.values[idx]}.pdb")
-
-    def _create_binder_alignments(self, models_to_aligns, reference_model):
-    # def _create_binder_alignments(self, binder_name, ppi_data):
-        ## Get all models where is binder is the same protein
-        # all_structs = []
-        # for ppi in ppi_data.PPI.unique():
-        #     tmp_structs = glob(f"{self.models_path}/*{ppi}/prot_peptide/*pdb")
-        #     all_structs.extend(tmp_structs)
-        # ## We use the first one as default
+    def _create_binder_alignments(self, model_to_align, reference_model):
+   
         if isinstance(reference_model, str):
             reference_mol = Molecule(reference_model)
         elif isinstance(reference_model, Molecule):
             reference_mol = reference_model
         else:
             raise ValueError("reference_model should be a path (str) or a Molecule instance")
-        # reference_mol_path = [p for p in all_structs if "reference" in p][0]
-        # # reference_mol_path = filter(lambda x: "reference" in x, all_structs)
-        # reference_mol = Molecule(reference_mol_path)
-        
-        ## Align all structure to that template
-        aligned_models = []
-        for tmp_mol_path in models_to_aligns:
-            tmp_aligned_path = tmp_mol_path.replace(".pdb", "_toref.pdb")
-            if os.path.exists(tmp_aligned_path):
-                print(f"Alignment for {tmp_mol_path} already exists. Skipping...")
-                aligned_models.append(tmp_aligned_path)
-                continue
-            tmp_mol = Molecule(tmp_mol_path)
-            tmp_mol.align(f"chain A",
-                      refmol=reference_mol,
-                      refsel=f"chain A",
-                      mode="structure")
-            aligned_models.append(tmp_aligned_path)
-            tmp_mol.write(tmp_aligned_path)
-        return aligned_models
+        residues_in_reference_chain = reference_mol.resid.astype(str)
+        reference_resid_str = ' '.join(residues_in_reference_chain)
+
+        tmp_mol = Molecule(model_to_align)
+        tmp_mol.filter(f"(chain A and resid {reference_resid_str}) or (chain B)")
+        tmp_mol.align(f"chain A",
+                    refmol=reference_mol,
+                    refsel=f"chain A",
+                    mode="index"
+                    )
+        return tmp_mol
     
     def _get_reference_structure_for_binder(self, all_structs: list[str]) -> str:
-        pass
+        mol_list = [ Molecule(i) for i in all_structs]
+        plddt_scores = []
+        for mol in mol_list:
+            ## Select the chain A which is the binder
+            plddt_chain_A = mol.beta[mol.chain == "A"]
+            # Calculate the median pLDDT just for the binder
+            score = np.median(plddt_chain_A)
+            plddt_scores.append(score)
+        
+        plddt_scores = np.array(plddt_scores)
 
-    def analyze_peptide_proteins_pairs(self, output_path: str = "."):
+        # Select the best index for the best binder 
+        best_global_idx = np.argmax(plddt_scores)
+        # best_global_idx = np.argmin(plddt_scores)
+
+        # Define the reference molecule, just one by binder
+        reference_mol = mol_list[best_global_idx].copy()
+        reference_mol.filter("chain A")
+        reference_resids = reference_mol.resid[reference_mol.name == "CA"][reference_mol.beta[reference_mol.name == "CA"]>70]
+        reference_resids = reference_resids.astype(str)
+        reference_resid_str = ' '.join(reference_resids)
+
+        reference_mol.filter(f"resid {reference_resid_str}")
+        return reference_mol
+
+    def analyze_peptide_proteins_pairs(self, **kwargs):
+        output_path = f"{self.output_path}/prot_peptide"
         os.makedirs(output_path, exist_ok=True)
         ## Find candidates clusters
         self._candidate_clusters = self._get_candidate_clusters()
 
         for binder in self._candidate_clusters.Binder_name.unique():
             os.makedirs(f"{output_path}/{binder}/", exist_ok=True)
+            os.makedirs(f"{output_path}/{binder}/filtered/", exist_ok=True)
+            os.makedirs(f"{output_path}/{binder}/aligned/", exist_ok=True)
 
         df = self._candidate_clusters.loc[:, ["PPI", "model_num", "x_len", "y_len", 
                                               "Binder_name", "Binder_chain", "Binder_start", "Binder_end",
                                               "Peptide_name", "Peptide_chain", 
                                              "Peptide_start", "Peptide_end",  "path"]]
         
-        ## This will be removed... but we will have to handle it somehow
-        # df.loc[: , "path"] = df.path.str.replace("/media/DATA/ppi_data/", "/home/daniel/ppi_data_remote/")
-        df.loc[: , "PPI"] = df.PPI + "_" +  self._candidate_clusters.cluster_id.astype(str)
-        ppis = df.PPI.unique()
+        df.loc[: , "PPI"] = df.PPI + "_" +  self._candidate_clusters.model_num.astype(str) + "_" + self._candidate_clusters.cluster_id.astype(str)
         
-        # ## I want to iterate over ppi_clusters
-        # for ppi in ppis:
-        #     clean_ppi = ppi[1:] ## Patch, we have a trailing _ at the beggining of the name
-        #     ppi_data = df.loc[df.PPI == ppi,:]
-            # self._curate_protein_peptide_models(ppi_data) ## Temporary comment
-
+        ## I want to filter all structures
+        filtered_names = []
+        for idx, row in df.iterrows():
+            output_name = f"{output_path}/{row.Binder_name}/filtered/{row.PPI}.pdb"
+            filtered_names.append(output_name)
+            if not os.path.exists(output_name):
+                mol = self._curate_protein_peptide_models(row)
+                mol.write(output_name)
+            else:
+                print(f"Skiping {output_name}, already_filtered...")
+        df.loc[:, "filtered_path"] = filtered_names
         ## Iterate over each binder
+        binder_df = pd.DataFrame()
         for binder in self._candidate_clusters.Binder_name.unique():
 
-            ppi_data = self._candidate_clusters.loc[self._candidate_clusters.Binder_name == binder,:]
-            all_structs = []
-            for ppi in ppi_data.PPI.unique():
-                tmp_structs = glob(f"{self.models_path}/*{ppi}/prot_peptide/*pdb")
-                all_structs.extend(tmp_structs)
+            ppi_data = df.loc[self._candidate_clusters.Binder_name == binder,:]
+           
+            all_structs = ppi_data.filtered_path.values
             
             ## Get reference structure
-            reference_molecule = self._get_reference_structure_for_binder(all_structs)
-            reference_molecule.write(f"{output_path}/{binder}/reference_{binder}.pdb")
+            reference_output_name = f"{output_path}/{binder}/reference_{binder}.pdb"
+            if not os.path.exists(reference_output_name):
+                reference_molecule = self._get_reference_structure_for_binder(all_structs)
+                reference_molecule.write(reference_output_name)
+            else:
+                reference_molecule = Molecule(reference_output_name)
+                print(f"Skiping {reference_output_name}, already_filtered...")
 
-            ## Trimmed bound to peptide limits, align to reference
-            algined_models = self._create_binder_alignments(all_structs, reference_molecule)
-
-            ## 
-            # self._create_binder_alignments(binder, ppi_data)
-            # self._create_binder_alignments should take list of models and reference model
-
-            ## Skip if output exists
+            aligned_models = []
+            for tmp_mol_name in all_structs:
+                tmp_mol_name_aligned = tmp_mol_name.replace("filtered", "aligned")
+                if not os.path.exists(tmp_mol_name_aligned):
+                    tmp_mol = self._create_binder_alignments(tmp_mol_name, reference_molecule)
+                    tmp_mol.write(tmp_mol_name_aligned)
+                else:
+                    print(f"Skiping {tmp_mol_name_aligned}, already_filtered...")
+                aligned_models.append(tmp_mol_name_aligned)
 
             ## Clustering coordinates
-            self.cluster_protein_peptides(aligned_models)
+            tmp_df, cluster_info = self.cluster_protein_peptides(aligned_models, reference_output_name, **kwargs)
+            tmp_df.insert(0, "Binder", binder)
+            binder_df = pd.concat([binder_df, tmp_df], ignore_index=True)
 
             ## Write chimerax script
+            ppi_data.loc[:, "Cluster_info"] = cluster_info.get("cluster_labels")
+            peptide_centers = cluster_info.get("peptide_centers")
+            ppi_data.loc[:, "Center_X"] = peptide_centers[:,0]
+            ppi_data.loc[:, "Center_Y"] = peptide_centers[:,1]
+            ppi_data.loc[:, "Center_Z"] = peptide_centers[:,2] 
+            self._create_chimera_session(ppi_data, reference_output_name, tmp_df)
+        binder_df.to_csv(f"{self.output_path}/peptide_binder_info.csv", index=False)
 
-    def cluster_protein_peptides(self, aligned_models: list[str]):
-        pass
+    def _create_chimera_session(self, ppi_data, ref_model, cluster_info):
+        binder = ppi_data.Binder_name.values[0]
+        script_path = f"{self.output_path}/prot_peptide/{binder}/{binder}_peptide_binding.cxc"
+        session_path = f"{self.output_path}/prot_peptide/{binder}/{binder}_peptide_binding.cxs" 
+        available_colors = ["cyan", "yellow", "magenta", "orange", "cornflower blue"]
+        available_colors_ref = ["light coral", "medium slate blue", "orange", "green", "red", "yellow"]
+        with open(script_path, "w") as f:
+            ## Load reference_model and rename
+            f.write("graphics silhouettes true\n") 
+            f.write("lighting soft\n") 
+            f.write("set bg white\n") 
+
+            ## Load reference   
+            f.write(f"\n# --- {binder} REFERENCE ---\n")
+            f.write(f"open {ref_model}\n")
+            f.write(f"rename #1 {binder}_ref\n")
+
+            ## Color ref residues
+            for idx, cluster_data in cluster_info.iterrows():
+                cluster_id = cluster_data.Cluster_label
+                if cluster_id == -1:
+                    continue # We don't paint the orf resids which are nearby the noise
+                # tmp_sel_str = paint_orf_res_chimerax(resids_list=resids_list)
+                tmp_sel_str = ",".join(map(str, cluster_data.Residues))
+                color_index = cluster_id % len(available_colors_ref)
+                color_str = available_colors_ref[color_index]
+                f.write(f"color #1:{tmp_sel_str} {color_str}\n") 
+
+                ## Draw centroid sphere
+                super_id = f"#5.{cluster_id + 1}"
+                global_center_str = f"{cluster_data.Center_X},{cluster_data.Center_Y},{cluster_data.Center_Z}"
+                f.write(f"shape sphere name Centroid_{cluster_id+1}_Mean radius 3 center {global_center_str} color {color_str} model {super_id} \n")
+             
+            ## Load peptide_proteins and rename
+            aligned_models = ppi_data.filtered_path.str.replace("filtered", "aligned")
+            ppi_data.loc[:, "aligned_path"] = aligned_models
+            for tmp_cluster in ppi_data.Cluster_info.unique():
+                current_sub_id = tmp_cluster + 2
+                if tmp_cluster == -1:
+                    color_str = "silver"
+                    group_name = "Unclassified"
+                else:
+                    color_idx = tmp_cluster % len(available_colors) ## Save index in order to not have IndexError
+                    color_str = available_colors[color_idx]
+                    group_name = f"Cluster_{tmp_cluster + 1}"
+
+                models_in_cluster = ppi_data.loc[ ppi_data.Cluster_info == tmp_cluster, :]
+                for i, (idx, row) in enumerate(models_in_cluster.iterrows()):
+            
+                    ## Usamos i porque idx viene del df padre y no tiene por que ir en orden puedes tener 1,5,39....
+                    pep_id = f"#3.{current_sub_id}.{i + 1}" # model #3 for peptides
+                    cen_id = f"#4.{current_sub_id}.{i + 1}" # model #4 for centroids
+                    # Open peptide 
+                    f.write(f"open {row.aligned_path} id {pep_id}\n")
+                    if tmp_cluster == -1:
+                        model_name = f"{row.PPI}_unclassified"    
+                    else:
+                        # Rename peptide
+                        model_name = f"{row.PPI}_c{current_sub_id}"
+                    
+                    f.write(f"rename {pep_id} {model_name}\n")
+                    f.write(f"color {pep_id} {color_str}\n")
+                    centroid_str = f"{row.Center_X},{row.Center_Y},{row.Center_Z}"
+                    f.write(f"shape sphere name {model_name} radius 1 center {centroid_str} color {color_str} model {cen_id}\n")
+                f.write(f"rename #3.{current_sub_id} {group_name}\n")
+                f.write(f"rename #4.{current_sub_id} {group_name}_Center_of_mass\n")   
+
+            
+            ## Draw sphere in cluster centroid and rename
+            f.write(f"lighting depthCue false\n")
+            f.write(f"rename #3 Peptides\n")
+            f.write(f"hide #3/A cartoon\n") # From the peptides we hide the chain A which is the chain of the ORF
+            f.write(f"hide atoms\n")
+            f.write(f"rename #4 Peptide_centers\n")
+            # f.write(f"rename #5 Centroids\n")
+            f.write(f"save {session_path}\n")
+            f.write(f"exit\n")
+        os.system(f"chimerax --nogui {script_path}") ##--nogui 
+    
+    def cluster_protein_peptides(self, aligned_models: list[str], reference_model: Molecule | str, **kwargs):
+        ## Load molecules
+        mols = [Molecule(i) for i in aligned_models]
+        if isinstance(reference_model, str):
+            ref_mol = Molecule(reference_model)
+        elif isinstance(reference_model, Molecule):
+            ref_mol = reference_model
+        xyz = ref_mol.get("coords", sel="protein")
+        
+        ## get x, y, z means of coords
+        
+        mols_centroids = np.array([tmp_mol.get("coords", sel="chain B and name CA").mean(axis=0) for tmp_mol in mols])
+
+        ## Cluster with DBSCAN
+        clustering = DBSCAN(**kwargs).fit(mols_centroids)
+        
+        cluster_labels = []
+        cluster_centers = []
+        all_nearby_residues = []
+        for cluster_label in np.unique(clustering.labels_):
+            cluster_labels.append(cluster_label)
+            cluster_center = mols_centroids[clustering.labels_ == cluster_label].mean(axis=0)
+            cluster_centers.append(cluster_center)
+
+            ## Calculate residues involved in the binding site
+            tmp_centroid_distance = xyz - cluster_center
+        
+            # Euclidian distance from the ORF residues to the centroid of the currentcluster 
+            tmp_euc = np.linalg.norm(tmp_centroid_distance, axis = 1)
+            nearby_residues = np.unique(ref_mol.resid[tmp_euc < 8])
+            all_nearby_residues.append(nearby_residues)
+
+        cluster_centers = np.array(cluster_centers)
+        return pd.DataFrame({
+            "Cluster_label": cluster_labels,
+            "Center_X": cluster_centers[:, 0],
+            "Center_Y": cluster_centers[:, 1],
+            "Center_Z": cluster_centers[:, 2],
+            "Residues": all_nearby_residues
+        }), {"cluster_labels": clustering.labels_, 
+             "peptide_centers": mols_centroids}
 
 #     def calculate_network(self):
 #         pass

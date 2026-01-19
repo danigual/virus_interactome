@@ -44,6 +44,9 @@ class ProteomeManager:
         if fasta_file:
             self.load_proteome(fasta_file)
 
+        ## TODO: hacer un setter the fasta_file para que lo cargue
+        ## TODO: store duplicated ids
+        ## TODO: check duplicated ids in tests
 
     @property
     def ids(self) -> Tuple[str, ...]:

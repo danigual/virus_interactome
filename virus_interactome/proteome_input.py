@@ -1,12 +1,17 @@
-from itertools import combinations
 import warnings
 import os
+import yaml
+import string
 import json
+
+from itertools import combinations
+from typing import List
 from typing import Union
 from pathlib import Path
 from Bio import SeqIO
 
-def load_proteome (fasta_file:str): ## Moving this to proteome_input
+
+def load_proteome (fasta_file:str):
     """
     Loads a FASTA file and extracts protein sequences into a dictionary.
 
@@ -48,14 +53,45 @@ def load_proteome (fasta_file:str): ## Moving this to proteome_input
         proteome_dict[short_id] = sequence
     return proteome_dict
 
-def create_boltz_input_yaml(seq_list, output_path):
-    ## seq_lit array of sequences
+def create_boltz_input_yaml(seq_list: List[str], output_path: str)-> None:
+    """
+    Generates a YAML input file for Boltz interaction modeling.
 
-    import yaml
-    id_list = "ABCDEFGHIJKLMNOPQRSTUVXYZ"
+    This function accepts a list of amino acid sequences, maps them automatically
+    to single-letter chain IDs (from 'A' to 'Z'), and writes the configuration
+    to a version 1 Boltz YAML file.
+
+    Parameters
+    ----------
+    seq_list : List[str]
+        A list of strings, where each string is an amino acid sequence.
+        Example: ['METAA...', 'MKLY...']. 
+        Note: Do not pass protein names here, only sequences.
+    output_path : str
+        The full file path (including .yaml extension) where the output will be saved.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        If the number of sequences in 'seq_list' exceeds the available chain IDs
+        (currently limited to the characters in the internal id_list).
+    """
+
+    id_list = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+    if len(seq_list) > len(id_list):
+            raise ValueError(
+                f"Too many sequences provided ({len(seq_list)}). "
+                f"This function currently supports a maximum of {len(id_list)} chains."
+            )
+
     seqs2yaml = []
-    for idx, i in enumerate(seq_list):
-        seqs2yaml.append({"protein": {"id": id_list[idx], "sequence": i}})
+    for idx, sequence in enumerate(seq_list):
+        seqs2yaml.append({"protein": {"id": id_list[idx], "sequence": sequence}})
 
     data = {
         "version": 1,
@@ -65,24 +101,11 @@ def create_boltz_input_yaml(seq_list, output_path):
     with open(output_path, 'w') as outfile:
         yaml.dump(data, outfile, default_flow_style=False)
 
-# def create_boltz_input_yaml(seq_list, proteome_dict, output_path):
-#     ## seq_lit array of sequences
 
-#     import yaml
-#     id_list = "ABCDEFGHIJKLMNOPQRSTUVXYZ"
-#     seqs2yaml = []
-#     for idx, i in enumerate(seq_list):
-#         seqs2yaml.append({"protein": {"id": id_list[idx], "sequence": proteome_dict[i]}})
-
-#     data = {
-#         "version": 1,
-#         "sequences": seqs2yaml
-#     }
-
-#     with open(output_path, 'w') as outfile:
-#         yaml.dump(data, outfile, default_flow_style=False)
 
 def write_interactome_boltz_yaml(proteome:Union[str, dict], outputdir:str):
+    ## It's a function which will be interesting to refactor as we may like to use yield. 
+    ## We also may want to have homo-mers as this function is only for heterodimers
     """
     Generates YAML files for all pairwise ORF combinations in a proteome for Boltzmann input.
 
@@ -108,7 +131,7 @@ def write_interactome_boltz_yaml(proteome:Union[str, dict], outputdir:str):
   
     for orf1, orf2 in orf_combinations:
         output_path = os.path.join(outputdir, f"{orf1}__{orf2}.yaml")
-        create_boltz_input_yaml([orf1, orf2], proteome_dict, output_path)
+        create_boltz_input_yaml([orf1, orf2], proteome_dict, output_path) ## There is an incosistency here because we give 3 parameters to a function that receives 2
 
 def create_af3_input_json_v2(*args, proteome_dict:dict, prefix=None, suffix=None):
     orf_list = []
@@ -165,7 +188,7 @@ def create_af3_input_json_v2(*args, proteome_dict:dict, prefix=None, suffix=None
 
 
 def proteome_json (proteome_dict: dict, outputdir:str, batch_size=30):
-    
+    #### ESTA FUNCIÓN DEBE DESAPARECER. ES REDUDANTE. YA ESTA LA VERSIÓN CON LOS GENERATORS
     """
     Generates JSON files containing pairwise ORF combinations for AlphaFold3 input.
 
