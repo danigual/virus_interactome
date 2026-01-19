@@ -1,5 +1,6 @@
+import os
 
-def change_id_proteome (inputpath, outputpath):
+def change_id_proteome (inputpath: str, outputpath: str)-> None:
     
   """
   Cleans and reformats a proteome file by extracting and modifying protein identifiers.
@@ -23,22 +24,23 @@ def change_id_proteome (inputpath, outputpath):
   ------
   FileNotFoundError
       If the input file does not exist.
-  ValueError
-      If the protein name cannot be extracted from a header line.
-  """
 
+  """
+  if not os.path.exists(inputpath):
+    raise FileNotFoundError(f"Input file not found: {inputpath}")
+    
   with open (inputpath,'r') as inputfile:
+    
     with open (outputpath,'w') as outputfile:
-      #Buscar linea que comience con >
+      
       for line in inputfile:
         if line.startswith('>'):
-          #Encontrar la primera ocurrencia de proteina = 'nombre  
-          # de la proteina' y extraer el nombre de la proteina
+          
           start = line.find('protein=')
           if start != -1:
             end = line.find(']', start)
-            protein_id = line[start+8:end].replace(' ','_').replace('.','_').replace('/','_').replace('.','_')
-            #import pdb; pdb.set_trace()
+            protein_id = line[start+8:end].replace(' ','_').replace('.','_').replace('/','_')
+            
             newline = f">{protein_id}|{line[1:]}"
             outputfile.write(newline)
 
