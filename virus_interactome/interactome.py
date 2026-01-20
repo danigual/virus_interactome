@@ -12,19 +12,45 @@ from glob import glob
 from sklearn.cluster import DBSCAN
 from functools import partial
 from itertools import combinations, product
-from typing import Dict, Iterable, List, Tuple, Optional
+from typing import Dict, Iterable, List, Tuple, Optional, Any
 from pathlib import Path
 from moleculekit.molecule import Molecule
 
 from .utils import load_json, load_boltz_input, check_sequence_validity, process_full_data_af3, process_full_data_boltz
 from .proteome_manager import ProteomeManager
-# from .proteome_utils import cluster_pae
-# from .molecule import MoleculeModel
 from .metrics import calculate_all_metrics
 from .plotting import plot_boxplots, plot_iptm_vs_ptm, plot_pae_clusters, plot_paes, plot_plddt
 
 class InteractomeWriter:
+    """
+    Manages the configuration and writing of interactome data.
+
+    This class initializes the environment to analyze interactions within a single
+    proteome (intra) or between two different proteomes (inter). It normalizes the
+    input by converting file paths (str) into ProteomeManager instances.
+
+    Attributes:
+        proteome_a (ProteomeManager): Instance of the first managed proteome.
+        proteome_b (Optional[ProteomeManager]): Instance of the second proteome (if any).
+        mode (str): The operation mode detected; can be "intra" or "inter".
+    """
     def __init__(self, proteome_a: str | ProteomeManager, proteome_b: str | ProteomeManager | None = None):
+
+        """
+        Initializes a new instance of InteractomeWriter.
+
+        Args:
+            proteome_a (str | ProteomeManager): Path to the first proteome file or 
+                an existing ProteomeManager instance. This is mandatory.
+            proteome_b (str | ProteomeManager | None, optional): Path or instance of the 
+                second proteome. If omitted or None, the mode is automatically set 
+                to "intra". Defaults to None.
+
+        Raises:
+            ValueError: If `proteome_a` is neither a string path nor a ProteomeManager 
+                instance.
+        """
+
         self.proteome_a = None
         self.proteome_b = None
         self.mode = "intra" # intra (intrainteractome) or inter (interactome between two proteomes)
@@ -45,47 +71,98 @@ class InteractomeWriter:
         else:
             self.mode = "intra"
         
-        # self.job_info = self.check_run()
     
-    def generate_intra_pairs(self):
+    def generate_intra_pairs(self) -> Iterable[Tuple[str, str]]:
         """
-        Generate unordered heteromeric pairs (A,B) with A != B from proteome A.
-        No homomers are included here; for homomers use `generate_homo_pairs()`.
-        Order is canonical (i < j) to avoid duplicates.
+        Generates unique, unordered heteromeric pairs within Proteome A.
+
+        This method creates combinations of sequences (A, B) where A and B belong 
+        to Proteome A and A != B. This is used for calculating the intra-interactome.
+        
+        Note:
+            - Homomers (A, A) are excluded. Use `generate_homo_pairs()` for those.
+            - The order is canonical (based on the list order) to prevent duplicates 
+              (i.e., (A, B) is generated, but (B, A) is not).
+
+        Returns:
+            Iterable[Tuple[str, str]]: An iterator of tuples, where each tuple 
+            contains two distinct sequence IDs from Proteome A.
+
+        Raises:
+            ValueError: If the instance is not in valid usage (e.g., Proteome A is missing).
         """
 
-        if self.mode != "inter" or self.proteome_b is None:
-            raise ValueError("generate_inter_pairs() requires 'inter' mode with a valid proteome_b.")
+        # if self.mode != "inter" or self.proteome_b is None:
+        #     raise ValueError("generate_inter_pairs() requires 'inter' mode with a valid proteome_b.")
+        if self.proteome_a is None:
+             raise ValueError("generate_intra_pairs() requires a valid proteome_a.")
 
         ids = list(self.proteome_a.sequences.keys())
-        # Unique unordered pairs without self-pairs
+
         return combinations(ids, 2)
 
-    def generate_inter_pairs(self):
+    def generate_inter_pairs(self)-> Iterable[Tuple[str, str]]:
         """
-        Generate the full cartesian product between proteome A and proteome B.
-        Requires 'inter' mode (i.e., proteome_b is provided).
+        Generates the Cartesian product of sequences between Proteome A and Proteome B.
+
+        This method produces all possible pairs (a, b) where 'a' belongs to Proteome A 
+        and 'b' belongs to Proteome B. This is the standard approach for analyzing 
+        inter-species or inter-system interactions.
+
+        Returns:
+            Iterable[Tuple[str, str]]: An iterator yielding tuples (id_a, id_b), 
+            representing the interaction candidates.
+
+        Raises:
+            ValueError: If the instance is not in 'inter' mode or if `proteome_b` 
+            has not been initialized.
         """
+
+        # Ensure we are in the correct mode to prevent generating invalid data
         if self.mode != "inter" or self.proteome_b is None:
             raise ValueError("generate_inter_pairs() requires 'inter' mode with a valid proteome_b.")
+        
+       
         ids_a = list(self.proteome_a.sequences.keys())
         ids_b = list(self.proteome_b.sequences.keys())
+
         return product(ids_a, ids_b)
 
-    def generate_homo_mers(self, nmin=2, nmax=6):
+    def generate_homo_mers(self, nmin: int = 2, nmax: int = 6)-> Iterable[Tuple[str, int]]:
         """
-        Only to be used in the "intra" mode
+        Generates homomeric configurations (oligomers) for sequences in Proteome A.
+
+        This method iterates through all sequences in the proteome and defines
+        oligomeric states ranging from 'nmin' to 'nmax' copies.
         
-        :param nmin: Minimun number of copies
-        :param nmax: Maximun number of copies
+        Note:
+            This is strictly for the 'intra' mode. Homomers generally do not make 
+            sense in an 'inter' context (interactions between two different datasets) 
+            within this pipeline.
+
+        Args:
+            nmin (int, optional): Minimum number of copies (oligomer size). 
+                Must be >= 2. Defaults to 2.
+            nmax (int, optional): Maximum number of copies. 
+                Must be >= nmin. Defaults to 6.
+
+        Yields:
+            Iterable[Tuple[str, int]]: An iterator yielding tuples in the format 
+            (protein_id, num_copies).
+
+        Raises:
+            ValueError: If called in 'inter' mode.
+            ValueError: If 'nmin' < 2 (single copies should use `generate_single_run`).
+            ValueError: If 'nmax' is less than `nmin` (invalid range).
         """
+
         if self.mode == "inter":
             raise ValueError("Homo mers can only be computed in 'intra' mode.")
         if nmin < 2:
-            raise ValueError("nmin can not be lower than 2. If you want just 1 copie use the generate_single_run method")
+            raise ValueError("nmin can not be lower than 2. If you want just 1 copy use the generate_single_run method")
         
         if nmax < nmin:
-            raise ValueError("nmax should be lower than nmin")
+            raise ValueError(f"nmax ({nmax}) must be greater than or equal to nmin ({nmin}).")
         ids_a = list(self.proteome_a.sequences.keys())
 
         for tmp_protein_id in ids_a:
@@ -94,37 +171,66 @@ class InteractomeWriter:
      
     def generate_single_run(
         self,
-        source: str = "a",  # 'a' | 'b' | 'both'
+        source: str = "a",
         ids_a: Optional[List[str]] = None,
         ids_b: Optional[List[str]] = None
     ) -> Iterable[Tuple[str, str, int]]:
+        
         """
-        Single-protein jobs: yields (id, sequence, count=1).
-        - source='a' -> proteome A
-        - source='b' -> proteome B (requires inter mode)
-        - source='both' -> A then B (if available)
-        """
-        if source not in {"a", "b", "both"}:
-            raise ValueError("source must be 'a', 'b', or 'both'.")
+        Generates jobs for single protein folding (monomers).
 
-        if source in {"a", "both"}:
-            for pid in (ids_a or self.proteome_a.ids):
-                yield (pid, self.proteome_a.sequences[pid], 1)
+        This method yields sequences for individual proteins (stoichiometry = 1).
+        It allows selecting specific subsets of IDs via 'ids_a' or 'ids_b'.
+
+        Args:
+            source (str, optional): The source proteome(s) to process.
+                - 'a': Only Proteome A.
+                - 'b': Only Proteome B (requires 'inter' mode).
+                - 'both': Proteome A followed by Proteome B.
+                Defaults to "a".
+            ids_a (Optional[List[str]], optional): A specific list of IDs from Proteome A 
+                to process. If None, processes all sequences in A. Defaults to None.
+            ids_b (Optional[List[str]], optional): A specific list of IDs from Proteome B 
+                to process. If None, processes all sequences in B. Defaults to None.
+
+        Yields:
+            Iterable[Tuple[str, str, int]]: An iterator yielding tuples in the format 
+            (protein_id, sequence_string, copy_count=1).
+
+        Raises:
+            ValueError: If 'source' is not one of 'a', 'b', or 'both'.
+            ValueError: If 'source' includes 'b' but the instance is not in 'inter' mode.
+        """
+
+        valid_sources = {"a", "b", "both"}
+        if source not in valid_sources:
+            raise ValueError(f"source must be one of {valid_sources}")
 
         if source in {"b", "both"}:
             if self.mode != "inter" or self.proteome_b is None:
                 raise ValueError("source='b' or 'both' requires 'inter' mode with a proteome_b.")
+        
+        if source in {"a", "both"}:
+            target_ids = ids_a if ids_a is not None else self.proteome_a.ids
+
+            for pid in target_ids:
+                yield (pid, self.proteome_a.sequences[pid], 1)
+
+        if source in {"b", "both"}:
+            target_ids = ids_b if ids_b is not None else self.proteome_b.ids
+
             for pid in (ids_b or self.proteome_b.ids):
                 yield (pid, self.proteome_b.sequences[pid], 1)
 
     def write_interactome_jobs(
         self,
-        engine: str,  # 'af3' | 'boltz2'
+        engine: str,
         output_dir: str,
         *,
-        mode: str = "intra_pairs",    # 'intra_pairs' | 'inter_pairs' | 'homomers' | 'single'
-        include_homo: bool = False,   # optional for intra_pairs (if you want to fold homomers later)
-        nmin: int = 2, nmax: int = 6, # for homomers
+        mode: str = "intra_pairs", 
+        include_homo: bool = False,
+        nmin: int = 2, 
+        nmax: int = 6,
         counts_map: Optional[Dict[str, int]] = None,
         ids_a: Optional[List[str]] = None,
         ids_b: Optional[List[str]] = None,
@@ -136,84 +242,179 @@ class InteractomeWriter:
         index_name: str = "index.csv",
     ) -> List[dict]:
         """
-        Orchestrate job creation and file writing for different generation modes.
-        Returns a list of metadata dicts (one per attempted job).
-        """
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        ext = "json" if engine.lower() == "af3" else "yaml" if engine.lower() == "boltz2" else None
-        if ext is None:
-            raise ValueError("engine must be 'af3' or 'boltz2'")
+        Orchestrates the creation of input files (jobs) for protein folding engines.
 
-        # Select generator:
-        if mode == "intra_pairs":
-            pairs = self.generate_intra_pairs(ids_a=ids_a)  # (idA, idB)
-            iterator = (("pair", p) for p in pairs)
-        elif mode == "inter_pairs":
-            pairs = self.generate_inter_pairs(ids_a=ids_a, ids_b=ids_b)  # (idA, idB)
-            iterator = (("pair", p) for p in pairs)
-        elif mode == "homomers":
-            homes = self.generate_homo_mers(nmin=nmin, nmax=nmax)  # (id, copies)
-            iterator = (("homo", h) for h in homes)
-        elif mode == "single":
-            singles = self.generate_single_run(source="both" if self.mode == "inter" else "a",
-                                            ids_a=ids_a, ids_b=ids_b)  # (id, seq, 1)
-            iterator = (("single", s) for s in singles)
+        This method generates the necessary combinations (pairs, homomers, or monomers),
+        validates sequence lengths against engine limits, writes the specific JSON/YAML 
+        input files, and logs the metadata to a CSV index.
+
+        Args:
+            engine (str): The target folding engine. Options: 'af3' (AlphaFold 3) or 'boltz2'.
+            output_dir (str): Directory where input files and the index CSV will be saved.
+            mode (str, optional): Generation strategy. 
+                Options: 'intra_pairs', 'inter_pairs', 'homomers', 'single'. 
+                Defaults to "intra_pairs".
+            include_homo (bool, optional): [Reserved] If True, may include homomers in pair runs. 
+                Currently unused. Defaults to False.
+            nmin (int, optional): Minimum stoichiometry for homomers. Defaults to 2.
+            nmax (int, optional): Maximum stoichiometry for homomers. Defaults to 6.
+            counts_map (Optional[Dict[str, int]], optional): Custom stoichiometry override per ID. 
+                Defaults to None (1 copy).
+            ids_a (Optional[List[str]], optional): Filter specific IDs for Proteome A.
+            ids_b (Optional[List[str]], optional): Filter specific IDs for Proteome B.
+            af3_threshold (int, optional): Max total residues allowed for AF3. Defaults to 5000.
+            af3_batch_size (int, optional): [Reserved] Batch size for JSON grouping. Defaults to 30.
+            boltz_threshold (int, optional): Max total residues allowed for Boltz. Defaults to 1600.
+            skip_over_threshold (bool, optional): If True, files exceeding the residue 
+                threshold are not written to disk. Defaults to False.
+            filename_fmt (str, optional): F-string format for output filenames. 
+                Defaults to "{engine}_{name}.{ext}".
+            index_name (str, optional): Name of the metadata CSV file. Defaults to "index.csv".
+
+        Returns:
+            List[dict]: A list of metadata dictionaries representing every job processed 
+            (including skipped ones).
+
+        Raises:
+            ValueError: If 'engine' is not 'af3' or 'boltz2'.
+            ValueError: If 'mode' is unknown.
+            RuntimeError: If the iterator yields an unexpected data structure.
+        """
+
+        # 1. Setup Environment
+        out_path = Path(output_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+
+        engine_lower = engine.lower()
+        if engine_lower == "af3":
+            ext = "json"
+            residue_threshold = af3_threshold
+        elif engine_lower == "boltz2":
+            ext = "yaml"
+            residue_threshold = boltz_threshold
         else:
-            raise ValueError("Unknown mode")
+            raise ValueError(f"Unsupported engine '{engine}'. Must be 'af3' or 'boltz2'.")
+
+        # 2. Select Generator based on mode
+        # Note: We pass ids_a/ids_b filters to the generators
+
+        if mode == "intra_pairs":
+            pairs = self.generate_intra_pairs() 
+            if ids_a:
+                pairs = (p for p in pairs if p[0] in ids_a and p[1] in ids_a)
+            iterator = (("pair", p) for p in pairs)
+        
+        elif mode == "inter_pairs":
+            pairs = self.generate_inter_pairs() 
+            iterator = (("pair", p) for p in pairs)
+        
+        elif mode == "homomers":
+            homes = self.generate_homo_mers(nmin=nmin, nmax=nmax)
+            iterator = (("homo", h) for h in homes)
+        
+        elif mode == "single":
+            singles = self.generate_single_run(source="both" if self.mode == "inter" else "a", ids_a=ids_a, ids_b=ids_b)  
+            iterator = (("single", s) for s in singles)
+
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
 
         metas: List[dict] = []
-        index_path = Path(output_dir) / index_name
+        index_path = out_path/ index_name
+
+        # 3. Process Jobs and Write CSV
         with open(index_path, "w", newline="", encoding="utf-8") as fh:
-            w = csv.DictWriter(fh, fieldnames=[
-                "engine","mode","name","idA","idB","countA","countB","total_residues","warnings","file_path"
-            ])
+            fieldnames = [
+                "engine", "mode", "name", "idA", "idB", 
+                "countA", "countB", "total_residues", "warnings", "file_path"
+            ]
+            w = csv.DictWriter(fh, fieldnames=fieldnames)
             w.writeheader()
 
             for kind, entry in iterator:
+
                 # Build seq_list and job_name
+                seq_list = []
                 name = ""
+                idA, idB = "", ""
+                
+                # --- Logic for Pairs ---
                 if kind == "pair":
-                    idA, idB = entry
-                    # seq_list = seq_list_for_pair(self.proteome_a, self.proteome_b if self.mode == "inter" else None,
-                    #                             (idA, idB), counts_map=counts_map)
-                    ## TODO: sort idA idB alphabetically or somehow
+                    idA_raw, idB_raw = entry
+                    # idA, idB = entry
+
+                    # Determine source proteomes
+                    prot_A = self.proteome_a
+                    # For intra pairs, both are from A. For inter pairs, B is from B.
+                    prot_B = self.proteome_b if mode == "inter_pairs" else self.proteome_a
+
+                    # Sort IDs for canonical naming if in intra mode (to avoid A_B vs B_A dupes)
+                    if mode == "intra_pairs" and idA_raw > idB_raw:
+                        idA, idB = idB_raw, idA_raw
+                        prot_A, prot_B = prot_B, prot_A # Swap proteomes (same obj in intra)
+                    else:
+                        idA, idB = idA_raw, idB_raw
+
+                    # Fetch sequences
+                    seqA = prot_A.sequences[idA]
+                    seqB = prot_B.sequences[idB]
+                    
+                    # Determine stoichiometry
+                    cntA = counts_map.get(idA, 1) if counts_map else 1
+                    cntB = counts_map.get(idB, 1) if counts_map else 1
+                    
+                    seq_list = [(idA, seqA, cntA), (idB, seqB, cntB)]
                     name = f"{idA}__{idB}"
+
+                # --- Logic for Homomers ---
                 elif kind == "homo":
                     pid, copies = entry
                     seq_list = [(pid, self.proteome_a.sequences[pid], copies)]
                     name = f"{pid}__{copies}"
-                    idA, idB = pid, ""  # single species
+                    idA = pid
+                    # idA, idB = pid, "" 
+
+                # --- Logic for Monomers ---   
                 elif kind == "single":
                     pid, seq, cnt = entry
                     seq_list = [(pid, seq, cnt)]
                     name = f"{pid}"
-                    idA, idB = pid, ""
+                    idA = pid
+                    # idA, idB = pid, ""
                 else:
-                    raise RuntimeError("Unexpected iterator kind")
+                    raise RuntimeError(f"Unexpected iterator kind: {kind}")
 
-                total_res = sum(len("".join(s.split())) * c for _, s, c in seq_list)
-                threshold = af3_threshold if engine.lower() == "af3" else boltz_threshold
-                over = total_res > threshold
-
-                base_name = filename_fmt.format(engine=engine.lower(), name=name, ext=ext)
-                save_path = str(Path(output_dir) / base_name) if not (skip_over_threshold and over) else ""
-
-                if save_path:
-                    if engine.lower() == "af3":
-                        payload = self.get_af3_input(seq_list, job_name=name,
-                                                    save_path=save_path, 
-                                                    residue_threshold=af3_threshold)
-                    else:
-                        payload = self.get_boltz2_input(seq_list, save_path=save_path,
-                                                        residue_threshold=boltz_threshold)
-                    # warns = payload.get("_warnings", [])
-                # else:
+                
+                # 4. Calculate Size and Validate
+                total_res = sum(len(s) * c for _, s, c in seq_list)
+                # total_res = sum(len("".join(s.split())) * c for _, s, c in seq_list)
+                is_over_limit = total_res > residue_threshold
+                
+                base_name = filename_fmt.format(engine=engine_lower, name=name, ext=ext)
+                save_path_str = ""
                 warns = []
-                if total_res > threshold:
-                    warns = [f"Skipped: total residues {total_res} exceed {threshold}"]
 
+                # Write file if within limits (or if we are not skipping)
+                if not (skip_over_threshold and is_over_limit):
+                    full_save_path = out_path / base_name
+                    save_path_str = str(full_save_path)
+                # save_path = str(Path(output_dir) / base_name) if not (skip_over_threshold and over) else ""
+
+                # if save_path:
+                    if engine_lower == "af3":
+                        self.get_af3_input(seq_list, job_name=name,
+                        save_path=save_path_str, 
+                        residue_threshold=residue_threshold)
+                    else:
+                        self.get_boltz2_input(seq_list, save_path=save_path_str,
+                        residue_threshold=residue_threshold)
+                    
+                if is_over_limit:
+                    warns.append(f"Skipped: total residues {total_res} exceed {residue_threshold}")
+                
+                # 5. Record Metadata
                 meta = {
-                    "engine": engine.lower(),
+                    "engine": engine_lower,
                     "mode": mode,
                     "name": name,
                     "idA": idA,
@@ -222,28 +423,54 @@ class InteractomeWriter:
                     "countB": seq_list[1][2] if len(seq_list) > 1 else "",
                     "total_residues": total_res,
                     "warnings": "|".join(warns),
-                    "file_path": save_path,
+                    "file_path": save_path_str,
                 }
                 metas.append(meta)
                 w.writerow(meta)
-            
-        ## TODO: write launch scripts for AF3 and Boltz2
 
         return metas
+    
+
     @staticmethod
-    def check_input(seq_list, residue_threshold: int = 5000):
+    def check_input(seq_list: List[Tuple[str,str,int]], residue_threshold: int = 5000)-> Tuple[bool, Optional[str]]:
+        """
+        Validates a list of sequences and checks for residue limits.
+        
+        This utility method ensures that the sequence list is not empty, 
+        counts are positive, and sequences are valid (using the global 
+        'check_sequence_validity' helper). It also issues a warning if 
+        the total number of residues exceeds the recommended threshold.
+
+        Args:
+            seq_list (List[Tuple[str, str, int]]): A list of tuples containing 
+                (chain_id, sequence, count).
+            residue_threshold (int, optional): The maximum recommended number 
+                of residues before issuing a warning. Defaults to 5000.
+
+        Returns:
+            Tuple[bool, Optional[str]]: 
+                - (True, None) if the input is valid (even if it exceeds the threshold, 
+                  only a warning is issued).
+                - (False, error_message) if a blocking error is found (empty list, 
+                  invalid sequence, etc.).
+        """
+
         total_res = 0
-        if len(seq_list) == 0:
+        # if len(seq_list) == 0:
+        if not seq_list:
             return False, "Sequence list cannot be empty."
         
         for chain_id, seq, count in seq_list:
             if count < 1:
-                return False, "Count needs to be at least 1."
+                return False, f"Count for {chain_id} needs to be at least 1."
+            
             seq_clean = check_sequence_validity(seq)
+
             # _validate_seq(seq_clean, strict=strict)
             if not seq_clean:
                 return False, f"{chain_id} is not a valid protein sequnce."
-            total_res += len(seq) * count
+            # total_res += len(seq) * count
+            total_res += len(seq_clean) * count
 
         if total_res > residue_threshold:
             msg = (
@@ -254,35 +481,56 @@ class InteractomeWriter:
         return True, None
 
     @staticmethod
-    def get_af3_input(seq_list: list, job_name: str = "AF3_job", residue_threshold: int = 5000, save_path: str | None = None):
-        '''
-        Docstring for get_af3_input
-        
-        Parameters
-        ----------
-        seq_list : list 
-            List tuples of type [(id, seq, count)] 
-            e.g., [("A", "MSE...", 1), ("B", "AAAA", 2)]
-        param save_path : str
-            Path to save the job in json format.
-        
-        Returns
-        -------
-        Dictionary of the format 
+    def get_af3_input(
+        seq_list: List[Tuple[str, str, int]],
+        job_name: str = "AF3_job",
+        residue_threshold: int = 5000,
+        save_path: Optional[str] = None)-> Dict[str, Any]:
+
+        """
+        Generates the JSON input structure required for an AlphaFold 3 job.
+
+        This method validates the sequence list, constructs the specific dictionary 
+        format expected by the AF3 inference pipeline, and optionally writes it to 
+        a JSON file.
+
+        Args:
+            seq_list (List[Tuple[str, str, int]]): A list of tuples defining the complex.
+                Format: '[(chain_id, sequence_string, copy_count), ...]'.
+                Example: '[("A", "MVE...", 1), ("B", "SEQ...", 2)]'.
+            job_name (str, optional): The name of the job to be recorded in the JSON. 
+                Defaults to "AF3_job".
+            residue_threshold (int, optional): The maximum residue count before issuing 
+                a warning. Defaults to 5000.
+            save_path (Optional[str], optional): The file path where the JSON output 
+                should be saved. If None, the file is not created. Defaults to None.
+
+        Returns:
+            Dict[str, Any]: A dictionary containing the AF3 job payload. 
+            Structure:
             {
-            "name": <name>,
-            "sequences": [{
-                "proteinChain": {
-                    "count": <count>,
-                    "sequence": <sequence>
-                    }
-                }]
+                "name": str,
+                "sequences": [
+                    {
+                        "proteinChain": {
+                            "id": str,
+                            "count": int,
+                            "sequence": str
+                        }
+                    }, ...
+                ],
+                "modelSeeds": []
             }
-        '''
-        is_good_input, err_msg = InteractomeWriter.check_input(seq_list, residue_threshold=residue_threshold)
+
+        Raises:
+            ValueError: If the input sequences fail the validation check (e.g., empty list, 
+            invalid characters, or zero counts).
+        """
+        # Validate the input using the static method defined in the class
+        is_valid, err_msg = InteractomeWriter.check_input(seq_list, residue_threshold=residue_threshold)
         
-        if is_good_input == False:
-            raise ValueError(err_msg)
+        if not is_valid:
+            raise ValueError(f"Invalid input for AF3: {err_msg}")
         
         sequences = []
 
@@ -293,11 +541,12 @@ class InteractomeWriter:
 
         data = {
             "name": job_name,
-            "sequences": sequences
+            "sequences": sequences,
+            "modelSeeds": []
             }
         
         if save_path is not None:
-            with open(save_path, 'w') as outfile:
+            with open(save_path, 'w', encoding='utf-8') as outfile:
                 json.dump(data, outfile, indent=4)
 
         return data
