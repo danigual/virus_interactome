@@ -47,6 +47,10 @@ class ProteomeManager:
         ## TODO: hacer un setter the fasta_file para que lo cargue
         ## TODO: store duplicated ids
         ## TODO: check duplicated ids in tests
+        ## TODO: add logging
+        ## TODO: add docstrings
+        ## TODO: add type hints
+        ## TODO: find matches in the PDB
 
     @property
     def ids(self) -> Tuple[str, ...]:
