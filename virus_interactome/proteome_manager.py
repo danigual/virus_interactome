@@ -51,6 +51,8 @@ class ProteomeManager:
         ## TODO: add docstrings
         ## TODO: add type hints
         ## TODO: find matches in the PDB
+        ## TODO: write monomer predictions
+        ## TODO: FoldSeek search API
 
     @property
     def ids(self) -> Tuple[str, ...]:

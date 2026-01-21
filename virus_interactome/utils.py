@@ -2,7 +2,7 @@ import json
 import yaml
 from collections import OrderedDict
 import numpy as np
-from typing import Union
+from typing import Union, Dict, List
 from glob import glob
 import numpy as np
 import os
@@ -46,10 +46,11 @@ def load_yaml(yaml_path: str):
         data = yaml.load(f, Loader=yaml.SafeLoader)
     return data
 
-def load_boltz_input(yaml_path: str, job_name: str | None  = None):
+def load_boltz_input(yaml_path: str, job_name: str | None  = None)-> List[Dict]:
     """
-    This has to follow the same convention as af3 JSONs
-
+    Loads a Boltz YAML and adapts it to the AF3-style structure for consistency.
+    Compatible with both list-based IDs (InteractomeWriter) and legacy string formats.
+   
     [{
         "name": <name>,
         "sequences": [{
@@ -61,6 +62,7 @@ def load_boltz_input(yaml_path: str, job_name: str | None  = None):
     }] 
     It is only going to be one, but for compatibility with AF3, we put it in a list.
     """
+    # Load raw YAML 
     data = load_yaml(yaml_path)
 
     if job_name is None:

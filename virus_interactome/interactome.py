@@ -7,12 +7,14 @@ import json
 import concurrent.futures
 import warnings
 import csv
+import logging
+
 
 from glob import glob
 from sklearn.cluster import DBSCAN
 from functools import partial
 from itertools import combinations, product
-from typing import Dict, Iterable, List, Tuple, Optional, Any
+from typing import Dict, Iterable, List, Tuple, Optional, Any, Callable
 from pathlib import Path
 from moleculekit.molecule import Molecule
 
@@ -20,6 +22,9 @@ from .utils import load_json, load_boltz_input, check_sequence_validity, process
 from .proteome_manager import ProteomeManager
 from .metrics import calculate_all_metrics
 from .plotting import plot_boxplots, plot_iptm_vs_ptm, plot_pae_clusters, plot_paes, plot_plddt
+
+## Configure logger just in case (best practice)
+logger = logging.getLogger(__name__)
 
 class InteractomeWriter:
     """
@@ -430,7 +435,6 @@ class InteractomeWriter:
 
         return metas
     
-
     @staticmethod
     def check_input(seq_list: List[Tuple[str,str,int]], residue_threshold: int = 5000)-> Tuple[bool, Optional[str]]:
         """
@@ -626,37 +630,96 @@ class InteractomeWriter:
 
             with open(save_path, 'w', encoding='utf-8') as outfile:
                 outfile.write(yaml_str)
-                
+
         return data
 
 class InteractomeRunner:
-    def __init__(self, path_of_inputs, path_of_outputs, mode="boltz2"):
+
+    """
+    Manages the execution lifecycle and monitoring of protein folding jobs.
+
+    This class identifies input files for specific folding engines (AF3 or Boltz2),
+    tracks existing outputs, and determines the execution status of the interactome.
+
+    Attributes:
+        mode (str): The active engine mode ('af3' or 'boltz2').
+        input_dir (Path): The directory path containing input files.
+        output_dir (Path): The directory path containing output results.
+        inputs (List[Path]): A list of detected input files (.json or .yaml).
+        outputs (List[Path]): A list of detected output directories.
+        parse_job_dictionary (Dict[str, Callable]): A registry mapping modes to 
+            their specific job parsing methods.
+        status (Any): The current status of the run (determined by check_run).
+    """
+
+
+    def __init__(self, path_of_inputs: str, path_of_outputs: str, mode: str ="boltz2"):
+
+        """
+        Initializes the InteractomeRunner.
+
+        Args:
+            path_of_inputs (str): Path to the directory containing input files.
+            path_of_outputs (str): Path to the directory where results are stored.
+            mode (str, optional): The folding engine to use. 
+                Must be 'af3' or 'boltz2'. Defaults to "boltz2".
+
+        Raises:
+            ValueError: If the provided mode is not supported.
+            FileNotFoundError: If the input directory does not exist.
+        """
+
+
         self._available_modes = ["af3", "boltz2"]
+
         if mode not in self._available_modes:
-            raise ValueError(f"Mode should be in {' '.join(self._available_modes)}")
-        else:
-            self.mode = mode
+            raise ValueError(f"Mode '{mode}' is invalid. Supported modes: {', '.join(self._available_modes)}")
+        
+        self.mode = mode
+
+        # Convert strings to Path objects for robust cross-platform handling
+        self.input_dir = Path(path_of_inputs)
+        self.output_dir = Path(path_of_outputs)
+
+        if not self.input_dir.exists():
+            raise FileNotFoundError(f"Input directory not found: {self.input_dir}")
+        
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Detect Inputs based on Mode usage of pathlib.glob is safer than string concatenation glob()
     
         if self.mode == "af3":
-            self.inputs = glob(f"{path_of_inputs}/*json")
+            self.inputs = list(self.input_dir.glob("*.json"))
+            
         elif self.mode == "boltz2":
-            self.inputs = glob(f"{path_of_inputs}/*yaml")
+            self.inputs = list(self.input_dir.glob("*.yaml"))
+            
+        else:
+            self.inputs = []
 
-        self.path_of_inputs = path_of_inputs
-        self.path_of_outputs = path_of_outputs
-        self.outputs = glob(f"{path_of_outputs}/*/")
+        # Detect Outputs. Assuming outputs are directories inside the output path
+        self.outputs = [p for p in self.output_dir.glob("*") if p.is_dir()]
 
-        self.parse_job_dictionary = {
+        self.parse_job_dictionary: Dict[str, Callable] = {
             "af3": self._parse_af3_job,
             "boltz2": self._parse_boltz2_job,
         }
+        
+        # Determine initial status
         self.status = self.check_run()
+        logger.info(f"Initialized Runner in '{mode}' mode. Found {len(self.inputs)} inputs.")
 
-    def _parse_af3_job(self, input_json):
-        return load_json(input_json)
+    def _parse_af3_job(self, input_json: Path)-> Dict[str, Any]:
+        """Parses AF3 input with logging."""
+        logger.debug(f"Parsing AF3 job: {input_json.name}")
+        return load_json(str(input_json))
 
-    def _parse_boltz2_job(self, input_yaml):
-        return load_boltz_input(input_yaml)
+
+    def _parse_boltz2_job(self, input_yaml: Path)-> Dict[str, Any]:
+        """Parses Boltz2 input with logging."""
+        logger.debug(f"Parsing Boltz job: {input_yaml.name}")
+        return load_boltz_input(str(input_yaml))
+
     
     def check_run(self):
         parse_job = self.parse_job_dictionary[self.mode]
@@ -1183,7 +1246,6 @@ class InteractomeAnalyzer:
         ## but all of them may correspond to the same PPI.  
 
         return candidate_clusters.reset_index()
-
 
     def _curate_protein_peptide_models(self, data):
         mol_path, peptide_chain , peptide_start, peptide_end = data[["path", "Peptide_chain", "Peptide_start", "Peptide_end"]]
