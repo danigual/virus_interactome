@@ -552,34 +552,68 @@ class InteractomeWriter:
         return data
 
     @staticmethod
-    def get_boltz2_input(seq_list: list, residue_threshold=1600, save_path: str | None = None):
-        '''
-        Docstring for get_boltz2_input
-        
-        Parameters
-        ----------
-        seq_list : list 
-            List tuples of type [(id, seq, count)] 
-        param save_path : str
-            Path to save the job in json format.
-        '''
-        is_good_input, err_msg = InteractomeWriter.check_input(seq_list, residue_threshold=residue_threshold)
-      
-        if is_good_input == False:
-            raise ValueError(err_msg)
-        
-        id_list = "ABCDEFGHIJKLMNOPQRSTUVXYZ"
-        seqs2yaml = []
-        chain_idx = 0
+    def get_boltz2_input(
+        seq_list: List[Tuple[str, str, int]], 
+        residue_threshold: int = 1600,
+        save_path: Optional[str] = None
+        )-> Dict[str, Any]:
+        """
+        Generates the YAML input structure required for Boltz 2.
 
-        for chain_id, seq, counts in seq_list:
-            id_str = "[" + ','.join(id_list[chain_idx:chain_idx+counts]) + "]"
-            # id_str = f"[{','.join(id_list[chain_idx:chain_idx+counts])}]"
-            tmp_job = {"protein": {"id": id_str, "sequence": seq, }}
-            # if counts>1:
-            #     multiple_chains = ",".join(id_list[chain_idx + 1 : chain_idx + counts])
-            #     tmp_job["protein"]["multiple_chains"] = multiple_chains
-            chain_idx += counts
+        This method assigns unique chain IDs (A, B, C...) to the provided sequences,
+        constructs the payload compliant with the Boltz YAML schema, and handles 
+        file writing with proper formatting.
+
+        Args:
+            seq_list (List[Tuple[str, str, int]]): A list of tuples defining the complex.
+                Format: '[(original_id, sequence, count), ...]'.
+            residue_threshold (int, optional): Threshold for residue count warnings. 
+                Defaults to 1600.
+            save_path (Optional[str], optional): Destination path for the YAML file. 
+                Defaults to None.
+
+        Returns:
+            Dict[str, Any]: The dictionary representation of the job payload.
+
+        Raises:
+            ValueError: If validation fails.
+        """
+        
+        # Validate input
+        is_valid, err_msg = InteractomeWriter.check_input(seq_list, residue_threshold=residue_threshold)
+      
+        if not is_valid:
+            raise ValueError(f"Invalid input for Boltz: {err_msg}")
+        
+
+        # Generator for Chain IDs: A, B, ... Z, AA, AB, ...
+        
+        def chain_id_generator():
+            from string import ascii_uppercase
+            from itertools import product
+            # Yield single letters first
+            for char in ascii_uppercase:
+                yield char
+            # Yield double letters (AA, AB...) if needed
+            for r in range(2, 4):
+                for combo in product(ascii_uppercase, repeat=r):
+                    yield "".join(combo)
+      
+        chain_gen = chain_id_generator()
+        seqs2yaml = []
+
+
+        for original_id, seq, counts in seq_list:
+
+            # Generate the specific IDs for this entry (e.g., if count=2 -> ['A', 'B'])
+            current_ids = [next(chain_gen) for _ in range(counts)]
+
+            tmp_job = {
+                "protein": {
+                    "id": current_ids,
+                    "sequence": seq, 
+                }
+            }
             seqs2yaml.append(tmp_job)
 
         data = {
@@ -587,12 +621,12 @@ class InteractomeWriter:
             "sequences": seqs2yaml
         }
 
-        if save_path is not None:
-            with open("/tmp/boltz.yaml", 'w') as outfile:
-                yaml.dump(data, outfile, default_style=None, default_flow_style=False)
+        if save_path:
+            yaml_str = yaml.dump(data, default_flow_style=None, sort_keys=False)
 
-            #Ugly patch to avoid PyYAML putting quotes around the id strings
-            os.system(f"sed \"s/'//g\" /tmp/boltz.yaml > {save_path}")
+            with open(save_path, 'w', encoding='utf-8') as outfile:
+                outfile.write(yaml_str)
+                
         return data
 
 class InteractomeRunner:
