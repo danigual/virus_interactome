@@ -710,56 +710,133 @@ class InteractomeRunner:
         logger.info(f"Initialized Runner in '{mode}' mode. Found {len(self.inputs)} inputs.")
 
     def _parse_af3_job(self, input_json: Path)-> Dict[str, Any]:
-        """Parses AF3 input with logging."""
+        """
+        Internal handler to parse AF3 input files with logging.
+        Delegates to the robust load_json utility.
+        """
         logger.debug(f"Parsing AF3 job: {input_json.name}")
         return load_json(str(input_json))
 
 
     def _parse_boltz2_job(self, input_yaml: Path)-> Dict[str, Any]:
-        """Parses Boltz2 input with logging."""
+        """
+        Internal handler to parse Boltz2 input files with logging.
+        Delegates to the hybrid adapter load_boltz_input utility.
+        """
+
         logger.debug(f"Parsing Boltz job: {input_yaml.name}")
         return load_boltz_input(str(input_yaml))
 
     
-    def check_run(self):
-        parse_job = self.parse_job_dictionary[self.mode]
+    def check_run(self, expected_models : Optional[int] = None)-> pd.DataFrame:
+        """
+        Scans input and output directories to audit the execution status.
 
+        This method determines the execution status based on the number of generated models.
+        It automatically adjusts expectations based on the engine (AF3 vs Boltz) if 
+        no specific threshold is provided.
+
+        Args:
+            expected_models (Optional[int], optional): The number of models required 
+                to mark a job as COMPLETED. 
+                If None, defaults to 10 for 'af3' and 5 for 'boltz2'. 
+                Defaults to None.
+
+        Returns:
+            pd.DataFrame: A DataFrame sorted by status and complexity.
+        """
+        # 0. Dynamic Defaults Strategy
+        if expected_models is None:
+            if self.mode == "af3":
+                expected_models = 10  # User specified standard for AF3
+            elif self.mode == "boltz2":
+                expected_models = 5   # Standard for Boltz
+            else:
+                expected_models = 5   # Fallback safe default
+        
+        logger.debug(f"Checking run status with threshold: {expected_models} models per job.")
+        
+        parse_job = self.parse_job_dictionary[self.mode]
         all_job_info = []
+
+        # 1. Parse Inputs to build the "Expected" list
         for model_input in self.inputs:
-            ## Parse de job
+
+            # model_input is a Path object (from __init__)
             batch_jobs = parse_job(model_input)
-            ## AF3 may return several, but Boltz2 only one
+
+            # AF3 might return multiple jobs in one JSON, Boltz usually one.
 
             ## For each job we get: job_id, #proteins, #aa
             for tmp_job in batch_jobs:
-                all_job_info.append(
-                    [tmp_job.get("name"), ## Job name
-                     sum([i.get("proteinChain").get("count") for i in tmp_job.get("sequences")]), ## Number of chains
-                     sum([len(i.get("proteinChain").get("sequence")) for i in tmp_job.get("sequences")]), ## Total number of residues
-                     ]
-                )
+                
+                job_name = tmp_job.get("name", "Unknown")
+                sequences = tmp_job.get("sequences", [])
+                
+                n_chains = sum(
+                        seq.get("proteinChain", {}).get("count", 1) 
+                        for seq in sequences
+                    )
+                # Total Residues = Sequence Length * Copy Count
+                # (Previous code ignored stoichiometry in residue calc)
+                n_aa = sum(
+                        len(seq.get("proteinChain", {}).get("sequence", "")) * seq.get("proteinChain", {}).get("count", 1)
+                        for seq in sequences
+                    )
+                    
+                all_job_info.append([job_name, n_chains, n_aa])
+
+
+                # all_job_info.append(
+                #     [tmp_job.get("name"), ## Job name
+                #      sum([i.get("proteinChain").get("count") for i in tmp_job.get("sequences")]), ## Number of chains
+                #      sum([len(i.get("proteinChain").get("sequence")) for i in tmp_job.get("sequences")]), ## Total number of residues
+                #      ]
+                # )
+
         df = pd.DataFrame(all_job_info, columns = ["PPI", "num_chain", "num_aa"])
 
-        ## Check number of models
-        num_models = []
-        for tmp_job_name, _, _ in all_job_info:
-            tmp_num_models = len(glob(f"{self.path_of_outputs}/{tmp_job_name}/*model*cif"))
-            num_models.append(tmp_num_models)
+        # 2. Check Outputs 
+        num_models_list = []
+        # for tmp_job_name, _, _ in all_job_info:
+        for job_name in df["PPI"]:
+            # Pathlib approach: Safer than glob strings like f"{path}/{name}/*"
+            job_output_dir = self.output_dir / job_name
+            # tmp_num_models = len(glob(f"{self.path_of_outputs}/{tmp_job_name}/*model*cif"))
+            if job_output_dir.exists():
+                count = len(list(job_output_dir.glob("*model*cif")))
+            else:
+                count = 0
+            num_models_list.append(count)
         
-        df.loc[:, "num_models"] = num_models
-        df.loc[:, "status"] = "PENDING"
+        df["num_models"] = num_models_list
 
-        mode_num_models = int(df.num_models.mode().values)
-        df.loc[df.num_models == mode_num_models, "status"] = "COMPLETED"
-        df.loc[df.num_models != mode_num_models, "status"] = "PENDING"
-        df.loc[df.num_models == 0, "status"] = "FAILED"
+        # 3. Determine Status (Threshold Logic)
+        # Default to PENDING
+        df["status"] = "PENDING"
 
-        custom_order = ['FAILED', 'PENDING', 'COMPLETED']
+        #Replaced .mode() with explicit thresholds
+        df.loc[df["num_models"] >= expected_models, "status"] = "COMPLETED"
+        # RUNNING: > 0 but < expected
+        mask_running = (df["num_models"] > 0) & (df["num_models"] < expected_models)
+        df.loc[mask_running, "status"] = "RUNNING"
+        # FAILED: 0 models (Not started or crashed)
+        df.loc[df["num_models"] == 0, "status"] = "FAILED"
+        # mode_num_models = int(df.num_models.mode().values)
+        # df.loc[df.num_models == mode_num_models, "status"] = "COMPLETED"
+        # df.loc[df.num_models != mode_num_models, "status"] = "PENDING"
+        # df.loc[df.num_models == 0, "status"] = "FAILED"
+
+        # 4. Sort
+        custom_order = ['FAILED', 'RUNNING', 'PENDING', 'COMPLETED']
         df['status'] = pd.Categorical(df['status'], categories=custom_order, ordered=True)
-        df.sort_values(['status', 'num_aa'], inplace=True)
+        df.sort_values(by=['status', 'num_aa'], ascending=[True, False], inplace=True)
         
         return df
     
+
+
+    ## This is the place where I have to continue refactoring the code and adding docstrings
     def write_status(self, file_name: str | None = None):
         if file_name is None:
             file_name = f"{self.path_of_inputs}/JOB_STATUS.csv"
