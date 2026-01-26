@@ -14,7 +14,7 @@ from glob import glob
 from sklearn.cluster import DBSCAN
 from functools import partial
 from itertools import combinations, product
-from typing import Dict, Iterable, List, Tuple, Optional, Any, Callable
+from typing import Dict, Iterable, List, Tuple, Optional, Any, Callable, Union
 from pathlib import Path
 from moleculekit.molecule import Molecule
 
@@ -759,7 +759,7 @@ class InteractomeRunner:
         parse_job = self.parse_job_dictionary[self.mode]
         all_job_info = []
 
-        # 1. Parse Inputs to build the "Expected" list
+        # Parse Inputs to build the "Expected" list
         for model_input in self.inputs:
 
             # model_input is a Path object (from __init__)
@@ -796,7 +796,7 @@ class InteractomeRunner:
 
         df = pd.DataFrame(all_job_info, columns = ["PPI", "num_chain", "num_aa"])
 
-        # 2. Check Outputs 
+        # Check Outputs 
         num_models_list = []
         # for tmp_job_name, _, _ in all_job_info:
         for job_name in df["PPI"]:
@@ -811,7 +811,7 @@ class InteractomeRunner:
         
         df["num_models"] = num_models_list
 
-        # 3. Determine Status (Threshold Logic)
+        # Determine Status (Threshold Logic)
         # Default to PENDING
         df["status"] = "PENDING"
 
@@ -827,7 +827,7 @@ class InteractomeRunner:
         # df.loc[df.num_models != mode_num_models, "status"] = "PENDING"
         # df.loc[df.num_models == 0, "status"] = "FAILED"
 
-        # 4. Sort
+        # Sort
         custom_order = ['FAILED', 'RUNNING', 'PENDING', 'COMPLETED']
         df['status'] = pd.Categorical(df['status'], categories=custom_order, ordered=True)
         df.sort_values(by=['status', 'num_aa'], ascending=[True, False], inplace=True)
@@ -835,30 +835,90 @@ class InteractomeRunner:
         return df
     
 
+    def write_status(self, file_name: Optional[Union[str, Path]] = None, update: bool = False) -> None:
+        """
+        Exports the current job status DataFrame to a CSV file.
 
-    ## This is the place where I have to continue refactoring the code and adding docstrings
-    def write_status(self, file_name: str | None = None):
+        Args:
+            file_name (Optional[Union[str, Path]], optional): The destination path for the CSV. 
+                If None, saves as 'JOB_STATUS.csv' in the input directory. 
+                Defaults to None.
+            update (bool, optional): If True, re-runs the status check to ensure 
+                the data is up-to-date before saving. Defaults to False.
+        """
+        # Option to refresh the status before writing
+        if update:
+            logger.info("Updating status before saving...")
+            self.status = self.check_run()
+
+        # Determine the file path
         if file_name is None:
-            file_name = f"{self.path_of_inputs}/JOB_STATUS.csv"
-        self.status.to_csv(file_name, index=False)## Write status 
-    
-    def write_missing_jobs(self, output_path: str | None = None):
-        import shutil
-        if self.mode == "af3":
-            raise ValueError("This functions is only supported for Boltz2 runs... for the moment")
+            final_path = self.input_dir / "JOB_STATUS.csv"
+        else:
+            final_path = Path(file_name)
+        logger.info(f"Saving execution status to: {final_path}")
         
-        tmp_jobs = self.status.loc[ self.status.status != "COMPLETED", "PPI"].values
+        # Write to CSV
+        self.status.to_csv(final_path, index=False)
+    
+    def write_missing_jobs(self, output_path: Optional[Union[str, Path]] = None) -> None:
+        """
+        Identifies non-completed jobs and copies their input files to a separate directory.
 
-        if len(tmp_jobs) == 0:
-            raise Warning("No pending jobs. Exiting doing nothing")
+        This method is useful for isolating failed or pending jobs to re-run them 
+        separately without re-processing the entire dataset. It supports both 
+        AF3 (.json) and Boltz (.yaml) modes dynamically.
+
+        Args:
+            output_path (Optional[Union[str, Path]], optional): The destination directory 
+                for the missing inputs. If None, creates a directory named 'input_missing' 
+                sibling to the original input folder. Defaults to None.
         
+        Raises:
+            OSError: If there are permission issues creating directories or copying files.
+        """
+        import shutil
+
+        # Identify missing jobs 
+        if self.status is None or self.status.empty:
+            logger.warning("Status dataframe is empty. Run check_run() first.")
+            return
+
+        missing_jobs = self.status.loc[self.status["status"] != "COMPLETED", "PPI"].values
+
+        if len(missing_jobs) == 0:
+            logger.info("No pending or failed jobs found. Nothing to copy.")
+            return
+
+        # Determine Paths 
         if output_path is None:
-            output_path = f"{self.path_of_inputs}/../input_missing/"
-        os.makedirs(output_path, exist_ok=True)
-    
-        print(f"Safe missing jobs to {output_path}")
-        for ppi_id in tmp_jobs:
-            shutil.copy(f"{self.path_of_inputs}/{ppi_id}.yaml", f"{output_path}/{ppi_id}.yaml")
+            output_path = self.input_dir.parent / "input_missing"
+        else:
+            output_path = Path(output_path)
+
+        # Create directory 
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        # Determine Extension based on mode. In order to write missing jobs
+        # from AF3 or from Boltz.
+        file_ext = ".json" if self.mode == "af3" else ".yaml"
+
+        logger.info(f"Backing up {len(missing_jobs)} missing jobs to: {output_path}")
+
+        # Copy Loop
+        copied_count = 0
+        for ppi_id in missing_jobs:
+            source_file = self.input_dir / f"{ppi_id}{file_ext}"
+            dest_file = output_path / f"{ppi_id}{file_ext}"
+
+            if source_file.exists():
+                # copy2 preserves metadata (timestamps), which is better for traceability
+                shutil.copy2(source_file, dest_file)
+                copied_count += 1
+            else:
+                logger.error(f"Source file not found for job {ppi_id}: {source_file}")
+
+        logger.info(f"Successfully copied {copied_count}/{len(missing_jobs)} input files.")
 
 class InteractomeProcessor:
     def __init__(self, model_list: list[str], engine : str = "AF3"
