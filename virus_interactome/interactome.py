@@ -1228,82 +1228,136 @@ class InteractomeProcessor:
         
         return summary_dict, cluster_data
     
-    ## Continuar aqui el refactoring del codigo. 
-    def process_models(self, output_path: str = ".", model_type: str = "AF3", prefix: str = "", **kwargs):
-        ##Load output.csv and filter out processed data
+  
+    def process_models(self,
+                       output_path: Union[str, Path] = ".",
+                       prefix: str = "", 
+                       **kwargs)-> None:
+        """
+        Orchestrates the parallel processing of protein models and saves results to CSV.
+
+        This method manages the full pipeline execution. It implements a 'resume' logic by
+        checking for existing output files and skipping models that have already been processed.
+        It utilizes a process pool to distribute the workload across multiple CPU cores and
+        finally aggregates all metrics and cluster data into consolidated CSV files.
+
+        Parameters
+        ----------
+        output_path : str or Path, optional
+            The directory where output CSV files ('interactome_data.csv' and 'clusters_data.csv')
+            will be saved. Defaults to current directory (".").
+        prefix : str, optional
+            A substring to be stripped from directory names when parsing PPI IDs (e.g., to clean
+            up common prefixes in folder structures). Defaults to "".
+        **kwargs
+            Additional keyword arguments passed directly to `concurrent.futures.ProcessPoolExecutor`.
+            Most commonly used to set `max_workers` (e.g., `max_workers=4`) to limit CPU usage.
+
+        Returns
+        -------
+        None
+            This method does not return values; it produces side effects (CSV files on disk).
+        """
+        # Setup Paths
+        out_dir = Path(output_path)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        interactome_csv = out_dir / "interactome_data.csv"
+        clusters_csv = out_dir / "clusters_data.csv"
+
+        # Initialize containers
         interactome_df = pd.DataFrame()
         clusters_df = pd.DataFrame()
-        all_ppi_models = self.model_list.copy()
+        # Models to process (initially all)
+        models_to_process = self.model_paths.copy()
 
-        os.makedirs(output_path, exist_ok=True)
-
-        if os.path.exists(f'{output_path}/interactome_data.csv',):
-            print("Loading existing data...")
-            interactome_df = pd.read_csv(f'{output_path}/interactome_data.csv')
-            folder_names = pd.Series([os.path.dirname(i) for i in all_ppi_models])
-            all_ppi_models = all_ppi_models[~folder_names.isin(interactome_df.Folder)]
-            clusters_df = pd.read_csv(f'{output_path}/clusters_data.csv')
+        # Resume Logic (Check existing data)
+        if interactome_csv.exists():
+            logger.info(f"Found existing data at {interactome_csv}. Resuming run...")
+            interactome_df = pd.read_csv(interactome_csv)
+            if clusters_csv.exists():
+                clusters_df = pd.read_csv(clusters_csv)
+            # Filter out models that are already in the CSV
+            # We assume the 'Folder' column contains the parent directory path
+            if "Folder" in interactome_df.columns:
+                processed_folders = set(interactome_df["Folder"].astype(str))
+                    
+                # Identify which paths from input are not in the processed set
+                # We convert path.parent to string to match the CSV format
+                models_to_process = [
+                    p for p in models_to_process 
+                    if str(p.parent) not in processed_folders
+                ]
+                logger.info(f"Skipping {len(self.model_paths) - len(models_to_process)} already processed models.")
+        if not models_to_process:
+            logger.info("All models are already processed. Exiting.")
+            return
+        
+        logger.info(f"Starting parallel processing for {len(models_to_process)} models...")
     
-        # Paralelización
-        #List of tuples -> every tuple has list,df
-        ##TODO: skip this is .csv exists
-        interactome_df_list = []
-        cluster_df_list = []
-        # with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
+        # Parallel Execution
+        new_interactome_list = []
+        new_clusters_list = []
+
+        # We set default workers if not provided in kwargs
+        # max_workers = kwargs.get('max_workers', None) # None lets ProcessPoolExecutor decide
         with concurrent.futures.ProcessPoolExecutor(**kwargs) as executor:
-            worker = partial(self.process_ppi, model_type=model_type, prefix=prefix)
-            # map devuelve los resultados en orden de la lista
+            worker = partial(self.process_ppi,
+                             model_type=self.engine,
+                             prefix=prefix)
             
-            # all_args = [(model_file, model_type, prefix) for model_file in all_ppi_models]
-            for res in tqdm.tqdm(executor.map(worker, all_ppi_models)): #For testing
-            # for res in tqdm.tqdm(executor.map(process_ppi, all_args)): #For testing
-                interactome_df_list.append(res[0])
-                cluster_df_list.append(res[1])
-        # Create the df with the info of all PPIs
-        # interactome_df_list = [list[0] for list in results] 
-        # interactome_df = pd.DataFrame(interactome_df_list,
-        #                  columns=["PPI", "ORF_A", "ORF_B", "Folder", "Model_num","Fraction_disordered","iPTM","pTM",
-        #                          "chain_lenght_A","chain_lenght_B", 
-        #                          #    "contact_probs",
-        #                          "plddt_mean", "plddt_mean_chain_A","plddt_mean_chain_B",
-        #                          "mean_pae", "mean_pae_chain_A", "mean_pae_chain_B",
-        #                          #    "min_pae_chain_A", "min_pae_chain_B",
-        #                          "mean_pae_chain_A_B"])
-        interactome_df = pd.concat([interactome_df, pd.DataFrame.from_dict(interactome_df_list)], ignore_index=True)
-        # interactome_df = pd.DataFrame.from_dict(interactome_df_list)
-        # interactome_df.reset_index(inplace=True, drop=True)
+            # tqdm for progress bar
+            # map maintains order, which matches models_to_process order
+            results_iterator = tqdm.tqdm(
+                executor.map(worker, models_to_process), 
+                total=len(models_to_process),
+                desc="Processing Models"
+            )
+            for metrics_dict, cluster_df in results_iterator:
+                new_interactome_list.append(metrics_dict)
+                if not cluster_df.empty:
+                    new_clusters_list.append(cluster_df)
+        
+        # Aggregation
+        logger.info("Aggregating and saving results...")  
 
-        # Join the dfs of the clusters in a single df
-        # non_empty_cluster_info = filter(lambda x: len(x)>0, cluster_df_list)
-        if len(cluster_df_list) > 0:
-            filtered_cluster_df_list = [ i for i in cluster_df_list if i.shape[0]>0 ]
-            clusters_df = pd.concat([clusters_df, pd.concat(filtered_cluster_df_list)], ignore_index=True)
-        # clusters_df = pd.concat(non_empty_cluster_info, ignore_index=True)
-        # clusters_df = pd.concat([df[1] for df in results], ignore_index=True)
+        # Combine Lists into DataFrames
+        new_interactome_df = pd.DataFrame(new_interactome_list)
+        
+        if new_clusters_list:
+            new_clusters_df = pd.concat(new_clusters_list, ignore_index=True)
+        else:
+            new_clusters_df = pd.DataFrame()  
 
+        # Concatenate with Existing Data (Resume)
+        final_interactome_df = pd.concat([interactome_df, new_interactome_df], ignore_index=True)
+        final_clusters_df = pd.concat([clusters_df, new_clusters_df], ignore_index=True)
+       
         # Save dfs to .csv
-        interactome_df.round(2)
-        interactome_df.to_csv(f'{output_path}/interactome_data.csv', index=False)
-        ordered_columns = ['PPI', 'model_num', 'path', 'cluster_id', 'num_points', 'x_len', 'y_len', 'x_min', 'x_max', 'y_min',
-                    'y_max', 'center_x', 'center_y', 'Cluster_ratio']
-        clusters_df.round(2)
-        clusters_df = clusters_df.loc[:, ordered_columns]
-        clusters_df.to_csv(f'{output_path}/clusters_data.csv', index=False)
+        final_interactome_df = final_interactome_df.round(2)
+        final_interactome_df.to_csv(interactome_csv, index=False)
 
-        ## TODO: move this to the analyzer class
-        # by_protein_df = get_info_for_proteins(interactome_df)
-        # by_protein_df.to_csv(f'{output_path}/interactome_data_by_protein.csv', index=False) 
+        # Formatting Clusters DataFrame
+        if not final_clusters_df.empty:
+            desired_columns = [
+                'PPI', 'model_num', 'path', 'cluster_id', 'num_points', 
+                'x_len', 'y_len', 'x_min', 'x_max', 'y_min', 'y_max',
+                'center_x', 'center_y', 'cluster_ratio'
+            ]
+        # Ensure columns exist (handle case-sensitivity if old CSV had 'Cluster_ratio')
+            if 'Cluster_ratio' in final_clusters_df.columns and 'cluster_ratio' not in final_clusters_df.columns:
+                final_clusters_df.rename(columns={'Cluster_ratio': 'cluster_ratio'}, inplace=True)
+            
+            # Select and order columns safely
+            # Only select columns that actually exist to avoid KeyError
+            existing_cols = [c for c in desired_columns if c in final_clusters_df.columns]
+            final_clusters_df = final_clusters_df[existing_cols]
 
-        # ## Plotting boxplots
-        # output_folder = f"{output_path}/plots"
-        # plddt_array, labels_array1 = process_boxplot_data(by_protein_df, "pLDDT_mean_ORF")
-        # pae_array, labels_array2 = process_boxplot_data(by_protein_df, "pae_mean_ORF")
-        # plot_boxplots("plddt",plddt_array, labels_array1, output_path=output_folder)
-        # plot_boxplots("pae",pae_array,labels_array2, output_path=output_folder)
+            final_clusters_df = final_clusters_df.round(2)
+            final_clusters_df.to_csv(clusters_csv, index=False)
+        
+        logger.info(f"Done. Data saved to {out_dir}")
 
-        # ## Plotting scatterplots
-        # plot_iptm_vs_ptm(interactome_df, output_path=output_folder)
-
+## Continuar aqui el refactoring del codigo
 class InteractomeAnalyzer:
     def __init__(self, output_path = "."):
         self._interactome_path = None
