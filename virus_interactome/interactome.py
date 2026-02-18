@@ -1,5 +1,4 @@
 import os
-import tqdm
 import pandas as pd
 import numpy as np
 import yaml
@@ -9,8 +8,6 @@ import warnings
 import csv
 import logging
 
-
-from glob import glob
 from sklearn.cluster import DBSCAN
 from functools import partial
 from itertools import combinations, product
@@ -54,6 +51,9 @@ class InteractomeWriter:
         Raises:
             ValueError: If `proteome_a` is neither a string path nor a ProteomeManager 
                 instance.
+            ValueError: If `proteome_b` is neither a string path nor a ProteomeManager 
+                instance nor None.
+            
         """
 
         self.proteome_a = None
@@ -73,8 +73,11 @@ class InteractomeWriter:
         elif isinstance(proteome_b, ProteomeManager):
             self.proteome_b = proteome_b
             self.mode = "inter"
-        else:
+        elif proteome_b is None:
             self.mode = "intra"
+        else:
+            raise ValueError("proteome_b must be a string, ProteomeManager, or None")
+
         
     
     def generate_intra_pairs(self) -> Iterable[Tuple[str, str]]:
@@ -1258,6 +1261,7 @@ class InteractomeProcessor:
         None
             This method does not return values; it produces side effects (CSV files on disk).
         """
+        import tqdm
         # Setup Paths
         out_dir = Path(output_path)
         out_dir.mkdir(parents=True, exist_ok=True)
