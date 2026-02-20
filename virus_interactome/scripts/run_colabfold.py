@@ -22,6 +22,7 @@ Uso inter-proteoma:
 
 import argparse
 import logging
+import shlex
 import sys
 from pathlib import Path
 
@@ -89,6 +90,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Desactiva el uso de templates estructurales.")
     p.add_argument("--no_gpu_relax", action="store_true",
                    help="Desactiva la relajación en GPU.")
+    p.add_argument("--extra_args", default="",
+                   help="Flags adicionales para colabfold_batch (entre comillas, "
+                        "ej: '--no_amber --zip').")
     p.add_argument("--dry_run", action="store_true",
                    help="Muestra el comando sin ejecutarlo.")
 
@@ -122,6 +126,8 @@ def main() -> None:
         mode="colabfold",
     )
 
+    extra_flags = shlex.split(args.extra_args) if args.extra_args else None
+
     result = runner.run_colabfold_csv(
         csv_path=str(csv_path),
         output_dir=args.output_dir,
@@ -133,6 +139,7 @@ def main() -> None:
         amber=not args.no_amber,
         templates=not args.no_templates,
         use_gpu_relax=not args.no_gpu_relax,
+        extra_flags=extra_flags,
         dry_run=args.dry_run,
     )
 
