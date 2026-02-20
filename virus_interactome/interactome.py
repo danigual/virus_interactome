@@ -1635,7 +1635,7 @@ class InteractomeProcessor:
         self.cluster_data: Optional[pd.DataFrame] = None
     
     @staticmethod
-    def cluster_pae(pae_submatrix: np.ndarrray, threshold:float = 15.0, eps:float = 10.0, min_samples: int = 5)-> Tuple[np.ndarray, np.ndarray]:
+    def cluster_pae(pae_submatrix: np.ndarray, threshold:float = 15.0, eps:float = 10.0, min_samples: int = 5)-> Tuple[np.ndarray, np.ndarray]:
         """
         Clusters low PAE regions in a PAE submatrix using DBSCAN algorithm.
 
