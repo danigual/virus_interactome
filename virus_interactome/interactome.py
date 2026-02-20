@@ -1,4 +1,7 @@
 import os
+import time
+import subprocess
+import logging
 import pandas as pd
 import numpy as np
 import yaml
@@ -23,6 +26,7 @@ from .plotting import plot_boxplots, plot_iptm_vs_ptm, plot_pae_clusters, plot_p
 ## Configure logger just in case (best practice)
 logger = logging.getLogger(__name__)
 
+    
 class InteractomeWriter:
     """
     Manages the configuration and writing of interactome data.
@@ -36,6 +40,7 @@ class InteractomeWriter:
         proteome_b (Optional[ProteomeManager]): Instance of the second proteome (if any).
         mode (str): The operation mode detected; can be "intra" or "inter".
     """
+
     def __init__(self, proteome_a: str | ProteomeManager, proteome_b: str | ProteomeManager | None = None):
 
         """
@@ -78,7 +83,6 @@ class InteractomeWriter:
         else:
             raise ValueError("proteome_b must be a string, ProteomeManager, or None")
 
-        
     
     def generate_intra_pairs(self) -> Iterable[Tuple[str, str]]:
         """
@@ -229,6 +233,92 @@ class InteractomeWriter:
 
             for pid in (ids_b or self.proteome_b.ids):
                 yield (pid, self.proteome_b.sequences[pid], 1)
+
+    @staticmethod
+    def _build_colabfold_seq_str(seq_list: List[Tuple[str, str, int]]) -> str:
+        """
+        Builds the ColabFold multimer sequence string (SEQ_A:SEQ_B:...).
+
+        Handles stoichiometry: count=2 for chain A repeats SEQ_A twice.
+
+        Parameters
+        ----------
+        seq_list : List[Tuple[str, str, int]]
+            List of (chain_id, sequence, count).
+
+        Returns
+        -------
+        str
+            Colon-separated sequence string ready for ColabFold.
+        """
+        parts = []
+        for _, seq, count in seq_list:
+            parts.extend([seq] * count)
+        return ":".join(parts)
+   
+    def _build_seq_list_from_entry(self, kind: str, entry, mode: str,
+                                counts_map: Optional[Dict[str, int]]) -> Tuple[list, str, str, str]:
+        """
+        Shared logic to build (seq_list, name, idA, idB) from an iterator entry.
+        Extracted to avoid duplication between FASTA and CSV writers.
+        """
+        seq_list = []
+        name = ""
+        idA, idB = "", ""
+
+        if kind == "pair":
+            idA_raw, idB_raw = entry
+            prot_A = self.proteome_a
+            prot_B = self.proteome_b if mode == "inter_pairs" else self.proteome_a
+
+            if mode == "intra_pairs" and idA_raw > idB_raw:
+                idA, idB = idB_raw, idA_raw
+                prot_A, prot_B = prot_B, prot_A
+            else:
+                idA, idB = idA_raw, idB_raw
+
+            cntA = counts_map.get(idA, 1) if counts_map else 1
+            cntB = counts_map.get(idB, 1) if counts_map else 1
+            seq_list = [(idA, prot_A.sequences[idA], cntA),
+                        (idB, prot_B.sequences[idB], cntB)]
+            name = f"{idA}__{idB}"
+
+        elif kind == "homo":
+            pid, copies = entry
+            seq_list = [(pid, self.proteome_a.sequences[pid], copies)]
+            name = f"{pid}__{copies}"
+            idA = pid
+
+        elif kind == "single":
+            pid, seq, cnt = entry
+            seq_list = [(pid, seq, cnt)]
+            name = pid
+            idA = pid
+
+        return seq_list, name, idA, idB 
+    
+    def _make_iterator(self, mode: str, nmin: int, nmax: int,
+                    ids_a: Optional[list], ids_b: Optional[list]):
+        """Builds the job iterator from mode. Shared between FASTA and CSV writers."""
+        if mode == "intra_pairs":
+            pairs = self.generate_intra_pairs()
+            if ids_a:
+                pairs = (p for p in pairs if p[0] in ids_a and p[1] in ids_a)
+            return (("pair", p) for p in pairs)
+
+        elif mode == "inter_pairs":
+            return (("pair", p) for p in self.generate_inter_pairs())
+
+        elif mode == "homomers":
+            return (("homo", h) for h in self.generate_homo_mers(nmin=nmin, nmax=nmax))
+
+        elif mode == "single":
+            source = "both" if self.mode == "inter" else "a"
+            return (("single", s) for s in self.generate_single_run(source=source, ids_a=ids_a, ids_b=ids_b))
+
+        else:
+            raise ValueError(f"Unknown mode: '{mode}'. Choose from: intra_pairs, inter_pairs, homomers, single.")
+
 
     def write_interactome_jobs(
         self,
@@ -636,6 +726,229 @@ class InteractomeWriter:
 
         return data
 
+    # =============================================================================
+    # STRATEGY A — One FASTA per job (630 files for 36-protein interactome)
+    # =============================================================================
+
+    def write_colabfold_fastas(
+        self,
+        output_dir: str,
+        *,
+        mode: str = "intra_pairs",
+        nmin: int = 2,
+        nmax: int = 6,
+        counts_map: Optional[Dict[str, int]] = None,
+        ids_a: Optional[List[str]] = None,
+        ids_b: Optional[List[str]] = None,
+        index_name: str = "colabfold_index.csv",
+    ) -> List[dict]:
+        """
+        Writes one FASTA file per job for colabfold_batch.
+
+        Each pair generates a separate .fasta file:
+
+            >ProtA__ProtB
+            SEQUENCEA:SEQUENCEB
+
+        This enables per-job control: easy resume, individual monitoring,
+        and selective re-runs of failed jobs.
+
+        Parameters
+        ----------
+        output_dir : str
+            Directory where FASTA files and the index CSV will be saved.
+        mode : str, optional
+            Generation strategy: 'intra_pairs', 'inter_pairs', 'homomers', 'single'.
+            Defaults to "intra_pairs".
+        nmin : int, optional
+            Minimum stoichiometry for homomers. Defaults to 2.
+        nmax : int, optional
+            Maximum stoichiometry for homomers. Defaults to 6.
+        counts_map : dict, optional
+            Custom stoichiometry override per protein ID. Defaults to None.
+        ids_a : list, optional
+            Subset of Proteome A IDs to process.
+        ids_b : list, optional
+            Subset of Proteome B IDs to process.
+        index_name : str, optional
+            Name for the metadata CSV. Defaults to "colabfold_index.csv".
+
+        Returns
+        -------
+        List[dict]
+            Metadata for every job written.
+
+        Notes
+        -----
+        - Produces N separate colabfold_batch calls (one per FASTA).
+        - Best for: fine-grained monitoring, partial re-runs, GPU parallelism across nodes.
+        - For 36 proteins → 630 FASTA files and 630 colabfold_batch calls.
+        """
+        out_path = Path(output_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+
+        iterator = self._make_iterator(mode, nmin, nmax, ids_a, ids_b)
+
+        metas: List[dict] = []
+        index_path = out_path / index_name
+
+        with open(index_path, "w", newline="", encoding="utf-8") as fh:
+            fieldnames = ["name", "mode", "idA", "idB", "countA", "countB",
+                        "total_residues", "file_path"]
+            w = csv.DictWriter(fh, fieldnames=fieldnames)
+            w.writeheader()
+
+            for kind, entry in iterator:
+                seq_list, name, idA, idB = self._build_seq_list_from_entry(
+                    kind, entry, mode, counts_map
+                )
+                total_res = sum(len(s) * c for _, s, c in seq_list)
+                seq_str = self._build_colabfold_seq_str(seq_list)
+
+                save_path = out_path / f"{name}.fasta"
+                with open(save_path, "w", encoding="utf-8") as f:
+                    f.write(f">{name}\n{seq_str}\n")
+
+                logger.debug(f"Written: {save_path.name} ({total_res} residues)")
+
+                meta = {
+                    "name": name,
+                    "mode": mode,
+                    "idA": idA,
+                    "idB": idB,
+                    "countA": seq_list[0][2],
+                    "countB": seq_list[1][2] if len(seq_list) > 1 else "",
+                    "total_residues": total_res,
+                    "file_path": str(save_path),
+                }
+                metas.append(meta)
+                w.writerow(meta)
+
+        logger.info(f"[FASTA strategy] Written {len(metas)} FASTA files to: {out_path}")
+        return metas
+
+
+    # =============================================================================
+    # STRATEGY B — Single CSV batch (one colabfold_batch call for all jobs)
+    # =============================================================================
+
+    def write_colabfold_csv(
+        self,
+        output_dir: str,
+        *,
+        mode: str = "intra_pairs",
+        nmin: int = 2,
+        nmax: int = 6,
+        counts_map: Optional[Dict[str, int]] = None,
+        ids_a: Optional[List[str]] = None,
+        ids_b: Optional[List[str]] = None,
+        csv_name: str = "colabfold_input.csv",
+        index_name: str = "colabfold_index.csv",
+    ) -> List[dict]:
+        """
+        Writes a single CSV file for colabfold_batch containing all jobs.
+
+        ColabFold's CSV format:
+
+            id,sequence
+            ProtA__ProtB,SEQUENCEA:SEQUENCEB
+            ProtC__ProtD,SEQUENCEC:SEQUENCED
+
+        A single colabfold_batch call processes all rows:
+
+            colabfold_batch input.csv outputs/
+
+        ColabFold internally handles the MSA queue and can reuse MSA results
+        across pairs sharing the same protein — significantly faster than
+        630 individual calls for an interactome of 36 proteins.
+
+        Parameters
+        ----------
+        output_dir : str
+            Directory where the CSV and index will be saved.
+        mode : str, optional
+            Generation strategy: 'intra_pairs', 'inter_pairs', 'homomers', 'single'.
+            Defaults to "intra_pairs".
+        nmin : int, optional
+            Minimum stoichiometry for homomers. Defaults to 2.
+        nmax : int, optional
+            Maximum stoichiometry for homomers. Defaults to 6.
+        counts_map : dict, optional
+            Custom stoichiometry override per protein ID. Defaults to None.
+        ids_a : list, optional
+            Subset of Proteome A IDs to process.
+        ids_b : list, optional
+            Subset of Proteome B IDs to process.
+        csv_name : str, optional
+            Filename for the ColabFold input CSV. Defaults to "colabfold_input.csv".
+        index_name : str, optional
+            Filename for the metadata index CSV. Defaults to "colabfold_index.csv".
+
+        Returns
+        -------
+        List[dict]
+            Metadata for every job in the CSV.
+
+        Notes
+        -----
+        - Produces a single colabfold_batch call.
+        - Best for: large interactomes, MSA reuse, single-node runs.
+        - ColabFold writes each job's output to a subfolder named after the 'id' column.
+        - For 36 proteins → 1 CSV with 630 rows and 1 colabfold_batch call.
+
+        Warnings
+        --------
+        - If the run is interrupted, you lose progress on all unfinished jobs.
+        Use `write_colabfold_fastas` if you need fine-grained resume control.
+        """
+        out_path = Path(output_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+
+        iterator = self._make_iterator(mode, nmin, nmax, ids_a, ids_b)
+
+        metas: List[dict] = []
+        cf_csv_path = out_path / csv_name
+        index_path = out_path / index_name
+
+        # Write ColabFold input CSV (id, sequence)
+        with open(cf_csv_path, "w", newline="", encoding="utf-8") as cf_fh, \
+            open(index_path, "w", newline="", encoding="utf-8") as idx_fh:
+
+            cf_writer = csv.writer(cf_fh)
+            cf_writer.writerow(["id", "sequence"])
+
+            idx_fieldnames = ["name", "mode", "idA", "idB", "countA", "countB",
+                            "total_residues"]
+            idx_writer = csv.DictWriter(idx_fh, fieldnames=idx_fieldnames)
+            idx_writer.writeheader()
+
+            for kind, entry in iterator:
+                seq_list, name, idA, idB = self._build_seq_list_from_entry(
+                    kind, entry, mode, counts_map
+                )
+                total_res = sum(len(s) * c for _, s, c in seq_list)
+                seq_str = self._build_colabfold_seq_str(seq_list)
+
+                cf_writer.writerow([name, seq_str])
+
+                meta = {
+                    "name": name,
+                    "mode": mode,
+                    "idA": idA,
+                    "idB": idB,
+                    "countA": seq_list[0][2],
+                    "countB": seq_list[1][2] if len(seq_list) > 1 else "",
+                    "total_residues": total_res,
+                }
+                metas.append(meta)
+                idx_writer.writerow(meta)
+
+        logger.info(
+            f"[CSV strategy] Written {len(metas)} jobs to: {cf_csv_path}\n"
+            f"  → Run with: colabfold_batch {cf_csv_path} <output_dir>"
+        )
+        return metas
+    
 class InteractomeRunner:
 
     """
@@ -673,7 +986,7 @@ class InteractomeRunner:
         """
 
 
-        self._available_modes = ["af3", "boltz2"]
+        self._available_modes = ["af3", "boltz2","colabfold"]
 
         if mode not in self._available_modes:
             raise ValueError(f"Mode '{mode}' is invalid. Supported modes: {', '.join(self._available_modes)}")
@@ -696,7 +1009,10 @@ class InteractomeRunner:
             
         elif self.mode == "boltz2":
             self.inputs = list(self.input_dir.glob("*.yaml"))
-            
+
+        elif self.mode == "colabfold":
+            self.inputs = list(self.input_dir.glob("*.fasta"))
+
         else:
             self.inputs = []
 
@@ -709,7 +1025,10 @@ class InteractomeRunner:
         }
         
         # Determine initial status
-        self.status = self.check_run()
+        if self.mode == "colabfold":
+            self.status = self.check_colabfold_run()
+        else:
+            self.status = self.check_run()
         logger.info(f"Initialized Runner in '{mode}' mode. Found {len(self.inputs)} inputs.")
 
     def _parse_af3_job(self, input_json: Path)-> Dict[str, Any]:
@@ -837,6 +1156,80 @@ class InteractomeRunner:
         
         return df
     
+    @staticmethod
+    def _build_colabfold_command(
+        colabfold_bin: str,
+        num_recycle: int,
+        num_models: int,
+        model_order: str,
+        amber: bool,
+        templates: bool,
+        use_gpu_relax: bool,
+        random_seed: int,
+        extra_flags: List[str],
+    ) -> List[str]:
+        """Builds the base colabfold_batch command (without input/output args)."""
+        cmd = [
+            colabfold_bin,
+            "--num-recycle", str(num_recycle),
+            "--num-models", str(num_models),
+            "--model-order", model_order,
+            "--random-seed", str(random_seed),
+        ]
+        if amber:
+            cmd.append("--amber")
+        if templates:
+            cmd.append("--templates")
+        if use_gpu_relax:
+            cmd.append("--use-gpu-relax")
+        cmd.extend(extra_flags)
+        return cmd
+
+    @staticmethod
+    def _run_single_colabfold_job(
+        name: str,
+        fasta_path: Path,
+        output_dir: Path,
+        base_cmd: List[str],
+        dry_run: bool = False,
+    ) -> dict:
+        """Runs colabfold_batch for a single FASTA and captures result."""
+        output_dir.mkdir(parents=True, exist_ok=True)
+        full_cmd = base_cmd + [str(fasta_path), str(output_dir)]
+
+        if dry_run:
+            logger.info(f"[DRY RUN] {name}: {' '.join(full_cmd)}")
+            return {"name": name, "status": "DRY_RUN", "returncode": 0, "elapsed_s": 0.0}
+
+        log_file = output_dir / "colabfold.log"
+        t0 = time.time()
+
+        try:
+            with open(log_file, "w") as log_fh:
+                proc = subprocess.run(
+                    full_cmd,
+                    stdout=log_fh,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                )
+            elapsed = round(time.time() - t0, 1)
+            status = "COMPLETED" if proc.returncode == 0 else "FAILED"
+
+            if proc.returncode == 0:
+                logger.info(f"✓ {name} completed in {elapsed}s")
+            else:
+                logger.error(f"✗ {name} failed (rc={proc.returncode}). Log: {log_file}")
+
+            return {"name": name, "status": status,
+                    "returncode": proc.returncode, "elapsed_s": elapsed}
+
+        except FileNotFoundError:
+            logger.error(
+                "colabfold_batch not found. Pass the full path via `colabfold_bin` "
+                "or add localcolabfold to PATH."
+            )
+            raise
+
 
     def write_status(self, file_name: Optional[Union[str, Path]] = None, update: bool = False) -> None:
         """
@@ -922,6 +1315,273 @@ class InteractomeRunner:
                 logger.error(f"Source file not found for job {ppi_id}: {source_file}")
 
         logger.info(f"Successfully copied {copied_count}/{len(missing_jobs)} input files.")
+
+    def run_colabfold_fastas(
+    self,
+    *,
+    colabfold_bin: str = "colabfold_batch",
+    num_recycle: int = 3,
+    num_models: int = 5,
+    model_order: str = "1,2,3,4,5",
+    amber: bool = True,
+    templates: bool = True,
+    use_gpu_relax: bool = True,
+    random_seed: int = 0,
+    extra_flags: Optional[List[str]] = None,
+    max_workers: int = 1,
+    dry_run: bool = False,
+) -> List[dict]:
+        """
+        Launches one colabfold_batch call per pending FASTA in input_dir.
+
+        Reads pending jobs from self.status (jobs not yet COMPLETED) and runs
+        each one sequentially or in parallel via ThreadPoolExecutor.
+
+        Parameters
+        ----------
+        colabfold_bin : str, optional
+            Path or name of the colabfold_batch binary. Defaults to "colabfold_batch".
+            If localcolabfold is not on PATH, pass the full absolute path.
+        num_recycle : int, optional
+            Number of recycling iterations. Defaults to 3.
+        num_models : int, optional
+            Number of models to generate per job. Defaults to 5.
+        model_order : str, optional
+            Comma-separated model indices. Defaults to "1,2,3,4,5".
+        amber : bool, optional
+            Apply AMBER relaxation. Defaults to True.
+        templates : bool, optional
+            Use structural templates. Defaults to True.
+        use_gpu_relax : bool, optional
+            Run relaxation on GPU. Defaults to True.
+        random_seed : int, optional
+            Reproducibility seed. Defaults to 0.
+        extra_flags : List[str], optional
+            Additional colabfold_batch flags. Defaults to None.
+        max_workers : int, optional
+            Parallel jobs. Keep at 1 for single-GPU setups. Defaults to 1.
+        dry_run : bool, optional
+            Print commands without executing. Defaults to False.
+
+        Returns
+        -------
+        List[dict]
+            One entry per job: {'name', 'status', 'returncode', 'elapsed_s'}.
+        """
+        self.status = self.check_colabfold_run()
+        pending = self.status.loc[self.status["status"] != "COMPLETED", "PPI"].tolist()
+
+        if not pending:
+            logger.info("All jobs already COMPLETED. Nothing to run.")
+            return []
+
+        logger.info(f"[FASTA strategy] Launching {len(pending)} pending jobs...")
+
+        jobs = []
+        for ppi_name in pending:
+            fasta_path = self.input_dir / f"{ppi_name}.fasta"
+            if not fasta_path.exists():
+                logger.warning(f"FASTA not found, skipping: {fasta_path}")
+                continue
+            jobs.append((ppi_name, fasta_path, self.output_dir / ppi_name))
+
+        base_cmd = self._build_colabfold_command(
+            colabfold_bin, num_recycle, num_models, model_order,
+            amber, templates, use_gpu_relax, random_seed, extra_flags or []
+        )
+
+        results = []
+        if max_workers == 1:
+            for name, fasta, out_dir in jobs:
+                results.append(self._run_single_colabfold_job(name, fasta, out_dir, base_cmd, dry_run))
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(self._run_single_colabfold_job, name, fasta, out_dir, base_cmd, dry_run): name
+                    for name, fasta, out_dir in jobs
+                }
+                for future in concurrent.futures.as_completed(futures):
+                    results.append(future.result())
+
+        n_ok = sum(1 for r in results if r["returncode"] == 0)
+        logger.info(f"[FASTA strategy] Done: {n_ok}/{len(results)} jobs succeeded.")
+        return results
+
+
+    def run_colabfold_csv(
+        self,
+        csv_path: str,
+        output_dir: str,
+        *,
+        colabfold_bin: str = "colabfold_batch",
+        num_recycle: int = 3,
+        num_models: int = 5,
+        model_order: str = "1,2,3,4,5",
+        amber: bool = True,
+        templates: bool = True,
+        use_gpu_relax: bool = True,
+        random_seed: int = 0,
+        extra_flags: Optional[List[str]] = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """
+        Launches a single colabfold_batch call using a pre-built CSV input file.
+
+        This is the recommended approach for large interactomes. ColabFold
+        processes all rows in the CSV sequentially, potentially reusing MSA
+        results across pairs that share the same protein sequence.
+
+        Parameters
+        ----------
+        csv_path : str
+            Path to the ColabFold input CSV (generated by write_colabfold_csv).
+        output_dir : str
+            Directory where ColabFold will write results. Each job gets a
+            subfolder named after its 'id' column value.
+        colabfold_bin : str, optional
+            Path or name of the colabfold_batch binary. Defaults to "colabfold_batch".
+        num_recycle : int, optional
+            Number of recycling iterations. Defaults to 3.
+        num_models : int, optional
+            Number of models to generate per job. Defaults to 5.
+        model_order : str, optional
+            Comma-separated model indices. Defaults to "1,2,3,4,5".
+        amber : bool, optional
+            Apply AMBER relaxation. Defaults to True.
+        templates : bool, optional
+            Use structural templates. Defaults to True.
+        use_gpu_relax : bool, optional
+            Run relaxation on GPU. Defaults to True.
+        random_seed : int, optional
+            Reproducibility seed. Defaults to 0.
+        extra_flags : List[str], optional
+            Additional colabfold_batch flags. Defaults to None.
+        dry_run : bool, optional
+            Print command without executing. Defaults to False.
+
+        Returns
+        -------
+        dict
+            Keys: 'status', 'returncode', 'elapsed_s', 'log_path'.
+
+        Warnings
+        --------
+        - No per-job resume: if the run is interrupted, completed jobs within
+        the CSV are not re-run (ColabFold skips existing outputs), but you
+        cannot easily restart from the middle.
+        - For fine-grained control, use run_colabfold_fastas instead.
+        """
+        csv_path = Path(csv_path)
+        out_path = Path(output_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+
+        if not csv_path.exists():
+            raise FileNotFoundError(f"ColabFold input CSV not found: {csv_path}")
+
+        base_cmd = self._build_colabfold_command(
+            colabfold_bin, num_recycle, num_models, model_order,
+            amber, templates, use_gpu_relax, random_seed, extra_flags or []
+        )
+        full_cmd = base_cmd + [str(csv_path), str(out_path)]
+
+        if dry_run:
+            logger.info(f"[DRY RUN] CSV batch: {' '.join(full_cmd)}")
+            return {"status": "DRY_RUN", "returncode": 0, "elapsed_s": 0.0, "log_path": None}
+
+        log_path = out_path / "colabfold_batch.log"
+        logger.info(f"[CSV strategy] Launching batch job. Log: {log_path}")
+        logger.debug(f"Command: {' '.join(full_cmd)}")
+
+        t0 = time.time()
+        try:
+            with open(log_path, "w") as log_fh:
+                proc = subprocess.run(
+                    full_cmd,
+                    stdout=log_fh,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                )
+            elapsed = round(time.time() - t0, 1)
+            status = "COMPLETED" if proc.returncode == 0 else "FAILED"
+
+            if proc.returncode == 0:
+                logger.info(f"✓ Batch completed in {elapsed}s")
+            else:
+                logger.error(f"✗ Batch failed (rc={proc.returncode}). Log: {log_path}")
+
+            return {"status": status, "returncode": proc.returncode,
+                    "elapsed_s": elapsed, "log_path": str(log_path)}
+
+        except FileNotFoundError:
+            logger.error(
+                "colabfold_batch not found. Pass the full path via `colabfold_bin`."
+            )
+            raise
+
+
+    def check_colabfold_run(self, expected_models: int = 5) -> pd.DataFrame:
+        """
+        Checks execution status for ColabFold jobs (works for both strategies).
+
+        Scans output_dir for subdirectories and counts ranked PDB files.
+        Compatible with both FASTA-per-job and CSV batch outputs since
+        ColabFold always writes to subfolder-per-job regardless of input format.
+
+        Parameters
+        ----------
+        expected_models : int, optional
+            Number of ranked PDB models expected per job. Defaults to 5.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: PPI, num_models, status (COMPLETED / RUNNING / FAILED).
+        """
+        rows = []
+
+        # Determine job names: from FASTA inputs if available, else from output dirs
+        if self.inputs:
+            job_names = [p.stem for p in self.inputs]
+        else:
+            job_names = [p.name for p in self.output_dir.glob("*") if p.is_dir()]
+
+        if not job_names:
+            logger.warning("No jobs found to check.")
+            return pd.DataFrame(columns=["PPI", "num_models", "status"])
+
+        for ppi_name in job_names:
+            job_out = self.output_dir / ppi_name
+
+            if job_out.exists():
+                # Primary pattern: rank_001_alphafold2_multimer_v3_model_1_seed_000.pdb
+                pdb_count = len(list(job_out.glob("*rank_*_model_*.pdb")))
+                # Fallback: relaxed models
+                if pdb_count == 0:
+                    pdb_count = len(list(job_out.glob("*relaxed*.pdb")))
+            else:
+                pdb_count = 0
+
+            if pdb_count >= expected_models:
+                status = "COMPLETED"
+            elif pdb_count > 0:
+                status = "RUNNING"
+            else:
+                status = "FAILED"
+
+            rows.append({"PPI": ppi_name, "num_models": pdb_count, "status": status})
+
+        df = pd.DataFrame(rows)
+        custom_order = ["FAILED", "RUNNING", "PENDING", "COMPLETED"]
+        df["status"] = pd.Categorical(df["status"], categories=custom_order, ordered=True)
+        df.sort_values("status", inplace=True)
+
+        logger.info(
+            f"ColabFold status — "
+            f"COMPLETED: {(df.status == 'COMPLETED').sum()} | "
+            f"RUNNING: {(df.status == 'RUNNING').sum()} | "
+            f"FAILED: {(df.status == 'FAILED').sum()}"
+        )
+        return df
 
 class InteractomeProcessor:
     """
