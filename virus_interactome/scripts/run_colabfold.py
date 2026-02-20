@@ -25,6 +25,9 @@ import logging
 import sys
 from pathlib import Path
 
+# Permite ejecutar el script directamente desde el repo sin instalar el paquete
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 from virus_interactome import InteractomeWriter, InteractomeRunner
 
 # ---------------------------------------------------------------------------
