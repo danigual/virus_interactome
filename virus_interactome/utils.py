@@ -232,6 +232,98 @@ def process_full_data_boltz(mol_file: str,
             "iptm": confidence_data.get("iptm", None),
             "iptm_chain_pair": iptm_by_chain_as_list}
 
+def process_full_data_colabfold(mol_file: str,
+                               scores_json_path: str | None = None) -> dict:
+    """
+    Process ColabFold output files and return standardized structural confidence data.
+
+    Infers the scores JSON from the model PDB filename by replacing
+    '_unrelaxed_' or '_relaxed_' with '_scores_'.
+
+    Parameters
+    ----------
+    mol_file : str
+        Path to the ranked PDB/CIF model file (mandatory).
+    scores_json_path : str, optional
+        Path to the scores JSON file. If None, inferred from mol_file.
+
+    Returns
+    -------
+    dict
+        Standardized dictionary with keys:
+        'pae', 'atom_plddts', 'ca_plddts', 'cb_plddts',
+        'chain_boundaries_by_res', 'chain_boundaries_by_atom',
+        'token_chain_ids', 'ptm', 'iptm', 'iptm_chain_pair'.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the model file or scores JSON cannot be found.
+    ValueError
+        If PAE/pLDDT dimensions do not match the structure.
+    """
+    base_path = Path(mol_file)
+    dir_name = base_path.parent
+    stem = base_path.stem  # e.g. NAME_unrelaxed_rank_001_alphafold2_multimer_v3_model_1_seed_000
+
+    if scores_json_path is None:
+        scores_stem = stem.replace("_unrelaxed_", "_scores_").replace("_relaxed_", "_scores_")
+        scores_json_path = str(dir_name / f"{scores_stem}.json")
+
+    for file_path, description in [
+        (mol_file, "molecule PDB/CIF"),
+        (scores_json_path, "scores JSON"),
+    ]:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Missing {description} file: {file_path}")
+
+    mol = Molecule(mol_file)
+    scores_data = load_json(scores_json_path)
+
+    # CA-level arrays
+    chain_by_res = mol.chain[mol.name == "CA"]
+    pae_data = np.array(scores_data["pae"])          # already in Angstroms
+    plddt_data = np.array(scores_data["plddt"])       # already 0-100
+
+    n_res = len(chain_by_res)
+    if pae_data.shape[0] != n_res:
+        raise ValueError(
+            f"PAE size ({pae_data.shape[0]}) != CA atom count ({n_res})"
+        )
+    if len(plddt_data) != n_res:
+        raise ValueError(
+            f"pLDDT length ({len(plddt_data)}) != CA atom count ({n_res})"
+        )
+
+    # Chain boundaries
+    chain_boundaries: Dict[str, Any] = {}
+    chain_boundaries_by_atom: Dict[str, Any] = {}
+    unique_chains = np.unique(chain_by_res)
+
+    for chain_id in unique_chains:
+        res_idxs = np.where(chain_by_res == chain_id)[0]
+        chain_boundaries[chain_id] = (int(res_idxs.min()), int(res_idxs.max()))
+        atom_idxs = np.where(mol.chain == chain_id)[0]
+        chain_boundaries_by_atom[chain_id] = (int(atom_idxs.min()), int(atom_idxs.max()))
+
+    # ColabFold does not provide per-chain iptm; fill with NaN
+    n_chains = len(unique_chains)
+    iptm_chain_pair = np.full((n_chains, n_chains), np.nan)
+
+    return {
+        "pae": pae_data,
+        "atom_plddts": mol.beta,
+        "ca_plddts": plddt_data,
+        "cb_plddts": plddt_data,          # CA used as proxy (no separate CB file)
+        "chain_boundaries_by_res": chain_boundaries,
+        "chain_boundaries_by_atom": chain_boundaries_by_atom,
+        "token_chain_ids": chain_by_res,
+        "ptm": scores_data.get("ptm", None),
+        "iptm": scores_data.get("iptm", None),
+        "iptm_chain_pair": iptm_chain_pair,
+    }
+
+
 def process_full_data_af3(mol_file: str,
                           json_path: str | None = None,
                           summary_json_path: str | None = None,)-> dict: ## Maybe this should be a mol_file also?

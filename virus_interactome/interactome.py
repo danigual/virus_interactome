@@ -18,7 +18,7 @@ from typing import Dict, Iterable, List, Tuple, Optional, Any, Callable, Union
 from pathlib import Path
 from moleculekit.molecule import Molecule
 
-from .utils import load_json, load_boltz_input, check_sequence_validity, process_full_data_af3, process_full_data_boltz
+from .utils import load_json, load_boltz_input, check_sequence_validity, process_full_data_af3, process_full_data_boltz, process_full_data_colabfold
 from .proteome_manager import ProteomeManager
 from .metrics import calculate_all_metrics
 from .plotting import plot_boxplots, plot_iptm_vs_ptm, plot_pae_clusters, plot_paes, plot_plddt
@@ -1598,7 +1598,7 @@ class InteractomeProcessor:
         df_hom (Optional[pd.DataFrame]): DataFrame containing metrics for homomeric complexes.
         cluster_data (Optional[pd.DataFrame]): DataFrame containing clustering results (if applicable).
     """
-    _SUPPORTED_ENGINES = {"af3", "boltz"}
+    _SUPPORTED_ENGINES = {"af3", "boltz", "colabfold"}
 
     def __init__(self, model_list: List[Union[str, Path]], engine: str = "af3"):
         """
@@ -1808,10 +1808,10 @@ class InteractomeProcessor:
             # molecule_model = MoleculeModel.from_af3(model_file)
         elif model_type.lower() == "boltz":
             full_data = process_full_data_boltz(str(path_obj))
-            # full_data = process_full_data_boltz(model_file)
-            # molecule_model = MoleculeModel.from_boltz(model_file)
+        elif model_type.lower() == "colabfold":
+            full_data = process_full_data_colabfold(str(path_obj))
         else:
-            raise ValueError(f"Model type '{model_type}' not supported. Use 'AF3' or 'Boltz'.")
+            raise ValueError(f"Model type '{model_type}' not supported. Use 'AF3', 'Boltz' or 'ColabFold'.")
 
         ## Plotting pLDDT
         plddt_path = path_obj.with_name(f"{path_obj.stem}_plddt.png")
