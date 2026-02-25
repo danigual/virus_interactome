@@ -1,58 +1,86 @@
-# Virus Interactome
-A Python-based toolkit for the analysis and visualization of virus-host protein-protein interaction (PPI) networks.
+# Virus Interactome 🧬
+
+A high-throughput Python toolkit for the generation, execution, and structural analysis of viral protein-protein interaction (PPI) networks, covering both **virus-host** and **internal viral (intra-interactome)** systems.
+
+`virus_interactome` bridges the gap between proteomic sequence data and structural "interactomics," providing a complete pipeline to model and analyze how viral factors interact with each other and with host cellular machinery.
 
 ---
 
-## 🧬 Overview
+## 🚀 Core Architecture
 
-`virus_interactome` is a Python package designed to help researchers process complex viral interaction data. It provides a structured workflow to identify key host proteins targeted by viral factors, analyze network topology, and visualize the interface between pathogens and host cells.
+The package is organized into four specialized pillars that manage the interactome lifecycle:
 
-## ✨ Key Features
+### 1. **Proteome Management** (`ProteomeManager`)
+* **Data Wrangling:** Automated cleaning, sequence validation, and standardization of FASTA datasets.
+* **Physicochemical Profiling:** Compute molecular weight, isoelectric point (pI), instability index, and aromaticity.
+* **Identity Analysis:** Multi-processed sequence identity matrices to identify redundant proteins or high-similarity clusters.
 
-* **Data Wrangling:** Automated cleaning and standardization of PPI datasets.
-* **Network Analysis:** Compute centrality metrics (Degree, Betweenness, Eigenvector) to find viral "hubs."
-* **Module Detection:** Identify functional clusters within the host-virus interactome.
-* **Visualization:** Integration with `matplotlib` and `networkx` for high-quality network diagrams.
+### 2. **Job Orchestration** (`InteractomeWriter` & `InteractomeRunner`)
+* **Flexible Modes:** 
+    * **Intra-interactome:** Systematic analysis of interactions within a single proteome (e.g., all-vs-all viral proteins).
+    * **Inter-interactome:** Mapping interactions between two different systems (e.g., virus vs. host).
+* **Multi-Engine Support:** Generate native input formats for **AlphaFold 3** (.json), **Boltz2** (.yaml), and **ColabFold** (.fasta/.csv).
+* **Stoichiometry:** Support for pairs, homomers (oligomers), and monomers.
+* **Status Monitoring:** Real-time tracking of job states (`PENDING`, `RUNNING`, `COMPLETED`, `FAILED`).
 
-## 🚀 Installation
+### 3. **Structural Processing** (`InteractomeProcessor`)
+* **Automated Extraction:** Parse `ipTM`, `pTM`, and chain-specific confidence scores from CIF/PDB and JSON outputs.
+* **Advanced Metrics:** Calculation of high-confidence interaction markers:
+    * **pDockQ & pDockQ2:** Predicted docking quality scores.
+    * **ipSAE:** interface-specific Predicted Aligned Error.
+    * **LIS:** Local Interaction Strength.
+* **Interface Clustering:** Uses **DBSCAN** density-based clustering on the PAE matrix to identify and characterize specific interaction interfaces.
 
-Clone the repository and install the dependencies:
+### 4. **Ensemble Analysis** (`InteractomeAnalyzer`)
+* **Peptide-Protein Pipeline:** Specialized workflow for identifying and clustering peptide binding sites on larger protein surfaces.
+* **Structural Alignment:** Automated superimposition of interaction ensembles based on high-confidence (pLDDT > 70) reference binder structures.
+* **Visualization:** Automated generation of **ChimeraX** scripts (`.cxc`) and sessions (`.cxs`) for 3D analysis of binding site clusters.
 
-```bash
-git clone [https://github.com/PabloHNieto/virus_interactome.git](https://github.com/PabloHNieto/virus_interactome.git)
-cd virus_interactome
-pip install -e .
-```
+---
+
+## 📊 Visualization Suite
+
+The package produces publication-ready diagrams:
+* **PAE Heatmaps:** With automated chain boundary detection.
+* **pLDDT Plots:** Color-coded by confidence bands.
+* **Metric Distribution:** Boxplots and iPTM vs pTM scatterplots.
+* **Cluster Visualization:** 2D projections of PAE interface clusters.
+
+---
 
 ## 🛠️ Quick Start
-The library is organized into specialized classes that handle different stages of the interactome pipeline:
 
-1. **Proteome**: manages sequence data and protein metadata (e.g., UniProt IDs, sequences).
-2. **InteractomeProcessor**: handles data normalization, filtering of low-confidence hits, and format conversion.
-3. **InteractomeRunner**: the execution engine that maps interactions onto the proteome and builds the graph.
-4. **InteractomeWritter**: exports processed interactomes into standard formats (CSV, JSON, or Cytoscape-compatible files).
-5. **InteractomeAnalyzer**: performs statistical and topological analysis, such as degree centrality and cluster detection.
-
+### 1. Generate Jobs (Intra-interactome Example)
 ```python
-from virus_interactome import (
-    Proteome, 
-    InteractomeProcessor, 
-    InteractomeRunner, 
-    InteractomeAnalyzer
-)
+from virus_interactome import ProteomeManager, InteractomeWriter
 
-# 1. Initialize Proteome data
-proteome = Proteome(fasta_path="path/to/species.fasta")
+# Load viral proteome
+virus = ProteomeManager("virus.fasta")
 
-# 2. Process raw interaction data
-processor = InteractomeProcessor(raw_data="raw_interactions.csv")
-clean_data = processor.clean_and_filter()
+# Generate all-vs-all intra-viral pairs for Boltz2
+writer = InteractomeWriter(proteome_a=virus)
+writer.write_interactome_jobs(engine="boltz2", output_dir="jobs_intra/", mode="intra_pairs")
+```
 
-# 3. Run the interactome construction
-runner = InteractomeRunner(proteome=proteome, interactions=clean_data)
-interactome_result = runner.execute()
+### 2. Process Results
+```python
+from virus_interactome import InteractomeProcessor, InteractomeRunner
 
-# 4. Analyze the resulting network
-analyzer = InteractomeAnalyzer(interactome_result)
-hubs = analyzer.calculate_centrality()
+# Check execution status
+runner = InteractomeRunner(path_of_inputs="jobs_intra/", path_of_outputs="results_intra/", mode="boltz2")
+status = runner.check_run()
+
+# Process completed models and extract pDockQ/ipSAE
+processor = InteractomeProcessor(model_list=runner.inputs, engine="boltz2")
+processor.process_models(output_path="analysis/")
+```
+
+---
+
+## 📦 Installation
+
+```bash
+git clone https://github.com/PabloHNieto/virus_interactome.git
+cd virus_interactome
+pip install -e .
 ```
