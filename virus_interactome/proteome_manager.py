@@ -303,11 +303,6 @@ class ProteomeManager:
     # -------------------------
     # 2. Export
     # -------------------------
-    def write_proteome(self, output_path: str, format: str = "fasta") -> None:
-        """
-        Write the proteome to the specified format (FASTA by default).
-        """
-        pass
 
     def summary(self) -> None:
         """
@@ -345,19 +340,4 @@ class ProteomeManager:
             "high_similarity_pairs": len(self.high_similarity_pairs)
         }
 
-    # -------------------------
-    # 3. Interactome preparation
-    # -------------------------
-    def create_af3_jobs(self, output_dir: str, template: str) -> None:
-        """
-        Generate input files for AlphaFold3 jobs.
-        """
-        pass
-
-    def create_boltz_jobs(self, output_dir: str, template: str) -> None:
-        """
-        Generate input files for Boltz2 jobs.
-        """
-        pass
-    
     

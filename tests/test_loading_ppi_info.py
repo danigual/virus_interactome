@@ -97,7 +97,7 @@ def test_process_full_data_boltz_with_dummy_data(
     )
 
     expected_pae = np.load(str(dummy_pae_boltz))["pae"]
-    expected_res_plddt = np.load(str(dummy_plddt_boltz))["plddt"]
+    expected_res_plddt = np.load(str(dummy_plddt_boltz))["plddt"] * 100
     expected_chain_boundaries_by_res = {"A": (0, 249), "B": (250, 453)}    
     expected_chain_boundaries_by_atom = {"A": (0, 1898), "B": (1899, 3517)}    
 

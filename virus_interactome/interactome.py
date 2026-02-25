@@ -561,13 +561,10 @@ class InteractomeWriter:
             if count < 1:
                 return False, f"Count for {chain_id} needs to be at least 1."
             
-            seq_clean = check_sequence_validity(seq)
+            if not check_sequence_validity(seq):
+                return False, f"{chain_id} is not a valid protein sequence."
 
-            # _validate_seq(seq_clean, strict=strict)
-            if not seq_clean:
-                return False, f"{chain_id} is not a valid protein sequnce."
-            # total_res += len(seq) * count
-            total_res += len(seq_clean) * count
+            total_res += len(seq) * count
 
         if total_res > residue_threshold:
             msg = (

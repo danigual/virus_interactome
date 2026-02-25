@@ -101,13 +101,13 @@ def test_boltz_writes_and_loads_yaml(tmp_path):
     # Entry shape & content
     e0 = parsed_yaml["sequences"][0]
     e1 = parsed_yaml["sequences"][1]
-    assert e0["protein"]["id"] == "A"
+    assert e0["protein"]["id"] == ["A"]
     assert e0["protein"]["sequence"] == "ACDE"
     assert "multiple_chains" not in e0
 
-    assert e1["protein"]["id"] == "B"
+    assert e1["protein"]["id"] == ["B", "C", "D"]
     assert e1["protein"]["sequence"] == "GGGG"
-    assert e1["protein"]["multiple_chains"] == "C,D"
+
 
     # Now use user's load_boltz_input which maps to AF3-like schema (list of one job)
     mapped = load_boltz_input(str(save_file), job_name="mapped_boltz")
