@@ -8,3 +8,4 @@ build/
 .installed.cfg
 *.egg
 CLAUDE.local.md
+INTERACTOME_DOC.md
