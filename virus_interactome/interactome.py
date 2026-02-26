@@ -2059,7 +2059,122 @@ class InteractomeAnalyzer:
         self._binder_data: Optional[pd.DataFrame] = None
         self._candidate_clusters: Optional[pd.DataFrame] = None
     
-    
+    def get_confidence_tiers(
+        self, 
+        ipsae_threshold: float = 0.5, 
+        pdockq2_threshold: float = 0.23, 
+        msa_threshold: int = 20
+    ) -> pd.DataFrame:
+        """
+        Categorizes interactome results into confidence Tiers based on 
+        structural, physical, and evolutionary metrics.
+
+        Parameters
+        ----------
+        ipsae_threshold : float, default=0.5
+            Minimum ipSAE for confidence.
+        pdockq2_threshold : float, default=0.23
+            Minimum pDockQ2 for physical plausibility.
+        msa_threshold : int, default=20
+            Minimum MSA depth for evolutionary support.
+
+        Returns
+        -------
+        pd.DataFrame
+            The interactome data with an added 'Tier' column.
+        """
+        if self._interactome_data is None:
+            raise RuntimeError("Interactome data not loaded. Set interactome_path first.")
+
+        df = self._interactome_data.copy()
+
+        # Handle variations in column names
+        ipsae_col = "ipSAE_AB" if "ipSAE_AB" in df.columns else "ipSAE"
+        pdockq2_col = "pDockQ2_AB" if "pDockQ2_AB" in df.columns else "pDockQ2"
+        msa_col = "msa_depth"
+
+        def classify(row):
+            if ipsae_col not in row or pdockq2_col not in row:
+                return "Unknown"
+            
+            msa_val = row.get(msa_col, 0)
+            ipsae_val = row[ipsae_col]
+            pdockq2_val = row[pdockq2_col]
+
+            # Tier 1: High structure, High physics, High MSA
+            if ipsae_val > ipsae_threshold and pdockq2_val > pdockq2_threshold and msa_val > msa_threshold:
+                return "Tier 1 (High Confidence)"
+            
+            # Tier 2: High structure, High physics, Low MSA (Potential Novel/Specific)
+            if ipsae_val > ipsae_threshold and pdockq2_val > pdockq2_threshold and msa_val <= msa_threshold:
+                return "Tier 2 (Specific/Novel)"
+
+            # Tier 3: High structure, Low physics
+            if ipsae_val > ipsae_threshold and pdockq2_val <= pdockq2_threshold:
+                return "Tier 3 (Weak/Dynamic)"
+
+            return "Low Confidence"
+
+        df["Tier"] = df.apply(classify, axis=1)
+        logger.info(f"Tier Classification: \n{df['Tier'].value_counts()}")
+        return df
+
+    def plot_confidence_landscape(self, output_path: Optional[Union[str, Path]] = None):
+        """
+        Generates a scatter plot of the interactome confidence landscape.
+        X-axis: pDockQ2, Y-axis: ipSAE, Size: msa_depth, Color: pLDDT_B.
+        """
+        import matplotlib.pyplot as plt
+        if self._interactome_data is None:
+            raise RuntimeError("Interactome data not loaded.")
+
+        df = self._interactome_data.copy()
+        
+        ipsae_col = "ipSAE_AB" if "ipSAE_AB" in df.columns else "ipSAE"
+        pdockq2_col = "pDockQ2_AB" if "pDockQ2_AB" in df.columns else "pDockQ2"
+        
+        if ipsae_col not in df.columns or pdockq2_col not in df.columns:
+            logger.error(f"Required columns {ipsae_col} or {pdockq2_col} not found for plotting.")
+            return
+
+        plt.figure(figsize=(10, 8))
+        
+        # Determine size (MSA depth) and color (pLDDT of binder B)
+        # We use a base size of 20 and scale by msa_depth
+        sizes = df["msa_depth"].fillna(0) * 2 + 20 if "msa_depth" in df.columns else 50
+        colors = df["pLDDT_mean_B"] if "pLDDT_mean_B" in df.columns else "blue"
+
+        scatter = plt.scatter(
+            df[pdockq2_col], 
+            df[ipsae_col], 
+            s=sizes, 
+            c=colors, 
+            cmap="viridis", 
+            alpha=0.6, 
+            edgecolors="w"
+        )
+        
+        plt.axhline(0.5, color="red", linestyle="--", alpha=0.5, label="ipSAE threshold (0.5)")
+        plt.axvline(0.23, color="blue", linestyle="--", alpha=0.5, label="pDockQ2 threshold (0.23)")
+        
+        plt.xlabel("Physical Plausibility (pDockQ2)")
+        plt.ylabel("Interface Confidence (ipSAE)")
+        plt.title("Interactome Confidence Landscape (Adenovirus)")
+        
+        if "pLDDT_mean_B" in df.columns:
+            cbar = plt.colorbar(scatter)
+            cbar.set_label("pLDDT (Chain B)")
+        
+        plt.legend(loc="upper left")
+        plt.grid(True, linestyle=":", alpha=0.6)
+
+        if output_path:
+            plt.savefig(output_path, dpi=300, bbox_inches="tight")
+            logger.info(f"Confidence landscape plot saved to {output_path}")
+        else:
+            plt.show()
+        plt.close()
+
     #Getters and setters
 
     # -------------------------------------------------------------------------
@@ -2233,14 +2348,15 @@ class InteractomeAnalyzer:
             return len(self._interactome_data)
         return 0
     
-    def run_full_pipeline(self, **kwargs):
+    def run_full_pipeline(self, ipsae_filter: Optional[float] = None, **kwargs):
         """
         Executes the complete analysis pipeline.
 
-        Currently triggers the peptide-protein pair analysis.
-        
         Parameters
         ----------
+        ipsae_filter : float, optional
+            If provided, only PPIs with ipSAE above this value will be processed 
+            in the structural pipeline.
         **kwargs
             Arguments passed to downstream methods, such as:
             - cluster_ratio_threshold (float, default=5)
@@ -2249,8 +2365,29 @@ class InteractomeAnalyzer:
         if self._cluster_data is None:
             logger.warning("Cannot run pipeline: Cluster data is missing.")
             return
+        
         logger.info("Starting peptide-protein analysis pipeline...")
-        self.analyze_peptide_proteins_pairs(**kwargs)
+        
+        # Filtering logic
+        if ipsae_filter is not None and self._interactome_data is not None:
+            # Determine correct column name
+            df = self._interactome_data
+            ipsae_col = "ipSAE_AB" if "ipSAE_AB" in df.columns else "ipSAE"
+            
+            # Identify high confidence PPI IDs
+            high_conf_ppis = df[df[ipsae_col] > ipsae_filter]["PPI"].unique()
+            logger.info(f"Applying ipSAE > {ipsae_filter} filter: {len(high_conf_ppis)} PPIs selected.")
+            
+            # Temporary filter of cluster data for this run
+            original_clusters = self._cluster_data
+            self._cluster_data = self._cluster_data[self._cluster_data["PPI"].isin(high_conf_ppis)]
+            
+            self.analyze_peptide_proteins_pairs(**kwargs)
+            
+            # Restore original data for state consistency
+            self._cluster_data = original_clusters
+        else:
+            self.analyze_peptide_proteins_pairs(**kwargs)
     
     def _get_candidate_clusters(self, cluster_ratio_threshold: float = 5.0, 
                                 min_peptide_len: int = 5)-> pd.DataFrame:
