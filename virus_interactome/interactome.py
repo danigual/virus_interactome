@@ -2122,51 +2122,77 @@ class InteractomeAnalyzer:
     def plot_confidence_landscape(self, output_path: Optional[Union[str, Path]] = None):
         """
         Generates a scatter plot of the interactome confidence landscape.
-        X-axis: pDockQ2, Y-axis: ipSAE, Size: msa_depth, Color: pLDDT_B.
+        X-axis: pDockQ2, Y-axis: ipSAE_d0_dom, Size: msa_depth, Color: pLDDT_B (AlphaFold colors).
         """
         import matplotlib.pyplot as plt
+        from matplotlib.colors import ListedColormap, BoundaryNorm
+        
         if self._interactome_data is None:
             raise RuntimeError("Interactome data not loaded.")
 
         df = self._interactome_data.copy()
         
-        ipsae_col = "ipSAE_AB" if "ipSAE_AB" in df.columns else "ipSAE"
-        pdockq2_col = "pDockQ2_AB" if "pDockQ2_AB" in df.columns else "pDockQ2"
+        # Priority for the y-axis: ipSAE_d0_dom_AB -> ipSAE_d0dom_AB -> ipSAE_AB
+        y_col = None
+        for col in ["ipSAE_d0_dom_AB", "ipSAE_d0dom_AB", "ipSAE_AB", "ipSAE"]:
+            if col in df.columns:
+                y_col = col
+                break
         
-        if ipsae_col not in df.columns or pdockq2_col not in df.columns:
-            logger.error(f"Required columns {ipsae_col} or {pdockq2_col} not found for plotting.")
+        pdockq2_col = "pDockQ2_AB" if "pDockQ2_AB" in df.columns else "pDockQ2"
+        plddt_col = "pLDDT_mean_B" if "pLDDT_mean_B" in df.columns else None
+        msa_col = "msa_depth" if "msa_depth" in df.columns else None
+
+        if not y_col or pdockq2_col not in df.columns:
+            logger.error(f"Required columns for plotting not found. Using {y_col} and {pdockq2_col}")
             return
+
+        # --- AlphaFold Color Scheme ---
+        # >90: #0053D6, 70-90: #65CBF3, 50-70: #FFDB13, <50: #FF7D45
+        af_colors = ["#FF7D45", "#FFDB13", "#65CBF3", "#0053D6"]
+        cmap = ListedColormap(af_colors)
+        norm = BoundaryNorm([0, 50, 70, 90, 100], cmap.N)
 
         plt.figure(figsize=(10, 8))
         
-        # Determine size (MSA depth) and color (pLDDT of binder B)
-        # We use a base size of 20 and scale by msa_depth
-        sizes = df["msa_depth"].fillna(0) * 2 + 20 if "msa_depth" in df.columns else 50
-        colors = df["pLDDT_mean_B"] if "pLDDT_mean_B" in df.columns else "blue"
+        # Scaling bubbles: Use square root to normalize size differences and scale down
+        if msa_col and msa_col in df.columns:
+            # Scale factor 8 and base 15 makes them visible but small
+            sizes = np.sqrt(df[msa_col].fillna(0)) * 8 + 15
+        else:
+            sizes = 40
+
+        # Jitter: Add a tiny bit of noise to prevent overlap of identical results
+        x_values = df[pdockq2_col] + np.random.normal(0, 0.003, size=len(df))
+        y_values = df[y_col] + np.random.normal(0, 0.003, size=len(df))
 
         scatter = plt.scatter(
-            df[pdockq2_col], 
-            df[ipsae_col], 
+            x_values, 
+            y_values, 
             s=sizes, 
-            c=colors, 
-            cmap="viridis", 
-            alpha=0.6, 
-            edgecolors="w"
+            c=df[plddt_col] if plddt_col else "gray", 
+            cmap=cmap,
+            norm=norm,
+            alpha=0.75, 
+            edgecolors="black",
+            linewidths=0.5
         )
         
-        plt.axhline(0.5, color="red", linestyle="--", alpha=0.5, label="ipSAE threshold (0.5)")
-        plt.axvline(0.23, color="blue", linestyle="--", alpha=0.5, label="pDockQ2 threshold (0.23)")
+        # Reference lines (updated thresholds)
+        plt.axhline(0.4, color="gray", linestyle="--", alpha=0.4, label="ipSAE_dom 0.4")
+        plt.axvline(0.23, color="gray", linestyle="--", alpha=0.4, label="pDockQ2 0.23")
         
         plt.xlabel("Physical Plausibility (pDockQ2)")
-        plt.ylabel("Interface Confidence (ipSAE)")
-        plt.title("Interactome Confidence Landscape (Adenovirus)")
+        plt.ylabel(f"Interface Confidence ({y_col})")
+        plt.title("Interactome Confidence Landscape (Adenovirus HAdV-5)")
         
-        if "pLDDT_mean_B" in df.columns:
-            cbar = plt.colorbar(scatter)
-            cbar.set_label("pLDDT (Chain B)")
+        if plddt_col:
+            cbar = plt.colorbar(scatter, ticks=[25, 60, 80, 95])
+            cbar.set_ticklabels(["<50 (Very Low)", "50-70 (Low)", "70-90 (High)", ">90 (Very High)"])
+            cbar.set_label("pLDDT (Confidence of Predicted Binder B)")
         
-        plt.legend(loc="upper left")
-        plt.grid(True, linestyle=":", alpha=0.6)
+        plt.legend(loc="upper left", fontsize=9, frameon=True)
+        plt.grid(True, linestyle=":", alpha=0.3)
 
         if output_path:
             plt.savefig(output_path, dpi=300, bbox_inches="tight")
@@ -2174,6 +2200,96 @@ class InteractomeAnalyzer:
         else:
             plt.show()
         plt.close()
+
+    def plot_interactive_landscape(self, output_path: Optional[Union[str, Path]] = None):
+        """
+        Generates an interactive HTML scatter plot of the confidence landscape using Plotly.
+        Includes hover info for PPI names and metrics.
+        """
+        try:
+            import plotly.express as px
+        except ImportError:
+            logger.error("Plotly is required for interactive plots. Install it with 'pip install plotly'.")
+            return
+
+        if self._interactome_data is None:
+            raise RuntimeError("Interactome data not loaded.")
+
+        df = self._interactome_data.copy()
+        
+        # Identify metrics
+        y_col = None
+        for col in ["ipSAE_d0_dom_AB", "ipSAE_d0dom_AB", "ipSAE_AB", "ipSAE"]:
+            if col in df.columns:
+                y_col = col
+                break
+        
+        pdockq2_col = "pDockQ2_AB" if "pDockQ2_AB" in df.columns else "pDockQ2"
+        plddt_col = "pLDDT_mean_B" if "pLDDT_mean_B" in df.columns else None
+        msa_col = "msa_depth" if "msa_depth" in df.columns else None
+
+        if not y_col or pdockq2_col not in df.columns:
+            logger.error("Required columns for interactive plotting not found.")
+            return
+
+        # Categorize pLDDT for AlphaFold coloring in Plotly
+        if plddt_col:
+            df["Confidence_Level"] = pd.cut(
+                df[plddt_col], 
+                bins=[0, 50, 70, 90, 100], 
+                labels=["Very Low (<50)", "Low (50-70)", "High (70-90)", "Very High (>90)"]
+            )
+        
+        # Bubble sizing (normalized for Plotly)
+        size_col = "Size"
+        if msa_col:
+            df[size_col] = np.sqrt(df[msa_col].fillna(0)) + 5
+        else:
+            df[size_col] = 10
+
+        # Create Plotly figure
+        fig = px.scatter(
+            df,
+            x=pdockq2_col,
+            y=y_col,
+            size=size_col,
+            color="Confidence_Level" if plddt_col else None,
+            hover_name="PPI",
+            hover_data={
+                "ORF_A": True,
+                "ORF_B": True,
+                msa_col: True,
+                y_col: ":.3f",
+                pdockq2_col: ":.3f",
+                size_col: False,
+                "Confidence_Level": False
+            },
+            color_discrete_map={
+                "Very High (>90)": "#0053D6",
+                "High (70-90)": "#65CBF3",
+                "Low (50-70)": "#FFDB13",
+                "Very Low (<50)": "#FF7D45"
+            },
+            title=f"Interactive Confidence Landscape (Adenovirus HAdV-5)<br><sup>Bubble size = sqrt(MSA depth)</sup>",
+            labels={y_col: "Interface Confidence (ipSAE_dom)", pdockq2_col: "Physical Plausibility (pDockQ2)"},
+            template="plotly_white"
+        )
+
+        # Add reference lines
+        fig.add_hline(y=0.4, line_dash="dash", line_color="gray", opacity=0.5)
+        fig.add_vline(x=0.23, line_dash="dash", line_color="gray", opacity=0.5)
+
+        fig.update_layout(
+            legend_title_text="pLDDT (Binder B)",
+            hoverlabel=dict(bgcolor="white", font_size=12)
+        )
+
+        if output_path:
+            out_file = str(Path(output_path).with_suffix(".html"))
+            fig.write_html(out_file)
+            logger.info(f"Interactive landscape saved to: {out_file}")
+        else:
+            fig.show()
 
     #Getters and setters
 
@@ -2355,11 +2471,11 @@ class InteractomeAnalyzer:
         Parameters
         ----------
         ipsae_filter : float, optional
-            If provided, only PPIs with ipSAE above this value will be processed 
-            in the structural pipeline.
+            If provided, only PPIs with the interface confidence metric above 
+            this value will be processed. Prioritizes ipSAE_d0_dom_AB.
         **kwargs
-            Arguments passed to downstream methods, such as:
-            - cluster_ratio_threshold (float, default=5)
+            Arguments passed to downstream methods:
+            - cluster_ratio_threshold (float, default=7.0)
             - min_peptide_len (int, default=5)
         """
         if self._cluster_data is None:
@@ -2368,15 +2484,27 @@ class InteractomeAnalyzer:
         
         logger.info("Starting peptide-protein analysis pipeline...")
         
+        # Default cluster ratio for peptides set to 7.0 as requested
+        kwargs.setdefault('cluster_ratio_threshold', 7.0)
+
         # Filtering logic
         if ipsae_filter is not None and self._interactome_data is not None:
-            # Determine correct column name
             df = self._interactome_data
-            ipsae_col = "ipSAE_AB" if "ipSAE_AB" in df.columns else "ipSAE"
             
+            # Priority for filtering: ipSAE_d0dom_AB -> ipSAE_AB
+            ipsae_col = None
+            for col in ["ipSAE_d0dom_AB", "ipSAE_d0_dom_AB", "ipSAE_AB", "ipSAE"]:
+                if col in df.columns:
+                    ipsae_col = col
+                    break
+
+            if not ipsae_col:
+                logger.error("No ipSAE column found for filtering.")
+                return
+
             # Identify high confidence PPI IDs
             high_conf_ppis = df[df[ipsae_col] > ipsae_filter]["PPI"].unique()
-            logger.info(f"Applying ipSAE > {ipsae_filter} filter: {len(high_conf_ppis)} PPIs selected.")
+            logger.info(f"Applying {ipsae_col} > {ipsae_filter} filter: {len(high_conf_ppis)} PPIs selected.")
             
             # Temporary filter of cluster data for this run
             original_clusters = self._cluster_data
@@ -2384,7 +2512,7 @@ class InteractomeAnalyzer:
             
             self.analyze_peptide_proteins_pairs(**kwargs)
             
-            # Restore original data for state consistency
+            # Restore original data
             self._cluster_data = original_clusters
         else:
             self.analyze_peptide_proteins_pairs(**kwargs)
