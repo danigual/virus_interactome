@@ -2140,7 +2140,7 @@ class InteractomeAnalyzer:
                 break
         
         pdockq2_col = "pDockQ2_AB" if "pDockQ2_AB" in df.columns else "pDockQ2"
-        plddt_col = "pLDDT_mean_B" if "pLDDT_mean_B" in df.columns else None
+        plddt_col = "pLDDT_mean" if "pLDDT_mean" in df.columns else None
         msa_col = "msa_depth" if "msa_depth" in df.columns else None
 
         if not y_col or pdockq2_col not in df.columns:
@@ -2189,7 +2189,7 @@ class InteractomeAnalyzer:
         if plddt_col:
             cbar = plt.colorbar(scatter, ticks=[25, 60, 80, 95])
             cbar.set_ticklabels(["<50 (Very Low)", "50-70 (Low)", "70-90 (High)", ">90 (Very High)"])
-            cbar.set_label("pLDDT (Confidence of Predicted Binder B)")
+            cbar.set_label("Mean pLDDT (Global Model Confidence)")
         
         plt.legend(loc="upper left", fontsize=9, frameon=True)
         plt.grid(True, linestyle=":", alpha=0.3)
@@ -2225,7 +2225,7 @@ class InteractomeAnalyzer:
                 break
         
         pdockq2_col = "pDockQ2_AB" if "pDockQ2_AB" in df.columns else "pDockQ2"
-        plddt_col = "pLDDT_mean_B" if "pLDDT_mean_B" in df.columns else None
+        plddt_col = "pLDDT_mean" if "pLDDT_mean" in df.columns else None
         msa_col = "msa_depth" if "msa_depth" in df.columns else None
 
         if not y_col or pdockq2_col not in df.columns:
@@ -2280,7 +2280,7 @@ class InteractomeAnalyzer:
         fig.add_vline(x=0.23, line_dash="dash", line_color="gray", opacity=0.5)
 
         fig.update_layout(
-            legend_title_text="pLDDT (Binder B)",
+            legend_title_text="Global pLDDT",
             hoverlabel=dict(bgcolor="white", font_size=12)
         )
 
