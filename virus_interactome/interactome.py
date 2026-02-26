@@ -2697,27 +2697,20 @@ class InteractomeAnalyzer:
     def analyze_peptide_proteins_pairs(self, **kwargs):
         """
         Executes the structural analysis pipeline for peptide-protein interactions.
-
-        This method orchestrates the full workflow:
-        1. **Filtering:** Curates raw PDB models, standardizing chain IDs (A=Binder, B=Peptide)
-           and removing non-interface residues.
-        2. **Reference Selection:** Identifies the most stable model for each binder to serve as a template.
-        3. **Alignment:** Superimposes all peptide structures onto the reference binder.
-        4. **Clustering:** Groups peptides spatially using DBSCAN based on their centers of mass.
-        5. **Visualization:** Generates ChimeraX scripts to visualize the clustered ensembles.
-
-        Parameters
-        ----------
-        **kwargs
-            Keyword arguments passed directly to the clustering algorithm (DBSCAN),
-            such as `eps` (distance threshold) or `min_samples`.
+        ...
         """
         # 1. Setup Directories
         output_path = f"{self.output_path}/prot_peptide"
         os.makedirs(output_path, exist_ok=True)
 
+        # Extract filtering arguments intended for _get_candidate_clusters
+        filter_args = {
+            'cluster_ratio_threshold': kwargs.pop('cluster_ratio_threshold', 5.0),
+            'min_peptide_len': kwargs.pop('min_peptide_len', 5)
+        }
+
         # 2. Identify Candidates
-        self._candidate_clusters = self._get_candidate_clusters()
+        self._candidate_clusters = self._get_candidate_clusters(**filter_args)
 
         if self._candidate_clusters is None or self._candidate_clusters.empty:
             logger.warning("No candidate peptide-protein clusters found. Skipping analysis.")
@@ -2976,12 +2969,32 @@ class InteractomeAnalyzer:
         
         # 4. Calculate Peptide Centroids (Chain B, Alpha Carbons)
         # We assume all models have a Chain B with CA atoms (enforced by previous steps)
-        mols_centroids = np.array([tmp_mol.get("coords", sel="chain B and name CA").mean(axis=0) for tmp_mol in mols])
+        # mols_centroids = np.array([tmp_mol.get("coords", sel="chain B and name CA").mean(axis=0) for tmp_mol in mols])
+        
+        valid_centroids = []
+        valid_indices = []
+        for i, tmp_mol in enumerate(mols):
+            coords = tmp_mol.get("coords", sel="chain B and name CA")
+            if coords.size > 0:
+                valid_centroids.append(coords.mean(axis=0))
+                valid_indices.append(i)
+            else:
+                logger.warning(f"Model {aligned_models[i]} has no Chain B CA atoms. Skipping from clustering.")
+
+        if not valid_centroids:
+            return pd.DataFrame(), {"cluster_labels": np.array([]), "peptide_centers": np.array([])}
+
+        mols_centroids = np.array(valid_centroids)
 
         # 5. Perform Clustering (DBSCAN)
         # kwargs allows passing eps, min_samples, etc.
         clustering = DBSCAN(**kwargs).fit(mols_centroids)
         
+        # Adjust cluster labels for original input list
+        full_labels = np.full(len(mols), -1, dtype=int)
+        for idx, label in zip(valid_indices, clustering.labels_):
+            full_labels[idx] = label
+
         # 6. Analyze Clusters
         cluster_labels = []
         cluster_centers = []
@@ -3019,8 +3032,8 @@ class InteractomeAnalyzer:
         })
 
         extra_info = {
-            "cluster_labels": clustering.labels_, 
-            "peptide_centers": mols_centroids
+            "cluster_labels": full_labels, 
+            "peptide_centers": np.array([valid_centroids[valid_indices.index(i)] if i in valid_indices else [0,0,0] for i in range(len(mols))])
         }
 
         return results_df, extra_info
