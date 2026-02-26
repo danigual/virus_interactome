@@ -2471,8 +2471,8 @@ class InteractomeAnalyzer:
         Parameters
         ----------
         ipsae_filter : float, optional
-            If provided, only PPIs with the interface confidence metric above 
-            this value will be processed. Prioritizes ipSAE_d0_dom_AB.
+            If provided, logs how many PPIs are above this confidence threshold.
+            Structural analysis will proceed for ALL candidates regardless.
         **kwargs
             Arguments passed to downstream methods:
             - cluster_ratio_threshold (float, default=7.0)
@@ -2487,35 +2487,21 @@ class InteractomeAnalyzer:
         # Default cluster ratio for peptides set to 7.0 as requested
         kwargs.setdefault('cluster_ratio_threshold', 7.0)
 
-        # Filtering logic
+        # Log filtering info if requested, but DO NOT filter the structural pipeline
         if ipsae_filter is not None and self._interactome_data is not None:
             df = self._interactome_data
-            
-            # Priority for filtering: ipSAE_d0dom_AB -> ipSAE_AB
             ipsae_col = None
             for col in ["ipSAE_d0dom_AB", "ipSAE_d0_dom_AB", "ipSAE_AB", "ipSAE"]:
                 if col in df.columns:
                     ipsae_col = col
                     break
 
-            if not ipsae_col:
-                logger.error("No ipSAE column found for filtering.")
-                return
-
-            # Identify high confidence PPI IDs
-            high_conf_ppis = df[df[ipsae_col] > ipsae_filter]["PPI"].unique()
-            logger.info(f"Applying {ipsae_col} > {ipsae_filter} filter: {len(high_conf_ppis)} PPIs selected.")
-            
-            # Temporary filter of cluster data for this run
-            original_clusters = self._cluster_data
-            self._cluster_data = self._cluster_data[self._cluster_data["PPI"].isin(high_conf_ppis)]
-            
-            self.analyze_peptide_proteins_pairs(**kwargs)
-            
-            # Restore original data
-            self._cluster_data = original_clusters
-        else:
-            self.analyze_peptide_proteins_pairs(**kwargs)
+            if ipsae_col:
+                high_conf_ppis = df[df[ipsae_col] > ipsae_filter]["PPI"].unique()
+                logger.info(f"Report: {len(high_conf_ppis)} PPIs are above {ipsae_col} > {ipsae_filter}.")
+        
+        # Run structural analysis for ALL candidates
+        self.analyze_peptide_proteins_pairs(**kwargs)
     
     def _get_candidate_clusters(self, cluster_ratio_threshold: float = 5.0, 
                                 min_peptide_len: int = 5)-> pd.DataFrame:
