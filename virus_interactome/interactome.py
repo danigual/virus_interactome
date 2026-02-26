@@ -2879,9 +2879,12 @@ class InteractomeAnalyzer:
         for binder in self._candidate_clusters.Binder_name.unique():
 
             ppi_data = df.loc[self._candidate_clusters.Binder_name == binder,:].copy()
-           
             all_structs = ppi_data.filtered_path.values
             
+            if len(all_structs) == 0:
+                logger.warning(f"No valid models for binder {binder} after filtering. Skipping...")
+                continue
+
             # A. Get/Create Reference Structure
             reference_output_name = f"{output_path}/{binder}/reference_{binder}.pdb"
             if not os.path.exists(reference_output_name):
@@ -2908,19 +2911,28 @@ class InteractomeAnalyzer:
 
             # C. Clustering (DBSCAN)
             tmp_df, cluster_info = self.cluster_protein_peptides(aligned_models, reference_output_name, **kwargs)
+            
+            if tmp_df.empty or len(cluster_info.get("cluster_labels", [])) == 0:
+                logger.warning(f"No spatial clusters found for {binder}. Skipping ChimeraX generation.")
+                continue
+
             tmp_df.insert(0, "Binder", binder)
             binder_df = pd.concat([binder_df, tmp_df], ignore_index=True)
 
             # D. Visualization Preparation (ChimeraX)
-            # Add clustering results back to the specific binder dataframe
-            ppi_data.loc[:, "Cluster_info"] = cluster_info.get("cluster_labels")
-            
-            peptide_centers = cluster_info.get("peptide_centers")
-            ppi_data.loc[:, "Center_X"] = peptide_centers[:,0]
-            ppi_data.loc[:, "Center_Y"] = peptide_centers[:,1]
-            ppi_data.loc[:, "Center_Z"] = peptide_centers[:,2] 
-            
-            self._create_chimera_session(ppi_data, reference_output_name, tmp_df)
+            # Ensure lengths match before assignment
+            labels = cluster_info.get("cluster_labels")
+            centers = cluster_info.get("peptide_centers")
+
+            if len(labels) == len(ppi_data):
+                ppi_data.loc[:, "Cluster_info"] = labels
+                ppi_data.loc[:, "Center_X"] = centers[:,0]
+                ppi_data.loc[:, "Center_Y"] = centers[:,1]
+                ppi_data.loc[:, "Center_Z"] = centers[:,2] 
+                
+                self._create_chimera_session(ppi_data, reference_output_name, tmp_df)
+            else:
+                logger.error(f"Shape mismatch for {binder}: labels({len(labels)}) != data({len(ppi_data)}). Skipping.")
         
         # 6. Save Final Summary
         binder_df.to_csv(f"{self.output_path}/peptide_binder_info.csv", index=False)
