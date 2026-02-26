@@ -1783,17 +1783,15 @@ class InteractomeProcessor:
         
         # Parse metadata using pathlib
         dir_name = path_obj.parent.name
-        # dir_name = os.path.dirname(model_file)
         ppi_id = dir_name.replace(prefix, "")
-        # ppi_id = dir_name.split("/")[-1].replace(prefix, "")
         
-        # Assumes "ORF_A__ORF_B" format. 
-        orf_a, orf_b = ppi_id.split("__")[:2]
-        # orf_a, orf_b = ppi_id.split("__")
+        # Handle naming: idA__idB (pairs), idA__copies (homomers), or idA (monomers)
+        parts = ppi_id.split("__")
+        orf_a = parts[0]
+        orf_b = parts[1] if len(parts) > 1 else ""
 
         # Assumes "...model_1..." format.
-        base_name = path_obj.stem # removes .cif
-        # base_name = os.path.basename(model_file).replace(".cif", "").replace(".pdb", "")
+        base_name = path_obj.stem # removes .cif or .pdb
         
         model_number = int(base_name.split("model_")[-1].split("_")[0])
         # model_number = int(base_name.split("_")[-1].replace("model_",""))
@@ -1883,6 +1881,8 @@ class InteractomeProcessor:
                 "pTM": full_data["ptm"],
                 "pTM_chain_A": full_data["iptm_chain_pair"][0][0], 
                 "pTM_chain_B": full_data["iptm_chain_pair"][1][1], 
+                "msa_depth": full_data.get("msa_depth", np.nan),
+                "msa_coverage": full_data.get("msa_coverage", np.nan),
                 **all_metrics
                 }
         

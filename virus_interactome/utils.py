@@ -8,11 +8,58 @@ import numpy as np
 import os
 from moleculekit.molecule import Molecule
 from pathlib import Path
+from .metrics import ptm_func_vec, calc_d0
 
 
 def check_sequence_validity(seq: str) -> bool:
     VALID_AMINO_ACIDS = set("ACDEFGHIKLMNPQRSTVWY")
     return all(residue in VALID_AMINO_ACIDS for residue in seq)
+
+def parse_msa_metrics(a3m_path: str) -> Dict[str, float]:
+    """
+    Parses a ColabFold .a3m file to extract MSA depth and mean coverage.
+    
+    Parameters
+    ----------
+    a3m_path : str
+        Path to the .a3m file.
+        
+    Returns
+    -------
+    dict
+        Dictionary with 'msa_depth' (int) and 'msa_coverage' (float 0-1).
+    """
+    if not os.path.exists(a3m_path):
+        return {"msa_depth": 0, "msa_coverage": 0.0}
+    
+    sequences = []
+    with open(a3m_path, "r") as f:
+        for line in f:
+            if not line.startswith(">"):
+                sequences.append(line.strip())
+    
+    if not sequences:
+        return {"msa_depth": 0, "msa_coverage": 0.0}
+    
+    query = sequences[0]
+    query_len = len(query.replace("-", ""))
+    
+    # Depth: number of sequences (excluding query)
+    depth = len(sequences) - 1
+    
+    # Coverage: average fraction of non-gap residues in the alignment relative to query
+    # Simple estimate: mean of (non-gap residues / query_len) for all hits
+    coverage_sum = 0.0
+    for seq in sequences[1:]:
+        non_gaps = len(seq.replace("-", "").replace(".", ""))
+        coverage_sum += min(1.0, non_gaps / query_len)
+    
+    mean_coverage = coverage_sum / depth if depth > 0 else 0.0
+    
+    return {
+        "msa_depth": depth,
+        "msa_coverage": round(mean_coverage, 3)
+    }
 
 def load_json(json_path: str)-> Union[dict, list]:
     """
@@ -270,6 +317,13 @@ def process_full_data_colabfold(mol_file: str,
         scores_stem = stem.replace("_unrelaxed_", "_scores_").replace("_relaxed_", "_scores_")
         scores_json_path = str(dir_name / f"{scores_stem}.json")
 
+    # Path for .a3m file (MSA)
+    # Standard: name.a3m (one level up or same folder depending on run strategy)
+    a3m_path = str(dir_name / f"{stem.split('_unrelaxed_')[0]}.a3m")
+    if not os.path.exists(a3m_path):
+        # Fallback: check one level up if using individual fastas
+        a3m_path = str(dir_name.parent / f"{stem.split('_unrelaxed_')[0]}.a3m")
+
     for file_path, description in [
         (mol_file, "molecule PDB/CIF"),
         (scores_json_path, "scores JSON"),
@@ -279,6 +333,7 @@ def process_full_data_colabfold(mol_file: str,
 
     mol = Molecule(mol_file)
     scores_data = load_json(scores_json_path)
+    msa_metrics = parse_msa_metrics(a3m_path) if os.path.exists(a3m_path) else {"msa_depth": 0, "msa_coverage": 0.0}
 
     # CA-level arrays
     chain_by_res = mol.chain[mol.name == "CA"]
@@ -306,9 +361,26 @@ def process_full_data_colabfold(mol_file: str,
         atom_idxs = np.where(mol.chain == chain_id)[0]
         chain_boundaries_by_atom[chain_id] = (int(atom_idxs.min()), int(atom_idxs.max()))
 
-    # ColabFold does not provide per-chain iptm; fill with NaN
+    # ColabFold does not provide per-chain iptm; estimate manually from PAE
     n_chains = len(unique_chains)
-    iptm_chain_pair = np.full((n_chains, n_chains), np.nan)
+    iptm_chain_pair = np.zeros((n_chains, n_chains))
+
+    for i, chain_i in enumerate(unique_chains):
+        for j, chain_j in enumerate(unique_chains):
+            mask_i = (chain_by_res == chain_i)
+            mask_j = (chain_by_res == chain_j)
+            
+            # Select PAE submatrix for these two chains
+            pae_block = pae_data[mask_i][:, mask_j]
+            
+            # Calculate d0 based on chain lengths
+            # For pTM (diagonal i==j), use single chain length.
+            # For ipTM (off-diagonal i!=j), use sum of lengths.
+            L_eff = np.sum(mask_i) + np.sum(mask_j) if i != j else np.sum(mask_i)
+            d0 = calc_d0(L_eff, 'protein')
+            
+            # Calculate mean pTM/ipTM score for this pair/chain
+            iptm_chain_pair[i, j] = np.mean(ptm_func_vec(pae_block, d0))
 
     return {
         "pae": pae_data,
@@ -321,6 +393,7 @@ def process_full_data_colabfold(mol_file: str,
         "ptm": scores_data.get("ptm", None),
         "iptm": scores_data.get("iptm", None),
         "iptm_chain_pair": iptm_chain_pair,
+        **msa_metrics,
     }
 
 
