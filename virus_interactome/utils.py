@@ -12,6 +12,8 @@ from .metrics import ptm_func_vec, calc_d0
 
 
 def check_sequence_validity(seq: str) -> bool:
+    if not seq:
+        return False
     VALID_AMINO_ACIDS = set("ACDEFGHIKLMNPQRSTVWY")
     return all(residue in VALID_AMINO_ACIDS for residue in seq)
 

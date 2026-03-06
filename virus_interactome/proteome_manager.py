@@ -40,6 +40,7 @@ class ProteomeManager:
         self.identity_matrix = None
         self.sequence_properties = None
         self._ids_cache: Optional[Tuple[str, ...]] = None
+        self._order_mode: str = "insertion"
 
         if fasta_file:
             self.load_proteome(fasta_file)
