@@ -176,3 +176,81 @@ class TestClusterPipeline:
         # The elongated block should have higher aspect_ratio
         ratios = info.sort_values("cluster_ratio", ascending=False)
         assert ratios.iloc[0]["cluster_ratio"] > ratios.iloc[1]["cluster_ratio"]
+
+
+# ---------------------------------------------------------------------------
+# process_ppi — full static method test with real AF3 dummy data
+# ---------------------------------------------------------------------------
+
+import shutil
+
+@pytest.fixture
+def af3_model_in_ppi_dir(tmp_path, data_dir):
+    """Copies AF3 dummy CIF + JSON files into a PPI-named directory for process_ppi."""
+    ppi_dir = tmp_path / "ProtA__ProtB"
+    ppi_dir.mkdir()
+    src = data_dir / "af3_dummy_example"
+    # Copy explicitly — iterdir() order can be unreliable
+    for name in [
+        "fold_adv5_pvi_protease_model_0.cif",
+        "fold_adv5_pvi_protease_full_data_0.json",
+        "fold_adv5_pvi_protease_summary_confidences_0.json",
+    ]:
+        shutil.copy2(src / name, ppi_dir / name)
+    cif = ppi_dir / "fold_adv5_pvi_protease_model_0.cif"
+    assert cif.exists(), f"CIF not found: {cif}"
+    assert (ppi_dir / "fold_adv5_pvi_protease_full_data_0.json").exists()
+    return cif
+
+
+@pytest.mark.slow
+class TestProcessPpi:
+    def test_returns_tuple(self, af3_model_in_ppi_dir):
+        result = InteractomeProcessor.process_ppi(str(af3_model_in_ppi_dir), model_type="AF3")
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+
+    def test_summary_dict_keys(self, af3_model_in_ppi_dir):
+        summary, _ = InteractomeProcessor.process_ppi(str(af3_model_in_ppi_dir), model_type="AF3")
+        required = {"PPI", "ORF_A", "ORF_B", "Folder", "Model_num", "ipTM", "pTM"}
+        assert required.issubset(set(summary.keys()))
+
+    def test_ppi_parsed_from_dir_name(self, af3_model_in_ppi_dir):
+        summary, _ = InteractomeProcessor.process_ppi(str(af3_model_in_ppi_dir), model_type="AF3")
+        assert summary["PPI"] == "ProtA__ProtB"
+        assert summary["ORF_A"] == "ProtA"
+        assert summary["ORF_B"] == "ProtB"
+
+    def test_extracts_idx_zero(self, af3_model_in_ppi_dir):
+        # NOTE: test name must NOT contain '_model_' — process_full_data_af3 uses
+        # str.replace("_model_", ...) on the full path, which would corrupt
+        # pytest's tmp_path if it contains that substring.
+        summary, _ = InteractomeProcessor.process_ppi(str(af3_model_in_ppi_dir), model_type="AF3")
+        assert summary["Model_num"] == 0
+
+    def test_cluster_data_non_empty_for_heteromer(self, af3_model_in_ppi_dir):
+        _, clusters = InteractomeProcessor.process_ppi(str(af3_model_in_ppi_dir), model_type="AF3")
+        # Heteromer (2 chains) → should produce cluster data
+        assert not clusters.empty
+        assert "cluster_id" in clusters.columns
+        assert "PPI" in clusters.columns
+        assert "cluster_ratio" in clusters.columns
+
+    def test_plots_created(self, af3_model_in_ppi_dir):
+        InteractomeProcessor.process_ppi(str(af3_model_in_ppi_dir), model_type="AF3")
+        parent = af3_model_in_ppi_dir.parent
+        stem = af3_model_in_ppi_dir.stem
+        assert (parent / f"{stem}_plddt.png").exists()
+        assert (parent / f"{stem}_pae.png").exists()
+        assert (parent / f"{stem}_cluster.png").exists()
+
+    def test_invalid_model_type_raises(self, af3_model_in_ppi_dir):
+        with pytest.raises(ValueError, match="not supported"):
+            InteractomeProcessor.process_ppi(str(af3_model_in_ppi_dir), model_type="InvalidEngine")
+
+    def test_prefix_stripping(self, af3_model_in_ppi_dir):
+        summary, _ = InteractomeProcessor.process_ppi(
+            str(af3_model_in_ppi_dir), model_type="AF3", prefix="Prot"
+        )
+        # prefix="Prot" replaces "Prot" in dir name "ProtA__ProtB" → "A__B"
+        assert summary["PPI"] == "A__B"

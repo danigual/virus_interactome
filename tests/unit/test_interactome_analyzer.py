@@ -283,3 +283,149 @@ class TestClusterByMetrics:
         analyzer = InteractomeAnalyzer()
         with pytest.raises(RuntimeError, match="not loaded"):
             analyzer.cluster_interactome_by_metrics()
+
+    def test_no_valid_metric_cols_raises(self, analyzer_with_data):
+        with pytest.raises(ValueError, match="No valid metric columns"):
+            analyzer_with_data.cluster_interactome_by_metrics(metric_cols=["NONEXISTENT_COL"])
+
+    def test_too_few_rows_raises(self, dummy_interactome_csv):
+        analyzer = InteractomeAnalyzer()
+        analyzer.interactome_path = str(dummy_interactome_csv)
+        with pytest.raises(ValueError, match="Not enough valid rows"):
+            analyzer.cluster_interactome_by_metrics(n_clusters=999)
+
+
+# ---------------------------------------------------------------------------
+# _resolve_metric_col
+# ---------------------------------------------------------------------------
+
+class TestResolveMetricCol:
+    def test_none_when_no_data(self):
+        analyzer = InteractomeAnalyzer()
+        assert analyzer._resolve_metric_col("ipSAE_AB", "ipSAE") is None
+
+    def test_preferred_exists(self, analyzer_with_data):
+        result = analyzer_with_data._resolve_metric_col("ipSAE_AB", "ipSAE")
+        assert result == "ipSAE_AB"
+
+    def test_fallback_when_preferred_missing(self, analyzer_with_data):
+        result = analyzer_with_data._resolve_metric_col("NONEXISTENT", "ipSAE_AB")
+        assert result == "ipSAE_AB"
+
+    def test_none_when_both_missing(self, analyzer_with_data):
+        result = analyzer_with_data._resolve_metric_col("XXX", "YYY")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Additional property / getter tests
+# ---------------------------------------------------------------------------
+
+class TestAnalyzerAdditionalProperties:
+    def test_binder_data_default_none(self):
+        analyzer = InteractomeAnalyzer()
+        assert analyzer.binder_data is None
+
+    def test_binder_data_setter(self):
+        analyzer = InteractomeAnalyzer()
+        df = pd.DataFrame({"col": [1, 2]})
+        analyzer.binder_data = df
+        pd.testing.assert_frame_equal(analyzer.binder_data, df)
+
+    def test_interactome_path_default_none(self):
+        analyzer = InteractomeAnalyzer()
+        assert analyzer.interactome_path is None
+
+    def test_cluster_path_default_none(self):
+        analyzer = InteractomeAnalyzer()
+        assert analyzer.cluster_path is None
+
+    def test_models_path_default_none(self):
+        analyzer = InteractomeAnalyzer()
+        assert analyzer.models_path is None
+
+    def test_interactome_path_getter(self, analyzer_with_data, dummy_interactome_csv):
+        assert analyzer_with_data.interactome_path == dummy_interactome_csv
+
+    def test_cluster_path_getter(self, analyzer_with_data, dummy_cluster_csv):
+        assert analyzer_with_data.cluster_path == dummy_cluster_csv
+
+    def test_len_returns_record_count(self, analyzer_with_data):
+        assert len(analyzer_with_data) == 10
+
+    def test_str_representation(self, analyzer_with_data):
+        s = str(analyzer_with_data)
+        assert "InteractomeAnalyzer" in s
+
+
+# ---------------------------------------------------------------------------
+# models_path setter — path relocation
+# ---------------------------------------------------------------------------
+
+class TestModelsPathSetter:
+    def test_models_path_relocation(self, analyzer_with_data):
+        old = analyzer_with_data.models_path or ""
+        analyzer_with_data.models_path = "/new/root"
+        assert analyzer_with_data.models_path == "/new/root"
+        # Cluster paths updated
+        for p in analyzer_with_data.cluster_data["path"]:
+            assert "/new/root" in str(p) or old == ""
+
+    def test_models_path_without_data_raises(self):
+        analyzer = InteractomeAnalyzer()
+        with pytest.raises(RuntimeError, match="Data not loaded"):
+            analyzer.models_path = "/new/root"
+
+
+# ---------------------------------------------------------------------------
+# get_confidence_tiers — edge cases
+# ---------------------------------------------------------------------------
+
+class TestConfidenceTiersEdgeCases:
+    def test_unknown_tier_when_columns_missing(self, tmp_path):
+        """Rows with missing metric columns get 'Unknown' tier."""
+        df = pd.DataFrame({
+            "PPI": ["A__B"],
+            "Folder": ["/fake"],
+            "other_col": [99],
+        })
+        csv = tmp_path / "data.csv"
+        df.to_csv(csv, index=False)
+        analyzer = InteractomeAnalyzer()
+        analyzer.interactome_path = str(csv)
+        result = analyzer.get_confidence_tiers()
+        assert result["Tier"].iloc[0] == "Unknown"
+
+
+# ---------------------------------------------------------------------------
+# run_full_pipeline — cluster_data not loaded early return
+# ---------------------------------------------------------------------------
+
+class TestRunFullPipeline:
+    def test_no_cluster_data_warns(self, dummy_interactome_csv, caplog):
+        import logging
+        caplog.set_level(logging.WARNING)
+        analyzer = InteractomeAnalyzer()
+        analyzer.interactome_path = str(dummy_interactome_csv)
+        analyzer.run_full_pipeline()
+        assert "Cluster data is missing" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Empty interactome / cluster file edge cases
+# ---------------------------------------------------------------------------
+
+class TestEmptyFileEdgeCases:
+    def test_empty_interactome_csv_raises(self, tmp_path):
+        csv = tmp_path / "empty.csv"
+        csv.write_text("PPI,Folder\n")  # header only, no data
+        analyzer = InteractomeAnalyzer()
+        with pytest.raises(ValueError, match="empty"):
+            analyzer.interactome_path = str(csv)
+
+    def test_empty_cluster_csv_raises(self, tmp_path):
+        csv = tmp_path / "empty_cluster.csv"
+        csv.write_text("PPI,cluster_id\n")
+        analyzer = InteractomeAnalyzer()
+        with pytest.raises(ValueError, match="empty"):
+            analyzer.cluster_path = str(csv)

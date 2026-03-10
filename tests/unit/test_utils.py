@@ -1,8 +1,11 @@
+import json
 import pytest
 import numpy as np
 from virus_interactome.utils import (
     process_full_data_af3,
     process_full_data_boltz,
+    process_full_data_colabfold,
+    parse_msa_metrics,
     load_json,
     check_sequence_validity,
 )
@@ -191,3 +194,102 @@ def test_process_full_data_af3_with_dummy_data(dummy_full_data_af3, dummy_summar
 ])
 def test_check_sequence_validity(seq, expected):
     assert check_sequence_validity(seq) == expected
+
+
+# ---------------------------------------------------------------------------
+# parse_msa_metrics
+# ---------------------------------------------------------------------------
+
+def test_parse_msa_metrics_missing_file():
+    result = parse_msa_metrics("nonexistent.a3m")
+    assert result == {"msa_depth": 0, "msa_coverage": 0.0}
+
+
+def test_parse_msa_metrics_empty_file(tmp_path):
+    a3m = tmp_path / "empty.a3m"
+    a3m.write_text("")
+    result = parse_msa_metrics(str(a3m))
+    assert result == {"msa_depth": 0, "msa_coverage": 0.0}
+
+
+def test_parse_msa_metrics_query_only(tmp_path):
+    a3m = tmp_path / "query_only.a3m"
+    a3m.write_text(">query\nMKTAYIAKQR\n")
+    result = parse_msa_metrics(str(a3m))
+    assert result["msa_depth"] == 0
+    assert result["msa_coverage"] == 0.0
+
+
+def test_parse_msa_metrics_with_hits(tmp_path):
+    # query: 10 aa; hit1 has 2 gaps -> 8 non-gap / 10 = 0.8; hit2 same
+    a3m = tmp_path / "hits.a3m"
+    a3m.write_text(">query\nMKTAYIAKQR\n>hit1\nMKTAY--KQR\n>hit2\n--TAYIAKQR\n")
+    result = parse_msa_metrics(str(a3m))
+    assert result["msa_depth"] == 2
+    assert result["msa_coverage"] == pytest.approx(0.8)
+
+
+def test_parse_msa_metrics_full_coverage_hit(tmp_path):
+    a3m = tmp_path / "full.a3m"
+    a3m.write_text(">query\nAAAA\n>hit1\nAAAA\n>hit2\nAAA-\n")
+    result = parse_msa_metrics(str(a3m))
+    assert result["msa_depth"] == 2
+    # hit1: 4/4=1.0, hit2: 3/4=0.75 → mean = 0.875
+    assert result["msa_coverage"] == pytest.approx(0.875)
+
+
+# ---------------------------------------------------------------------------
+# process_full_data_colabfold — missing file errors
+# ---------------------------------------------------------------------------
+
+def test_process_full_data_colabfold_missing_mol_file(tmp_path):
+    scores = tmp_path / "scores.json"
+    scores.write_text("{}")
+    with pytest.raises(FileNotFoundError):
+        process_full_data_colabfold("nonexistent_unrelaxed_rank_001.pdb", str(scores))
+
+
+def test_process_full_data_colabfold_missing_scores_json(dummy_cif_af3):
+    with pytest.raises(FileNotFoundError):
+        process_full_data_colabfold(str(dummy_cif_af3), "nonexistent_scores.json")
+
+
+# ---------------------------------------------------------------------------
+# process_full_data_colabfold — full processing
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def colabfold_scores_json(tmp_path):
+    """Synthetic ColabFold scores JSON matching dummy_cif_af3 (454 CA residues)."""
+    n_res = 454  # Chain A: 250, Chain B: 204
+    rng = np.random.default_rng(0)
+    scores = {
+        "pae": rng.uniform(0, 15, (n_res, n_res)).tolist(),
+        "plddt": (np.ones(n_res) * 75.0).tolist(),
+        "ptm": 0.6,
+        "iptm": 0.72,
+    }
+    path = tmp_path / "colabfold_scores.json"
+    path.write_text(json.dumps(scores))
+    return path
+
+
+def test_process_full_data_colabfold_returns_expected_keys(dummy_cif_af3, colabfold_scores_json):
+    data = process_full_data_colabfold(str(dummy_cif_af3), str(colabfold_scores_json))
+    for key in ("pae", "atom_plddts", "ca_plddts", "cb_plddts",
+                "chain_boundaries_by_res", "chain_boundaries_by_atom",
+                "token_chain_ids", "ptm", "iptm", "iptm_chain_pair"):
+        assert key in data, f"Missing key: {key}"
+
+
+def test_process_full_data_colabfold_chain_boundaries(dummy_cif_af3, colabfold_scores_json):
+    data = process_full_data_colabfold(str(dummy_cif_af3), str(colabfold_scores_json))
+    assert data["chain_boundaries_by_res"] == {"A": (0, 249), "B": (250, 453)}
+
+
+def test_process_full_data_colabfold_confidences(dummy_cif_af3, colabfold_scores_json):
+    data = process_full_data_colabfold(str(dummy_cif_af3), str(colabfold_scores_json))
+    assert data["ptm"] == pytest.approx(0.6)
+    assert data["iptm"] == pytest.approx(0.72)
+    assert data["ca_plddts"].shape == (454,)
+    assert data["pae"].shape == (454, 454)

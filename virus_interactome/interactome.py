@@ -1083,6 +1083,9 @@ class InteractomeRunner:
 
             # model_input is a Path object (from __init__)
             batch_jobs = parse_job(model_input)
+            # Handle single-job dict (get_af3_input saves a dict, not a list)
+            if isinstance(batch_jobs, dict):
+                batch_jobs = [batch_jobs]
 
             # AF3 might return multiple jobs in one JSON, Boltz usually one.
 
@@ -3483,6 +3486,8 @@ class InteractomeAnalyzer:
                 "ipSAE_d0_dom_AB", "ipSAE_d0dom_AB",
             ]
             metric_cols = [c for c in candidates if c in df.columns]
+        else:
+            metric_cols = [c for c in metric_cols if c in df.columns]
 
         if not metric_cols:
             raise ValueError("No valid metric columns found for clustering.")

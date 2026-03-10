@@ -2,7 +2,8 @@
 from concurrent.futures import ProcessPoolExecutor
 from itertools import combinations
 from Bio import pairwise2, SeqIO
-from Bio.SeqUtils import molecular_weight, IsoelectricPoint
+from Bio.SeqUtils import molecular_weight
+from Bio.SeqUtils.IsoelectricPoint import IsoelectricPoint
 from Bio.SeqUtils.ProtParam import ProteinAnalysis
 from pathlib import Path
 from typing import Tuple, Optional
