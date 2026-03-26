@@ -82,11 +82,11 @@ def calculate_pdockq(mol_file, plddt_by_res, pDockQ_cutoff=8.0):
     cb_mask = np.logical_or(mol.name == "CB", np.logical_and(mol.resname == "GLY",  mol.name == "CA"))
     # cb_plddt = plddt_by_atom[cb_mask]
     cb_plddt = plddt_by_res
-    unique_chains = [str(i) for i in np.unique(mol.chain)]
 
-    coordinates = mol.coords[cb_mask].reshape(-1,3) 
+    coordinates = mol.coords[cb_mask].reshape(-1,3)
     distances = np.sqrt(((coordinates[:, np.newaxis, :] - coordinates[np.newaxis, :, :])**2).sum(axis=2))
     chains = mol.chain[cb_mask]
+    unique_chains = [str(i) for i in np.unique(chains)]
 
     pDockQ = pd.DataFrame({"chain1": [], "chain2": [], "pDockQ": []})
     for chain1, chain2 in itertools.combinations(unique_chains, 2):
@@ -123,11 +123,11 @@ def calculate_pdockq2(mol_file, plddt_by_res, pae_matrix, pDockQ_cutoff=8.0):
     cb_mask = np.logical_or(mol.name == "CB", np.logical_and(mol.resname == "GLY",  mol.name == "CA"))
     # cb_plddt = plddt_by_atom[cb_mask]
     cb_plddt = plddt_by_res
-    unique_chains = [str(i) for i in np.unique(mol.chain)]
 
-    coordinates = mol.coords[cb_mask].reshape(-1,3) 
+    coordinates = mol.coords[cb_mask].reshape(-1,3)
     distances = np.sqrt(((coordinates[:, np.newaxis, :] - coordinates[np.newaxis, :, :])**2).sum(axis=2))
     chains = mol.chain[cb_mask]
+    unique_chains = [str(i) for i in np.unique(chains)]
 
     pDockQ2 = pd.DataFrame({"chain1": [], "chain2": [], "pDockQ2": []})
     for chain1, chain2 in itertools.permutations(unique_chains, 2):
@@ -201,11 +201,11 @@ def calculate_ipsae(mol_file, pae_matrix, pae_cutoff=10, dist_cutoff=10.0):
     cb_mask = np.logical_or(mol.name == "CB", np.logical_and(mol.resname == "GLY",  mol.name == "CA"))
     numres = cb_mask.sum()
     # mol_residues = mol.resid[cb_mask]
-    unique_chains = [str(i) for i in np.unique(mol.chain)]
 
-    # coordinates = mol.coords[cb_mask].reshape(-1,3) 
+    # coordinates = mol.coords[cb_mask].reshape(-1,3)
     # distances = np.sqrt(((coordinates[:, np.newaxis, :] - coordinates[np.newaxis, :, :])**2).sum(axis=2))
     chains = mol.chain[cb_mask]
+    unique_chains = [str(i) for i in np.unique(chains)]
     
     ipsae = pd.DataFrame({"chain1": [], "chain2": [], "ipSAE": [], "ipSAE_d0chn": [], "ipSAE_d0dom": []})
 
