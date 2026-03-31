@@ -2063,63 +2063,98 @@ class InteractomeAnalyzer:
         self._candidate_clusters: Optional[pd.DataFrame] = None
     
     def get_confidence_tiers(
-        self, 
-        ipsae_threshold: float = 0.5, 
-        pdockq2_threshold: float = 0.23, 
-        msa_threshold: int = 20
+        self,
+        ipsae_threshold: float = 0.5,
+        pdockq2_threshold: float = 0.23,
+        msa_threshold: int = 20,
+        lis_threshold: float = 0.203,
+        lia_threshold: float = 3432.0,
+        ilis_threshold: float = 0.223,
     ) -> pd.DataFrame:
         """
-        Categorizes interactome results into confidence Tiers based on 
-        structural, physical, and evolutionary metrics.
+        Categorizes interactome results into confidence tiers.
+
+        Adds three independent tier columns:
+          - ``Tier``      — ipSAE-based (original; Dunbrack 2025 + pDockQ2 + MSA depth).
+          - ``LIS_Tier``  — LIS-based (Kim et al. 2024): Best LIS + Best LIA dual threshold.
+          - ``iLIS_Tier`` — iLIS-based (Kim et al. 2025): single Best iLIS threshold.
 
         Parameters
         ----------
         ipsae_threshold : float, default=0.5
-            Minimum ipSAE for confidence.
         pdockq2_threshold : float, default=0.23
-            Minimum pDockQ2 for physical plausibility.
         msa_threshold : int, default=20
-            Minimum MSA depth for evolutionary support.
+        lis_threshold : float, default=0.203
+            Best LIS threshold for LIS_Tier "High Confidence".
+        lia_threshold : float, default=3432
+            Best LIA threshold for LIS_Tier "High Confidence".
+        ilis_threshold : float, default=0.223
+            Best iLIS threshold for iLIS_Tier "High Confidence".
 
         Returns
         -------
         pd.DataFrame
-            The interactome data with an added 'Tier' column.
+            Interactome data with added ``Tier``, ``LIS_Tier``, and ``iLIS_Tier`` columns.
         """
         if self._interactome_data is None:
             raise RuntimeError("Interactome data not loaded. Set interactome_path first.")
 
         df = self._interactome_data.copy()
 
-        # Handle variations in column names
-        ipsae_col = "ipSAE_AB" if "ipSAE_AB" in df.columns else "ipSAE"
+        # ── ipSAE-based tier (original) ──────────────────────────────────────
+        ipsae_col   = "ipSAE_AB" if "ipSAE_AB" in df.columns else "ipSAE"
         pdockq2_col = "pDockQ2_AB" if "pDockQ2_AB" in df.columns else "pDockQ2"
-        msa_col = "msa_depth"
+        msa_col     = "msa_depth"
 
-        def classify(row):
+        def _ipsae_classify(row) -> str:
             if ipsae_col not in row or pdockq2_col not in row:
                 return "Unknown"
-            
-            msa_val = row.get(msa_col, 0)
-            ipsae_val = row[ipsae_col]
+            msa_val     = row.get(msa_col, 0)
+            ipsae_val   = row[ipsae_col]
             pdockq2_val = row[pdockq2_col]
-
-            # Tier 1: High structure, High physics, High MSA
             if ipsae_val > ipsae_threshold and pdockq2_val > pdockq2_threshold and msa_val > msa_threshold:
                 return "Tier 1 (High Confidence)"
-            
-            # Tier 2: High structure, High physics, Low MSA (Potential Novel/Specific)
             if ipsae_val > ipsae_threshold and pdockq2_val > pdockq2_threshold and msa_val <= msa_threshold:
                 return "Tier 2 (Specific/Novel)"
-
-            # Tier 3: High structure, Low physics
             if ipsae_val > ipsae_threshold and pdockq2_val <= pdockq2_threshold:
                 return "Tier 3 (Weak/Dynamic)"
-
             return "Low Confidence"
 
-        df["Tier"] = df.apply(classify, axis=1)
-        logger.info(f"Tier Classification: \n{df['Tier'].value_counts()}")
+        df["Tier"] = df.apply(_ipsae_classify, axis=1)
+
+        # ── LIS-based tier (Kim et al. 2024) ─────────────────────────────────
+        if "Best_LIS" in df.columns and "Best_LIA" in df.columns:
+            def _lis_classify(row) -> str:
+                if row["Best_LIS"] >= lis_threshold and row["Best_LIA"] >= lia_threshold:
+                    return "High Confidence"
+                if row["Best_LIS"] >= lis_threshold:
+                    return "Low LIA"
+                return "Low Confidence"
+            df["LIS_Tier"] = df.apply(_lis_classify, axis=1)
+        else:
+            logger.warning(
+                "Columns 'Best_LIS'/'Best_LIA' not found — LIS_Tier set to 'N/A'. "
+                "Re-process models with the current metrics.py to generate them."
+            )
+            df["LIS_Tier"] = "N/A"
+
+        # ── iLIS-based tier (Kim et al. 2025) ────────────────────────────────
+        if "Best_iLIS" in df.columns:
+            df["iLIS_Tier"] = df["Best_iLIS"].apply(
+                lambda v: "High Confidence" if v >= ilis_threshold else "Low Confidence"
+            )
+        else:
+            logger.warning(
+                "Column 'Best_iLIS' not found — iLIS_Tier set to 'N/A'. "
+                "Re-process models with the current metrics.py to generate them."
+            )
+            df["iLIS_Tier"] = "N/A"
+
+        logger.info(
+            f"Tier (ipSAE):\n{df['Tier'].value_counts()}\n"
+            f"LIS_Tier:\n{df['LIS_Tier'].value_counts()}\n"
+            f"iLIS_Tier:\n{df['iLIS_Tier'].value_counts()}"
+        )
         return df
 
     def plot_confidence_landscape(self, output_path: Optional[Union[str, Path]] = None):

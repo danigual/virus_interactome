@@ -154,39 +154,99 @@ def calculate_pdockq2(mol_file, plddt_by_res, pae_matrix, pDockQ_cutoff=8.0):
     return pDockQ2
 
 def calculate_LIS(mol_file, pae_matrix, threshold=12.0):
+    """Backwards-compatible wrapper. Returns DataFrame with LIS only."""
+    lis_df = calculate_LIS_family(mol_file, pae_matrix, pae_cutoff=threshold)
+    return lis_df[["chain1", "chain2", "LIS"]].copy()
+
+
+def calculate_LIS_family(
+    mol_file,
+    pae_matrix,
+    pae_cutoff: float = 12.0,
+    contact_dist: float = 8.0,
+) -> pd.DataFrame:
+    """Compute the full LIS metric family for every ordered inter-chain pair.
+
+    Metrics (Kim et al. 2024/2025):
+      LIS   — mean (1 - PAE/cutoff) for Cβ pairs with PAE ≤ cutoff
+      LIA   — count of Cβ pairs with PAE ≤ cutoff
+      cLIS  — same as LIS but also requiring Cβ–Cβ distance ≤ contact_dist
+      cLIA  — count of pairs satisfying both PAE and distance filters
+      iLIS  — sqrt(LIS * cLIS); 0 when cLIA == 0 (no physical contacts)
+      iLIA  — sqrt(LIA * cLIA)
+      LIR   — residue indices on chain1 involved in any valid PAE pair (chain1 side)
+      cLIR  — residue indices on chain1 involved in any contact pair (chain1 side)
+
+    Returns a DataFrame with columns:
+        chain1, chain2, LIS, LIA, cLIS, cLIA, iLIS, iLIA, LIR, cLIR
+    One row per ordered (chain1, chain2) pair.
+    """
     mol = None
     if isinstance(mol_file, Molecule):
         mol = mol_file
     elif isinstance(mol_file, str):
         try:
             mol = Molecule(mol_file)
-        except:
-            raise FileNotFoundError(f"File {mol_file} does not exists")
-    cb_mask = np.logical_or(mol.name == "CB", np.logical_and(mol.resname == "GLY",  mol.name == "CA"))
-    unique_chains = [str(i) for i in np.unique(mol.chain)]
+        except Exception as exc:
+            raise FileNotFoundError(f"File {mol_file} does not exist") from exc
 
+    cb_mask = np.logical_or(
+        mol.name == "CB",
+        np.logical_and(mol.resname == "GLY", mol.name == "CA"),
+    )
     chains = mol.chain[cb_mask]
-    unique_chains = [str(i) for i in np.unique(chains)]
-    # LIS = init_chainpairdict_zeros(list(unique_chains))
-    LIS = pd.DataFrame({"chain1": [], "chain2": [], "LIS": []})
+    unique_chains = [str(c) for c in np.unique(chains)]
+    coords = mol.coords[cb_mask].reshape(-1, 3)  # (N_cb, 3)
 
+    # Pairwise Cβ–Cβ distance matrix (full N×N, reused across chain pairs)
+    diff = coords[:, np.newaxis, :] - coords[np.newaxis, :, :]  # (N, N, 3)
+    dist_matrix = np.sqrt((diff ** 2).sum(axis=2))              # (N, N)
+
+    rows = []
     for chain1, chain2 in itertools.permutations(unique_chains, 2):
-        # import pdb; pdb.set_trace() 
-        mask = (chains[:, None] == chain1) & (chains[None, :] == chain2)  # Select residues for (chain1, chain2)
-        selected_pae = pae_matrix[mask]  # Get PAE values for this pair
-        
-        if selected_pae.size > 0:  # Ensure we have values
-            valid_pae = selected_pae[selected_pae <= threshold]  # Apply the threshold
-            if valid_pae.size > 0:
-                scores = (threshold - valid_pae) / threshold  # Compute scores
-                avg_score = np.mean(scores)  # Average score for (chain1, chain2)
-                tmp_lis = avg_score
-            else:
-                tmp_lis = 0.0  # No valid values
+        mask_c1 = chains == chain1
+        mask_c2 = chains == chain2
+
+        # Inter-chain PAE and distance sub-matrices
+        sub_pae  = pae_matrix[np.ix_(mask_c1, mask_c2)]   # (n1, n2)
+        sub_dist = dist_matrix[np.ix_(mask_c1, mask_c2)]  # (n1, n2)
+
+        pae_mask     = sub_pae <= pae_cutoff
+        contact_mask = pae_mask & (sub_dist <= contact_dist)
+
+        # LIA / LIS
+        lia = int(pae_mask.sum())
+        if lia > 0:
+            lis = float(np.mean((pae_cutoff - sub_pae[pae_mask]) / pae_cutoff))
         else:
-            tmp_lis = 0.0     
-        LIS = pd.concat([LIS, pd.DataFrame({"chain1": [chain1], "chain2": [chain2], "LIS": [tmp_lis]})], ignore_index=True)
-    return LIS
+            lis = 0.0
+
+        # cLIA / cLIS
+        clia = int(contact_mask.sum())
+        if clia > 0:
+            clis = float(np.mean((pae_cutoff - sub_pae[contact_mask]) / pae_cutoff))
+        else:
+            clis = 0.0
+
+        # iLIS / iLIA — geometric mean; 0 when no physical contact
+        ilis = float(np.sqrt(lis * clis))
+        ilia = float(np.sqrt(lia * clia))
+
+        # LIR / cLIR — 0-based residue indices on chain1 side
+        lir_indices  = sorted(set(np.where(pae_mask)[0].tolist()))
+        clir_indices = sorted(set(np.where(contact_mask)[0].tolist()))
+        lir_str  = ",".join(map(str, lir_indices))
+        clir_str = ",".join(map(str, clir_indices))
+
+        rows.append({
+            "chain1": chain1, "chain2": chain2,
+            "LIS": lis, "LIA": lia,
+            "cLIS": clis, "cLIA": clia,
+            "iLIS": ilis, "iLIA": ilia,
+            "LIR": lir_str, "cLIR": clir_str,
+        })
+
+    return pd.DataFrame(rows)
 
 def calculate_ipsae(mol_file, pae_matrix, pae_cutoff=10, dist_cutoff=10.0):
     mol = None
@@ -293,15 +353,29 @@ def calculate_all_metrics(mol_file, all_metrics):
 
     ipSAE_AB = ipsae.loc[(ipsae.chain1 == "A") & (ipsae.chain2 == "B"), "ipSAE"].values[0]
     ipSAE_BA = ipsae.loc[(ipsae.chain1 == "B") & (ipsae.chain2 == "A"), "ipSAE"].values[0]
-    LIS = calculate_LIS(mol, pae)
-    # pdockq = calculate_pdockq(mol, plddt_by_atom=plddt_by_atom)
-    # pdockq2 = calculate_pdockq2(mol, plddt_by_atom=plddt_by_atom, pae_matrix=pae)
+    lis_df = calculate_LIS_family(mol, pae)
     pdockq = calculate_pdockq(mol, plddt_by_res=plddt_by_residue)
     pdockq2 = calculate_pdockq2(mol, plddt_by_res=plddt_by_residue, pae_matrix=pae)
+
+    def _lis_val(chain1: str, chain2: str, col: str):
+        """Safe lookup for a LIS-family column; returns 0.0 if row missing."""
+        row = lis_df.loc[(lis_df.chain1 == chain1) & (lis_df.chain2 == chain2), col]
+        return row.values[0] if len(row) > 0 else 0.0
+
+    lis_ab   = _lis_val("A", "B", "LIS")
+    lis_ba   = _lis_val("B", "A", "LIS")
+    lia_ab   = _lis_val("A", "B", "LIA")
+    lia_ba   = _lis_val("B", "A", "LIA")
+    clis_ab  = _lis_val("A", "B", "cLIS")
+    clis_ba  = _lis_val("B", "A", "cLIS")
+    clia_ab  = _lis_val("A", "B", "cLIA")
+    clia_ba  = _lis_val("B", "A", "cLIA")
+    ilis_ab  = _lis_val("A", "B", "iLIS")
+    ilis_ba  = _lis_val("B", "A", "iLIS")
+    ilia_ab  = _lis_val("A", "B", "iLIA")
+    ilia_ba  = _lis_val("B", "A", "iLIA")
+
     return {
-        # "pLDDT_mean": np.mean(plddt_by_atom),
-        # "pLDDT_mean_A": np.mean(plddt_by_atom[mol.chain == "A"]),
-        # "pLDDT_mean_B": np.mean(plddt_by_atom[mol.chain == "B"]),
         "pLDDT_mean": np.mean(plddt_by_residue),
         "pLDDT_mean_A": np.mean(plddt_by_residue[chain_by_res == "A"]),
         "pLDDT_mean_B": np.mean(plddt_by_residue[chain_by_res == "B"]),
@@ -310,17 +384,29 @@ def calculate_all_metrics(mol_file, all_metrics):
         "pae_mean": np.mean(pae),
         "pae_mean_A": np.mean(pae[chain_by_res == "A"][:, chain_by_res == "A"]),
         "pae_mean_B": np.mean(pae[chain_by_res == "B"][:, chain_by_res == "B"]),
-        "pae_mean_AB": np.mean([np.mean(pae[chain_by_res == "A"][:, chain_by_res == "B"]), 
-                                np.mean(pae[chain_by_res == "B"][:, chain_by_res == "A"])
-                        ]),
+        "pae_mean_AB": np.mean([np.mean(pae[chain_by_res == "A"][:, chain_by_res == "B"]),
+                                np.mean(pae[chain_by_res == "B"][:, chain_by_res == "A"])]),
         "pDockQ": pdockq.loc[(pdockq.chain1 == "A") & (pdockq.chain2 == "B"), "pDockQ"].values[0],
         "pDockQ2_AB": pdockq2.loc[(pdockq2.chain1 == "A") & (pdockq2.chain2 == "B"), "pDockQ2"].values[0],
         "pDockQ2_BA": pdockq2.loc[(pdockq2.chain1 == "B") & (pdockq2.chain2 == "A"), "pDockQ2"].values[0],
-        "LIS_AB": LIS.loc[(LIS.chain1 == "A") & (LIS.chain2 == "B"), "LIS"].values[0],
-        "LIS_BA": LIS.loc[(LIS.chain1 == "B") & (LIS.chain2 == "A"), "LIS"].values[0],
+        # LIS family (Kim et al. 2024/2025)
+        "LIS_AB": lis_ab,  "LIS_BA": lis_ba,
+        "LIA_AB": lia_ab,  "LIA_BA": lia_ba,
+        "cLIS_AB": clis_ab, "cLIS_BA": clis_ba,
+        "cLIA_AB": clia_ab, "cLIA_BA": clia_ba,
+        "iLIS_AB": ilis_ab, "iLIS_BA": ilis_ba,
+        "iLIA_AB": ilia_ab, "iLIA_BA": ilia_ba,
+        "Best_LIS":  float(max(lis_ab,  lis_ba)),
+        "Best_LIA":  float(max(lia_ab,  lia_ba)),
+        "Best_iLIS": float(max(ilis_ab, ilis_ba)),
+        "Best_iLIA": float(max(ilia_ab, ilia_ba)),
+        # LIR residue index strings (chain1 side for A→B direction)
+        "LIR_AB":  _lis_val("A", "B", "LIR"),
+        "cLIR_AB": _lis_val("A", "B", "cLIR"),
+        # ipSAE (Dunbrack 2025)
         "ipSAE_AB": ipSAE_AB,
-        "ipSAE_BA": ipSAE_BA, 
-        "max_ipSAE": np.max([ipSAE_AB, ipSAE_BA]),
+        "ipSAE_BA": ipSAE_BA,
+        "max_ipSAE": float(np.max([ipSAE_AB, ipSAE_BA])),
         "ipSAE_d0chn_AB": ipsae.loc[(ipsae.chain1 == "A") & (ipsae.chain2 == "B"), "ipSAE_d0chn"].values[0],
         "ipSAE_d0chn_BA": ipsae.loc[(ipsae.chain1 == "B") & (ipsae.chain2 == "A"), "ipSAE_d0chn"].values[0],
         "ipSAE_d0dom_AB": ipsae.loc[(ipsae.chain1 == "A") & (ipsae.chain2 == "B"), "ipSAE_d0dom"].values[0],

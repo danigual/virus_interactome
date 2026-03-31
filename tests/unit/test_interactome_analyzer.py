@@ -396,6 +396,88 @@ class TestConfidenceTiersEdgeCases:
         result = analyzer.get_confidence_tiers()
         assert result["Tier"].iloc[0] == "Unknown"
 
+    def test_lis_tier_high_confidence(self, tmp_path):
+        """LIS_Tier == 'High Confidence' when Best_LIS >= 0.203 and Best_LIA >= 3432."""
+        df = pd.DataFrame({
+            "PPI": ["A__B"], "Folder": ["/fake"],
+            "ipSAE_AB": [0.6], "pDockQ2_AB": [0.3], "msa_depth": [30],
+            "Best_LIS": [0.25], "Best_LIA": [4000.0],
+            "Best_iLIS": [0.30],
+        })
+        csv = tmp_path / "data.csv"
+        df.to_csv(csv, index=False)
+        analyzer = InteractomeAnalyzer()
+        analyzer.interactome_path = str(csv)
+        result = analyzer.get_confidence_tiers()
+        assert result["LIS_Tier"].iloc[0] == "High Confidence"
+        assert result["iLIS_Tier"].iloc[0] == "High Confidence"
+
+    def test_lis_tier_low_confidence(self, tmp_path):
+        """LIS_Tier == 'Low Confidence' when Best_LIS < 0.203."""
+        df = pd.DataFrame({
+            "PPI": ["A__B"], "Folder": ["/fake"],
+            "ipSAE_AB": [0.3], "pDockQ2_AB": [0.1], "msa_depth": [5],
+            "Best_LIS": [0.05], "Best_LIA": [100.0],
+            "Best_iLIS": [0.01],
+        })
+        csv = tmp_path / "data.csv"
+        df.to_csv(csv, index=False)
+        analyzer = InteractomeAnalyzer()
+        analyzer.interactome_path = str(csv)
+        result = analyzer.get_confidence_tiers()
+        assert result["LIS_Tier"].iloc[0] == "Low Confidence"
+        assert result["iLIS_Tier"].iloc[0] == "Low Confidence"
+
+    def test_lis_tier_low_lia(self, tmp_path):
+        """LIS_Tier == 'Low LIA' when Best_LIS passes but Best_LIA does not."""
+        df = pd.DataFrame({
+            "PPI": ["A__B"], "Folder": ["/fake"],
+            "ipSAE_AB": [0.6], "pDockQ2_AB": [0.3], "msa_depth": [30],
+            "Best_LIS": [0.30], "Best_LIA": [100.0],
+            "Best_iLIS": [0.10],
+        })
+        csv = tmp_path / "data.csv"
+        df.to_csv(csv, index=False)
+        analyzer = InteractomeAnalyzer()
+        analyzer.interactome_path = str(csv)
+        result = analyzer.get_confidence_tiers()
+        assert result["LIS_Tier"].iloc[0] == "Low LIA"
+
+    def test_lis_tier_na_when_columns_absent(self, tmp_path, caplog):
+        """LIS_Tier and iLIS_Tier are 'N/A' when Best_LIS/Best_iLIS columns absent."""
+        import logging
+        df = pd.DataFrame({
+            "PPI": ["A__B"], "Folder": ["/fake"],
+            "ipSAE_AB": [0.6], "pDockQ2_AB": [0.3], "msa_depth": [30],
+        })
+        csv = tmp_path / "data.csv"
+        df.to_csv(csv, index=False)
+        analyzer = InteractomeAnalyzer()
+        analyzer.interactome_path = str(csv)
+        caplog.set_level(logging.WARNING)
+        result = analyzer.get_confidence_tiers()
+        assert result["LIS_Tier"].iloc[0] == "N/A"
+        assert result["iLIS_Tier"].iloc[0] == "N/A"
+        assert "Best_LIS" in caplog.text
+
+    def test_tier_columns_independent(self, tmp_path):
+        """Tier and LIS_Tier can disagree — they are independent classifications."""
+        df = pd.DataFrame({
+            "PPI": ["A__B"], "Folder": ["/fake"],
+            # ipSAE says Low Confidence
+            "ipSAE_AB": [0.3], "pDockQ2_AB": [0.1], "msa_depth": [5],
+            # LIS says High Confidence
+            "Best_LIS": [0.25], "Best_LIA": [5000.0],
+            "Best_iLIS": [0.30],
+        })
+        csv = tmp_path / "data.csv"
+        df.to_csv(csv, index=False)
+        analyzer = InteractomeAnalyzer()
+        analyzer.interactome_path = str(csv)
+        result = analyzer.get_confidence_tiers()
+        assert result["Tier"].iloc[0] == "Low Confidence"
+        assert result["LIS_Tier"].iloc[0] == "High Confidence"
+
 
 # ---------------------------------------------------------------------------
 # run_full_pipeline — cluster_data not loaded early return
