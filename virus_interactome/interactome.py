@@ -335,6 +335,7 @@ class InteractomeWriter:
         af3_threshold: int = 5000,
         af3_batch_size: int = 30,
         boltz_threshold: int = 1600,
+        colabfold_threshold: int = 10000,
         skip_over_threshold: bool = False,
         filename_fmt: str = "{engine}_{name}.{ext}",
         index_name: str = "index.csv",
@@ -390,32 +391,14 @@ class InteractomeWriter:
         elif engine_lower == "boltz2":
             ext = "yaml"
             residue_threshold = boltz_threshold
+        elif engine_lower == "colabfold":
+            ext = "fasta"
+            residue_threshold = colabfold_threshold
         else:
-            raise ValueError(f"Unsupported engine '{engine}'. Must be 'af3' or 'boltz2'.")
+            raise ValueError(f"Unsupported engine '{engine}'. Must be 'af3', 'boltz2', or 'colabfold'.")
 
         # 2. Select Generator based on mode
-        # Note: We pass ids_a/ids_b filters to the generators
-
-        if mode == "intra_pairs":
-            pairs = self.generate_intra_pairs() 
-            if ids_a:
-                pairs = (p for p in pairs if p[0] in ids_a and p[1] in ids_a)
-            iterator = (("pair", p) for p in pairs)
-        
-        elif mode == "inter_pairs":
-            pairs = self.generate_inter_pairs() 
-            iterator = (("pair", p) for p in pairs)
-        
-        elif mode == "homomers":
-            homes = self.generate_homo_mers(nmin=nmin, nmax=nmax)
-            iterator = (("homo", h) for h in homes)
-        
-        elif mode == "single":
-            singles = self.generate_single_run(source="both" if self.mode == "inter" else "a", ids_a=ids_a, ids_b=ids_b)  
-            iterator = (("single", s) for s in singles)
-
-        else:
-            raise ValueError(f"Unknown mode: {mode}")
+        iterator = self._make_iterator(mode, nmin, nmax, ids_a, ids_b)
 
         metas: List[dict] = []
         index_path = out_path/ index_name
@@ -431,56 +414,9 @@ class InteractomeWriter:
 
             for kind, entry in iterator:
 
-                # Build seq_list and job_name
-                seq_list = []
-                name = ""
-                idA, idB = "", ""
-                
-                # --- Logic for Pairs ---
-                if kind == "pair":
-                    idA_raw, idB_raw = entry
-                    # idA, idB = entry
-
-                    # Determine source proteomes
-                    prot_A = self.proteome_a
-                    # For intra pairs, both are from A. For inter pairs, B is from B.
-                    prot_B = self.proteome_b if mode == "inter_pairs" else self.proteome_a
-
-                    # Sort IDs for canonical naming if in intra mode (to avoid A_B vs B_A dupes)
-                    if mode == "intra_pairs" and idA_raw > idB_raw:
-                        idA, idB = idB_raw, idA_raw
-                        prot_A, prot_B = prot_B, prot_A # Swap proteomes (same obj in intra)
-                    else:
-                        idA, idB = idA_raw, idB_raw
-
-                    # Fetch sequences
-                    seqA = prot_A.sequences[idA]
-                    seqB = prot_B.sequences[idB]
-                    
-                    # Determine stoichiometry
-                    cntA = counts_map.get(idA, 1) if counts_map else 1
-                    cntB = counts_map.get(idB, 1) if counts_map else 1
-                    
-                    seq_list = [(idA, seqA, cntA), (idB, seqB, cntB)]
-                    name = f"{idA}__{idB}"
-
-                # --- Logic for Homomers ---
-                elif kind == "homo":
-                    pid, copies = entry
-                    seq_list = [(pid, self.proteome_a.sequences[pid], copies)]
-                    name = f"{pid}__{copies}"
-                    idA = pid
-                    # idA, idB = pid, "" 
-
-                # --- Logic for Monomers ---   
-                elif kind == "single":
-                    pid, seq, cnt = entry
-                    seq_list = [(pid, seq, cnt)]
-                    name = f"{pid}"
-                    idA = pid
-                    # idA, idB = pid, ""
-                else:
-                    raise RuntimeError(f"Unexpected iterator kind: {kind}")
+                seq_list, name, idA, idB = self._build_seq_list_from_entry(
+                    kind, entry, mode, counts_map
+                )
 
                 
                 # 4. Calculate Size and Validate
@@ -496,16 +432,17 @@ class InteractomeWriter:
                 if not (skip_over_threshold and is_over_limit):
                     full_save_path = out_path / base_name
                     save_path_str = str(full_save_path)
-                # save_path = str(Path(output_dir) / base_name) if not (skip_over_threshold and over) else ""
-
-                # if save_path:
                     if engine_lower == "af3":
                         self.get_af3_input(seq_list, job_name=name,
-                        save_path=save_path_str, 
+                        save_path=save_path_str,
                         residue_threshold=residue_threshold)
-                    else:
+                    elif engine_lower == "boltz2":
                         self.get_boltz2_input(seq_list, save_path=save_path_str,
                         residue_threshold=residue_threshold)
+                    else:  # colabfold
+                        seq_str = self._build_colabfold_seq_str(seq_list)
+                        with open(full_save_path, "w", encoding="utf-8") as f:
+                            f.write(f">{name}\n{seq_str}\n")
                     
                 if is_over_limit:
                     warns.append(f"Skipped: total residues {total_res} exceed {residue_threshold}")
@@ -780,6 +717,10 @@ class InteractomeWriter:
         - Produces N separate colabfold_batch calls (one per FASTA).
         - Best for: fine-grained monitoring, partial re-runs, GPU parallelism across nodes.
         - For 36 proteins → 630 FASTA files and 630 colabfold_batch calls.
+
+        .. deprecated::
+            Use ``write_interactome_jobs(engine='colabfold', ...)`` instead.
+            This method is kept for backwards compatibility.
         """
         out_path = Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
