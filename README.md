@@ -116,6 +116,14 @@ Structural confidence is assessed through a combination of metrics:
 
 ---
 
+## References
+
+- Dunbrack R.L. (2025). *Res ipSAE loquuntur: What's wrong with AlphaFold's ipTM score and how to fix it.* bioRxiv. https://doi.org/10.1101/2025.02.10.637595
+- Kim D.W. et al. (2024). *Systematic assessment of protein-protein interaction prediction using AlphaFold-Multimer with LIS score.* bioRxiv. https://doi.org/10.1101/2024.02.19.580970
+- Qi Y. et al. (2026). *Atlas of predicted protein complex structures across kingdoms.* Nature Communications. https://doi.org/10.1038/s41467-026-70884-4
+
+---
+
 ## License
 
 MIT
