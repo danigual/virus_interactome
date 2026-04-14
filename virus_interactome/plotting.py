@@ -479,18 +479,20 @@ def plot_iptm_vs_ptm(df, output_path:str = None):
     plt.close()
 
 
-def batch_plotting_colabfold(ppi_folder: str) -> list:
+def batch_plotting_colabfold(ppi_folder: str, force: bool = False) -> list:
     """
     Generate PAE and pLDDT plots for all ranked models in a single ColabFold PPI output folder.
 
     Mirrors the behaviour of `batch_plotting` (AF3) but for ColabFold `.pdb` outputs.
     Plots are saved next to each model file as ``{stem}_pae.png`` / ``{stem}_plddt.png``.
-    Existing files are reused without regeneration.
+    Existing files are reused without regeneration unless ``force=True``.
 
     Parameters
     ----------
     ppi_folder : str
         Path to a ColabFold PPI subfolder containing ``*_unrelaxed_rank_*.pdb`` model files.
+    force : bool, optional
+        If True, overwrite existing plot files. Default is False.
 
     Returns
     -------
@@ -512,7 +514,7 @@ def batch_plotting_colabfold(ppi_folder: str) -> list:
             print(f"[WARNING] batch_plotting_colabfold: skipping {mol_file.name}: {e}")
             continue
 
-        if save_path_pae.exists():
+        if save_path_pae.exists() and not force:
             outputs.append(save_path_pae)
         else:
             plot_paes(
@@ -522,7 +524,7 @@ def batch_plotting_colabfold(ppi_folder: str) -> list:
             )
             outputs.append(save_path_pae)
 
-        if save_path_plddt.exists():
+        if save_path_plddt.exists() and not force:
             outputs.append(save_path_plddt)
         else:
             plot_plddt(
