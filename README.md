@@ -1,86 +1,121 @@
-# Virus Interactome 🧬
+# virus_interactome
 
-A high-throughput Python toolkit for the generation, execution, and structural analysis of viral protein-protein interaction (PPI) networks, covering both **virus-host** and **internal viral (intra-interactome)** systems.
+A Python toolkit for high-throughput structural modeling and analysis of viral protein-protein interaction (PPI) networks. It covers both **intra-viral** (virus vs. virus) and **virus-host** interactomes, bridging proteome sequence data and structural prediction outputs into a quantitative interaction landscape.
 
-`virus_interactome` bridges the gap between proteomic sequence data and structural "interactomics," providing a complete pipeline to model and analyze how viral factors interact with each other and with host cellular machinery.
-
----
-
-## 🚀 Core Architecture
-
-The package is organized into four specialized pillars that manage the interactome lifecycle:
-
-### 1. **Proteome Management** (`ProteomeManager`)
-* **Data Wrangling:** Automated cleaning, sequence validation, and standardization of FASTA datasets.
-* **Physicochemical Profiling:** Compute molecular weight, isoelectric point (pI), instability index, and aromaticity.
-* **Identity Analysis:** Multi-processed sequence identity matrices to identify redundant proteins or high-similarity clusters.
-
-### 2. **Job Orchestration** (`InteractomeWriter` & `InteractomeRunner`)
-* **Flexible Modes:** 
-    * **Intra-interactome:** Systematic analysis of interactions within a single proteome (e.g., all-vs-all viral proteins).
-    * **Inter-interactome:** Mapping interactions between two different systems (e.g., virus vs. host).
-* **Multi-Engine Support:** Generate native input formats for **AlphaFold 3** (.json), **Boltz2** (.yaml), and **ColabFold** (.fasta/.csv).
-* **Stoichiometry:** Support for pairs, homomers (oligomers), and monomers.
-* **Status Monitoring:** Real-time tracking of job states (`PENDING`, `RUNNING`, `COMPLETED`, `FAILED`).
-
-### 3. **Structural Processing** (`InteractomeProcessor`)
-* **Automated Extraction:** Parse `ipTM`, `pTM`, and chain-specific confidence scores from CIF/PDB and JSON outputs.
-* **Advanced Metrics:** Calculation of high-confidence interaction markers:
-    * **pDockQ & pDockQ2:** Predicted docking quality scores.
-    * **ipSAE:** interface-specific Predicted Aligned Error.
-    * **LIS:** Local Interaction Strength.
-* **Interface Clustering:** Uses **DBSCAN** density-based clustering on the PAE matrix to identify and characterize specific interaction interfaces.
-
-### 4. **Ensemble Analysis** (`InteractomeAnalyzer`)
-* **Peptide-Protein Pipeline:** Specialized workflow for identifying and clustering peptide binding sites on larger protein surfaces.
-* **Structural Alignment:** Automated superimposition of interaction ensembles based on high-confidence (pLDDT > 70) reference binder structures.
-* **Visualization:** Automated generation of **ChimeraX** scripts (`.cxc`) and sessions (`.cxs`) for 3D analysis of binding site clusters.
+Supported prediction engines: **AlphaFold 3**, **Boltz-2**, and **ColabFold**.
 
 ---
 
-## 📊 Visualization Suite
-
-The package produces publication-ready diagrams:
-* **PAE Heatmaps:** With automated chain boundary detection.
-* **pLDDT Plots:** Color-coded by confidence bands.
-* **Metric Distribution:** Boxplots and iPTM vs pTM scatterplots.
-* **Cluster Visualization:** 2D projections of PAE interface clusters.
-
----
-
-## 🛠️ Quick Start
-
-### 1. Generate Jobs (Intra-interactome Example)
-```python
-from virus_interactome import ProteomeManager, InteractomeWriter
-
-# Load viral proteome
-virus = ProteomeManager("virus.fasta")
-
-# Generate all-vs-all intra-viral pairs for Boltz2
-writer = InteractomeWriter(proteome_a=virus)
-writer.write_interactome_jobs(engine="boltz2", output_dir="jobs_intra/", mode="intra_pairs")
-```
-
-### 2. Process Results
-```python
-from virus_interactome import InteractomeProcessor, InteractomeRunner
-
-# Check execution status
-runner = InteractomeRunner(path_of_inputs="jobs_intra/", path_of_outputs="results_intra/", mode="boltz2")
-status = runner.check_run()
-
-# Process completed models and extract pDockQ/ipSAE
-processor = InteractomeProcessor(model_list=runner.inputs, engine="boltz2")
-processor.process_models(output_path="analysis/")
-```
-
----
-
-## 📦 Installation
+## Installation
 
 ```bash
 git clone https://github.com/PabloHNieto/virus_interactome.git
 cd virus_interactome
 pip install -e .
 ```
+
+**Dependencies** (installed automatically): `biopython`, `matplotlib`, `numpy`, `pandas`, `scikit-learn`, `moleculekit`, `PyYAML`, `tqdm`.
+
+> Requires Python ≥ 3.9. A dedicated conda environment is recommended due to the `moleculekit` dependency.
+
+---
+
+## Pipeline Overview
+
+The package is organized around four steps:
+
+1. **Proteome management** — load and validate FASTA files, compute physicochemical properties, calculate sequence identity matrices.
+2. **Job generation** — produce engine-ready input files (AF3 `.json`, Boltz-2 `.yaml`, ColabFold `.fasta`) for all-vs-all intra-viral pairs, virus-host pairs, homomers, or single chains.
+3. **Result processing** — parse `.cif` model outputs in parallel, extract structural confidence metrics (ipTM, pTM, pDockQ2, ipSAE, LIS family), and run PAE-based interface clustering.
+4. **Interactome analysis** — classify interactions by confidence tier, rank and filter by any metric, export network edge lists, and run peptide-protein structural ensemble analysis.
+
+---
+
+## Quick Start
+
+### 1. Generate prediction jobs
+
+```python
+from virus_interactome import ProteomeManager, InteractomeWriter
+
+virus = ProteomeManager("virus.fasta")
+
+# All-vs-all intra-viral pairs for AlphaFold 3
+writer = InteractomeWriter(proteome_a=virus)
+writer.write_interactome_jobs(engine="af3", output_dir="jobs/", mode="intra_pairs")
+
+# Virus-host pairs for ColabFold
+host = ProteomeManager("host.fasta")
+writer = InteractomeWriter(proteome_a=virus, proteome_b=host)
+writer.write_interactome_jobs(engine="colabfold", output_dir="jobs_host/", mode="inter_pairs")
+```
+
+### 2. Monitor and run jobs
+
+```python
+from virus_interactome import InteractomeRunner
+
+runner = InteractomeRunner(
+    path_of_inputs="jobs/",
+    path_of_outputs="results/",
+    mode="af3"
+)
+status = runner.check_run()
+print(status)
+```
+
+### 3. Process structural outputs
+
+```python
+from virus_interactome import InteractomeProcessor
+
+processor = InteractomeProcessor(model_list=runner.inputs, engine="af3")
+processor.process_models(output_path="analysis/")
+# Produces: analysis/interactome_data.csv, analysis/clusters_data.csv
+```
+
+### 4. Analyze the interactome
+
+```python
+from virus_interactome import InteractomeAnalyzer
+
+analyzer = InteractomeAnalyzer(output_path="analysis/")
+
+# Classify interactions into confidence tiers
+tiers = analyzer.get_confidence_tiers()
+
+# Rank by best iLIS score
+top = analyzer.get_top_interactions(metric="Best_iLIS", top_n=20)
+
+# Export as network edge list for Cytoscape
+analyzer.export_to_network(output_format="cytoscape", output_path="network.csv")
+
+# Visualize the confidence landscape
+analyzer.plot_confidence_landscape(output_path="analysis/")
+```
+
+---
+
+## Confidence Metrics
+
+Structural confidence is assessed through a combination of metrics:
+
+| Metric | Description |
+|---|---|
+| `ipTM` / `pTM` | Inter-chain and global TM-score confidence (engine output) |
+| `ipSAE` | Interface Symmetrized Aligned Error — primary interaction quality score |
+| `pDockQ2` | Predicted docking quality v2 — physical binding plausibility |
+| `LIS` / `LIA` | Local Interaction Score / Area (Kim et al. 2024) |
+| `cLIS` / `cLIA` | Contact-filtered LIS/LIA (Cβ–Cβ distance ≤ 8 Å) |
+| `iLIS` / `iLIA` | `sqrt(LIS × cLIS)` — geometric mean, reduces false positives (Kim et al. 2025) |
+| `Best_LIS` / `Best_iLIS` | `max(AB, BA)` — used for final tier classification |
+
+**Literature-validated thresholds:**
+- High-confidence (dual): `Best_LIS ≥ 0.203` AND `Best_LIA ≥ 3432`
+- High-confidence (single metric): `Best_iLIS ≥ 0.223`
+
+---
+
+## License
+
+MIT
