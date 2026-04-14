@@ -6,7 +6,7 @@ from pathlib import Path
 from matplotlib.patches import Rectangle
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from glob import glob
-from .utils import load_json, process_full_data_af3, process_full_data_boltz
+from .utils import load_json, process_full_data_af3, process_full_data_boltz, process_full_data_colabfold
 
 def plot_paes(
     pae_matrix: np.ndarray,
@@ -479,5 +479,59 @@ def plot_iptm_vs_ptm(df, output_path:str = None):
     plt.close()
 
 
+def batch_plotting_colabfold(ppi_folder: str) -> list:
+    """
+    Generate PAE and pLDDT plots for all ranked models in a single ColabFold PPI output folder.
+
+    Mirrors the behaviour of `batch_plotting` (AF3) but for ColabFold `.pdb` outputs.
+    Plots are saved next to each model file as ``{stem}_pae.png`` / ``{stem}_plddt.png``.
+    Existing files are reused without regeneration.
+
+    Parameters
+    ----------
+    ppi_folder : str
+        Path to a ColabFold PPI subfolder containing ``*_unrelaxed_rank_*.pdb`` model files.
+
+    Returns
+    -------
+    list[Path]
+        Paths of all generated or reused plot files (PAE and pLDDT, interleaved by model rank).
+    """
+    ppi_folder = Path(ppi_folder)
+    model_files = sorted(ppi_folder.glob("*_unrelaxed_rank_*.pdb"))
+
+    outputs = []
+    for mol_file in model_files:
+        stem = mol_file.stem
+        save_path_pae = ppi_folder / f"{stem}_pae.png"
+        save_path_plddt = ppi_folder / f"{stem}_plddt.png"
+
+        try:
+            data = process_full_data_colabfold(str(mol_file))
+        except (FileNotFoundError, ValueError) as e:
+            print(f"[WARNING] batch_plotting_colabfold: skipping {mol_file.name}: {e}")
+            continue
+
+        if save_path_pae.exists():
+            outputs.append(save_path_pae)
+        else:
+            plot_paes(
+                data["pae"],
+                data["chain_boundaries_by_res"],
+                save_name=str(save_path_pae),
+            )
+            outputs.append(save_path_pae)
+
+        if save_path_plddt.exists():
+            outputs.append(save_path_plddt)
+        else:
+            plot_plddt(
+                data["ca_plddts"],
+                data["chain_boundaries_by_res"],
+                save_name=str(save_path_plddt),
+            )
+            outputs.append(save_path_plddt)
+
+    return outputs
 
 
