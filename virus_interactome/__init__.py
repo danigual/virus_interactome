@@ -1,4 +1,3 @@
-from .fasta_utils import change_id_proteome
 from .proteome_manager import ProteomeManager
 from .plotting import plot_iptm_vs_ptm, batch_plotting, batch_plotting_colabfold, plot_plddt, plot_boxplots, plot_af3_output
 from .utils import load_json, process_full_data_af3, process_full_data_boltz, process_full_data_colabfold
@@ -7,7 +6,6 @@ from .interactome import InteractomeRunner, InteractomeWriter, InteractomeProces
 
 __all__ = [
     'ProteomeManager',
-    'change_id_proteome',
     'plot_af3_output',
     'batch_plotting',
     'batch_plotting_colabfold',

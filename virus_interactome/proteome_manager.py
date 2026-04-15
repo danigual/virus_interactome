@@ -6,7 +6,7 @@ from Bio.SeqUtils import molecular_weight
 from Bio.SeqUtils.IsoelectricPoint import IsoelectricPoint
 from Bio.SeqUtils.ProtParam import ProteinAnalysis
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Callable, Tuple, Optional
 import logging
 import numpy as np
 import pandas as pd
@@ -45,16 +45,6 @@ class ProteomeManager:
 
         if fasta_file:
             self.load_proteome(fasta_file)
-
-        ## TODO: hacer un setter the fasta_file para que lo cargue
-        ## TODO: store duplicated ids
-        ## TODO: check duplicated ids in tests
-        ## TODO: add logging
-        ## TODO: add docstrings
-        ## TODO: add type hints
-        ## TODO: find matches in the PDB
-        ## TODO: write monomer predictions
-        ## TODO: FoldSeek search API
 
     @property
     def ids(self) -> Tuple[str, ...]:
@@ -102,7 +92,66 @@ class ProteomeManager:
     # -------------------------
     # 1. Loading and validation
     # -------------------------
-    
+
+    @staticmethod
+    def normalize_fasta_headers(
+        inputpath: str,
+        outputpath: str,
+        header_parser: Optional[Callable[[str], str]] = None,
+    ) -> None:
+        """
+        Rewrite FASTA headers using a custom or default parser.
+
+        Reads *inputpath* line by line and replaces each header line with a
+        standardised ``>{new_id}|{original_header}`` format. Sequence lines
+        are written unchanged.
+
+        Parameters
+        ----------
+        inputpath : str
+            Path to the input FASTA file.
+        outputpath : str
+            Path for the cleaned output FASTA file.
+        header_parser : callable, optional
+            ``f(header: str) -> str`` where *header* is the full header string
+            **without** the leading ``>``.  Must return the new protein ID.
+            If *None*, the default NCBI parser is used: extracts the value of
+            the ``protein=`` field and replaces spaces, dots and slashes with
+            underscores.
+
+        Raises
+        ------
+        FileNotFoundError
+            If *inputpath* does not exist.
+        ValueError
+            If *header_parser* returns an empty string for a header.
+        """
+        if not Path(inputpath).is_file():
+            raise FileNotFoundError(f"Input file not found: {inputpath}")
+
+        def _default_ncbi_parser(header: str) -> str:
+            start = header.find("protein=")
+            if start == -1:
+                return header.split()[0]
+            end = header.find("]", start)
+            raw = header[start + 8 : end] if end != -1 else header[start + 8 :]
+            return raw.replace(" ", "_").replace(".", "_").replace("/", "_")
+
+        parser = header_parser if header_parser is not None else _default_ncbi_parser
+
+        with open(inputpath, "r") as inf, open(outputpath, "w") as outf:
+            for line in inf:
+                if line.startswith(">"):
+                    header = line[1:].rstrip("\n")
+                    new_id = parser(header)
+                    if not new_id:
+                        raise ValueError(
+                            f"header_parser returned an empty ID for header: {header!r}"
+                        )
+                    outf.write(f">{new_id}|{header}\n")
+                else:
+                    outf.write(line)
+
     def load_proteome(self, fasta_file: str) -> dict:
         """
         Loads a FASTA file and extracts protein sequences into a dictionary.
@@ -150,8 +199,6 @@ class ProteomeManager:
         self.sequences = proteome_dict
         self.file_path = fasta_file
         logger.info(f"Proteome loaded successfully with {len(proteome_dict)} proteins.")
-        # logger.info(f"Proteome loaded successfully with {len(proteome_dict)} proteins.")
-        # self.sequence_properties = self.compute_properties()
         return proteome_dict
     
     def compute_identity_matrix(self, n_jobs: int = 4,  similarity_threshold: float = 0.95) -> pd.DataFrame:
@@ -206,10 +253,6 @@ class ProteomeManager:
             raise ValueError("Identity matrix not computed. Run compute_identity_matrix() first.")
 
         fig, ax = plt.subplots(figsize=(14, 14))
-        ## Check if identity_matrix is not None
-        if self.identity_matrix is None:
-            self.compute_identity_matrix()
-
         cax = ax.imshow(self.identity_matrix.values, cmap=cmap, vmin=vmin, vmax=vmax)
 
         # Add colorbar

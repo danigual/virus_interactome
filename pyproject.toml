@@ -23,9 +23,6 @@ dependencies = [
     "PyYAML"
 ]
 
-[project.scripts]
-virin = "virus_interactome.main:main"
-
 [pytest]
 pythonpath = "virus_interactome"
 
