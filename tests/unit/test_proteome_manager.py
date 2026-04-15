@@ -285,3 +285,101 @@ def test_compute_identity_identical():
 def test_compute_identity_different():
     i, j, score = ProteomeManager._compute_identity((0, 1, "AAAA", "TTTT"))
     assert score == pytest.approx(0.0)
+
+
+# --- normalize_fasta_headers ---
+
+_NCBI_FASTA = """\
+>lcl|NC_001.1 [protein=Hexon fiber/major] [gene=HEX]
+MKTAYIAKQR
+QISFVKSHFS
+>lcl|NC_002.1 [protein=DNA polymerase] [gene=POL]
+GVALSKGEEA
+"""
+
+def test_normalize_fasta_headers_default_parser(tmp_path):
+    infile = tmp_path / "raw.fasta"
+    outfile = tmp_path / "clean.fasta"
+    infile.write_text(_NCBI_FASTA)
+
+    ProteomeManager.normalize_fasta_headers(str(infile), str(outfile))
+
+    lines = outfile.read_text().splitlines()
+    assert lines[0] == ">Hexon_fiber_major|lcl|NC_001.1 [protein=Hexon fiber/major] [gene=HEX]"
+    assert lines[1] == "MKTAYIAKQR"
+    assert lines[2] == "QISFVKSHFS"
+    assert lines[3] == ">DNA_polymerase|lcl|NC_002.1 [protein=DNA polymerase] [gene=POL]"
+    assert lines[4] == "GVALSKGEEA"
+
+
+def test_normalize_fasta_headers_file_not_found(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        ProteomeManager.normalize_fasta_headers(
+            str(tmp_path / "missing.fasta"), str(tmp_path / "out.fasta")
+        )
+
+
+def test_normalize_fasta_headers_custom_parser(tmp_path):
+    infile = tmp_path / "raw.fasta"
+    outfile = tmp_path / "clean.fasta"
+    infile.write_text(">gi|12345|ref|NP_001.1| some description\nMKTAY\n")
+
+    # Extract the gi number as ID
+    ProteomeManager.normalize_fasta_headers(
+        str(infile), str(outfile),
+        header_parser=lambda h: h.split("|")[1],
+    )
+
+    lines = outfile.read_text().splitlines()
+    assert lines[0] == ">12345|gi|12345|ref|NP_001.1| some description"
+    assert lines[1] == "MKTAY"
+
+
+def test_normalize_fasta_headers_no_protein_field_falls_back(tmp_path):
+    """Headers without protein= field fall back to first whitespace-delimited token."""
+    infile = tmp_path / "raw.fasta"
+    outfile = tmp_path / "clean.fasta"
+    infile.write_text(">MyProtein some description\nAAAA\n")
+
+    ProteomeManager.normalize_fasta_headers(str(infile), str(outfile))
+
+    lines = outfile.read_text().splitlines()
+    assert lines[0] == ">MyProtein|MyProtein some description"
+
+
+def test_normalize_fasta_headers_empty_id_raises(tmp_path):
+    infile = tmp_path / "raw.fasta"
+    outfile = tmp_path / "clean.fasta"
+    infile.write_text(">valid header\nAAAA\n")
+
+    with pytest.raises(ValueError, match="empty ID"):
+        ProteomeManager.normalize_fasta_headers(
+            str(infile), str(outfile),
+            header_parser=lambda h: "",
+        )
+
+
+def test_normalize_fasta_headers_special_chars_replaced(tmp_path):
+    """Spaces, dots and slashes in protein= value are replaced with underscores."""
+    infile = tmp_path / "raw.fasta"
+    outfile = tmp_path / "clean.fasta"
+    infile.write_text(">x [protein=A.B/C D] y\nGGGG\n")
+
+    ProteomeManager.normalize_fasta_headers(str(infile), str(outfile))
+
+    first_line = outfile.read_text().splitlines()[0]
+    new_id = first_line.split("|")[0][1:]  # strip leading >
+    assert new_id == "A_B_C_D"
+
+
+def test_normalize_fasta_headers_output_loadable(tmp_path):
+    """Output FASTA can be loaded by ProteomeManager after normalisation."""
+    infile = tmp_path / "raw.fasta"
+    outfile = tmp_path / "clean.fasta"
+    infile.write_text(_NCBI_FASTA)
+
+    ProteomeManager.normalize_fasta_headers(str(infile), str(outfile))
+    pm = ProteomeManager(str(outfile))
+
+    assert "Hexon_fiber_major" in pm.sequences
+    assert "DNA_polymerase" in pm.sequences
