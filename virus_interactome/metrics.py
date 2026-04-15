@@ -1,7 +1,6 @@
 import numpy as np
-import json
-import os, sys
 from moleculekit.molecule import Molecule
+from typing import Union
 import pandas as pd
 import itertools
 import math
@@ -14,73 +13,113 @@ residue_set= {"ALA", "ARG", "ASN", "ASP", "CYS",
 
 nuc_residue_set = {"DA", "DC", "DT", "DG", "A", "C", "U", "G"}
 
-# Define the ptm and d0 functions
-def ptm_func(x,d0):
-    return 1.0/(1+(x/d0)**2.0)  
-ptm_func_vec=np.vectorize(ptm_func)  # vector version
+def ptm_func(x: float, d0: float) -> float:
+    """TM-score sigmoid kernel: 1 / (1 + (x/d0)^2)."""
+    return 1.0/(1+(x/d0)**2.0)
 
-# Define the d0 functions for numbers and arrays; minimum value = 1.0; from Yang and Skolnick, PROTEINS: Structure, Function, and Bioinformatics 57:702–710 (2004)
-def calc_d0(L,pair_type):
-    L=float(L)
-    if L<27: L=27
-    min_value=1.0
-    if pair_type=='nucleic_acid': min_value=2.0
-    d0=1.24*(L-15)**(1.0/3.0) - 1.8
+ptm_func_vec = np.vectorize(ptm_func)  # vectorized version for NumPy arrays
+
+
+def calc_d0(L: float, pair_type: str) -> float:
+    """Compute d0 normalisation constant for a chain pair.
+
+    Formula from Yang & Skolnick, Proteins 57:702-710 (2004).
+    Minimum value is 1.0 for proteins, 2.0 for nucleic acids.
+
+    Parameters
+    ----------
+    L : float
+        Total number of residues in the pair (clamped to ≥ 27).
+    pair_type : str
+        ``'protein'`` or ``'nucleic_acid'``.
+    """
+    L = float(L)
+    if L < 27:
+        L = 27
+    min_value = 2.0 if pair_type == 'nucleic_acid' else 1.0
+    d0 = 1.24 * (L - 15) ** (1.0 / 3.0) - 1.8
     return max(min_value, d0)
 
-def calc_d0_array(L,pair_type):
-    # Convert L to a NumPy array if it isn't already one (enables flexibility in input types)
-    L = np.array(L, dtype=float)
-    L = np.maximum(27,L)
-    min_value=1.0
 
-    if pair_type=='nucleic_acid': min_value=2.0
+def calc_d0_array(L: np.ndarray, pair_type: str) -> np.ndarray:
+    """Vectorized version of :func:`calc_d0` for per-residue d0 calculation."""
+    L = np.maximum(27, np.array(L, dtype=float))
+    min_value = 2.0 if pair_type == 'nucleic_acid' else 1.0
+    return np.maximum(min_value, 1.24 * (L - 15) ** (1.0 / 3.0) - 1.8)
 
-    # Calculate d0 using the vectorized operation
-    return np.maximum(min_value, 1.24 * (L - 15) ** (1.0/3.0) - 1.8)
 
-# Initializes a nested dictionary with all values set to 0
-def init_chainpairdict_zeros(chainlist):
-    return {chain1: {chain2: 0 for chain2 in chainlist if chain1 != chain2} for chain1 in chainlist}
+def init_chainpairdict_zeros(chainlist: list) -> dict:
+    """Return nested ``{chain1: {chain2: 0}}`` dict for all ordered pairs."""
+    return {c1: {c2: 0 for c2 in chainlist if c1 != c2} for c1 in chainlist}
 
-# Initializes a nested dictionary with NumPy arrays of zeros of a specified size
-def init_chainpairdict_npzeros(chainlist, arraysize):
-    return {chain1: {chain2: np.zeros(arraysize) for chain2 in chainlist if chain1 != chain2} for chain1 in chainlist}
 
-# Initializes a nested dictionary with empty sets.
-def init_chainpairdict_set(chainlist):
-    return {chain1: {chain2: set() for chain2 in chainlist if chain1 != chain2} for chain1 in chainlist}
+def init_chainpairdict_npzeros(chainlist: list, arraysize: int) -> dict:
+    """Return nested ``{chain1: {chain2: np.zeros(arraysize)}}`` dict."""
+    return {c1: {c2: np.zeros(arraysize) for c2 in chainlist if c1 != c2} for c1 in chainlist}
 
-def classify_chains(chains, residue_types):
-    nuc_residue_set = {"DA", "DC", "DT", "DG", "A", "C", "U", "G"}
+
+def init_chainpairdict_set(chainlist: list) -> dict:
+    """Return nested ``{chain1: {chain2: set()}}`` dict for all ordered pairs."""
+    return {c1: {c2: set() for c2 in chainlist if c1 != c2} for c1 in chainlist}
+
+
+def classify_chains(chains: np.ndarray, residue_types: np.ndarray) -> dict:
+    """Classify each chain as ``'protein'`` or ``'nucleic_acid'``.
+
+    Parameters
+    ----------
+    chains : np.ndarray
+        Per-atom/residue chain identifiers (e.g. ``mol.chain[cb_mask]``).
+    residue_types : np.ndarray
+        Per-atom/residue three-letter residue names (e.g. ``mol.resname``).
+
+    Returns
+    -------
+    dict
+        ``{chain_id: 'protein' | 'nucleic_acid'}``
+    """
     chain_types = {}
-    
-    # Get unique chains and iterate over them
-    unique_chains = np.unique(chains)
-    for chain in unique_chains:
-        # Find indices where the current chain is located
+    for chain in np.unique(chains):
         indices = np.where(chains == chain)[0]
-        # Get the residues for these indices
-        chain_residues = residue_types[indices]
-        # Count nucleic acid residues
-        nuc_count = sum(residue in nuc_residue_set for residue in chain_residues)
-        
-        # Determine if the chain is a nucleic acid or protein
+        nuc_count = sum(r in nuc_residue_set for r in residue_types[indices])
         chain_types[chain] = 'nucleic_acid' if nuc_count > 0 else 'protein'
-    
     return chain_types
 
-def calculate_pdockq(mol_file, plddt_by_res, pDockQ_cutoff=8.0):
-    mol = None
+
+def _load_mol(mol_file) -> Molecule:
+    """Return a Molecule instance from a path or pass-through if already loaded."""
     if isinstance(mol_file, Molecule):
-        mol = mol_file
-    elif isinstance(mol_file, str):
-        try:
-            mol = Molecule(mol_file)
-        except:
-            raise FileNotFoundError(f"File {mol_file} does not exists")
+        return mol_file
+    try:
+        return Molecule(mol_file)
+    except Exception as exc:
+        raise FileNotFoundError(f"File {mol_file} does not exist") from exc
+
+
+def calculate_pdockq(
+    mol_file: Union[str, Molecule],
+    plddt_by_res: np.ndarray,
+    pDockQ_cutoff: float = 8.0,
+) -> pd.DataFrame:
+    """Compute pDockQ for every unordered chain pair (Bryant et al. 2022).
+
+    Parameters
+    ----------
+    mol_file : str or Molecule
+        Path to a ``.cif`` / ``.pdb`` file or a pre-loaded :class:`Molecule`.
+    plddt_by_res : np.ndarray
+        Per-residue pLDDT values (Cβ-indexed, same order as the Molecule).
+    pDockQ_cutoff : float
+        Cβ–Cβ distance cutoff (Å) defining interface residues.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: ``chain1``, ``chain2``, ``pDockQ``.
+        One row per unordered pair (combinations, not permutations).
+    """
+    mol = _load_mol(mol_file)
     cb_mask = np.logical_or(mol.name == "CB", np.logical_and(mol.resname == "GLY",  mol.name == "CA"))
-    # cb_plddt = plddt_by_atom[cb_mask]
     cb_plddt = plddt_by_res
 
     coordinates = mol.coords[cb_mask].reshape(-1,3)
@@ -103,25 +142,43 @@ def calculate_pdockq(mol_file, plddt_by_res, pDockQ_cutoff=8.0):
             cb_plddt_chain1 = cb_plddt[chains==chain1][unique_res_chain1_indexes]
             cb_plddt_chain2 = cb_plddt[chains==chain2][unique_res_chain2_indexes]
             mean_plddt = np.concatenate((cb_plddt_chain1, cb_plddt_chain2)).mean()
-            # mean_plddt = cb_plddt[ list(pDockQ_unique_residues[chain1][chain2])].mean()
             x = mean_plddt * math.log10(npairs)
             tmp_pdockq = 0.724 / (1 + math.exp(-0.052*(x-152.611)))+0.018
         pDockQ = pd.concat([pDockQ, pd.DataFrame({"chain1": [chain1], "chain2": [chain2], "pDockQ": [tmp_pdockq]})], ignore_index=True)
 
     return pDockQ
 
-def calculate_pdockq2(mol_file, plddt_by_res, pae_matrix, pDockQ_cutoff=8.0):
-    mol = None
-    if isinstance(mol_file, Molecule):
-        mol = mol_file
-    elif isinstance(mol_file, str):
-        try:
-            mol = Molecule(mol_file)
-        except:
-            raise FileNotFoundError(f"File {mol_file} does not exists")
+def calculate_pdockq2(
+    mol_file: Union[str, Molecule],
+    plddt_by_res: np.ndarray,
+    pae_matrix: np.ndarray,
+    pDockQ_cutoff: float = 8.0,
+) -> pd.DataFrame:
+    """Compute pDockQ2 for every ordered chain pair (Zhu et al. 2023).
+
+    Unlike pDockQ, pDockQ2 incorporates PAE via the TM-score kernel and is
+    computed for each ordered (chain1 → chain2) direction.
+
+    Parameters
+    ----------
+    mol_file : str or Molecule
+        Path to a ``.cif`` / ``.pdb`` file or a pre-loaded :class:`Molecule`.
+    plddt_by_res : np.ndarray
+        Per-residue pLDDT values (Cβ-indexed).
+    pae_matrix : np.ndarray
+        Full PAE matrix (N_res × N_res).
+    pDockQ_cutoff : float
+        Cβ–Cβ distance cutoff (Å) defining interface residues.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: ``chain1``, ``chain2``, ``pDockQ2``.
+        One row per ordered pair (permutations).
+    """
+    mol = _load_mol(mol_file)
         
     cb_mask = np.logical_or(mol.name == "CB", np.logical_and(mol.resname == "GLY",  mol.name == "CA"))
-    # cb_plddt = plddt_by_atom[cb_mask]
     cb_plddt = plddt_by_res
 
     coordinates = mol.coords[cb_mask].reshape(-1,3)
@@ -181,14 +238,7 @@ def calculate_LIS_family(
         chain1, chain2, LIS, LIA, cLIS, cLIA, iLIS, iLIA, LIR, cLIR
     One row per ordered (chain1, chain2) pair.
     """
-    mol = None
-    if isinstance(mol_file, Molecule):
-        mol = mol_file
-    elif isinstance(mol_file, str):
-        try:
-            mol = Molecule(mol_file)
-        except Exception as exc:
-            raise FileNotFoundError(f"File {mol_file} does not exist") from exc
+    mol = _load_mol(mol_file)
 
     cb_mask = np.logical_or(
         mol.name == "CB",
@@ -248,31 +298,42 @@ def calculate_LIS_family(
 
     return pd.DataFrame(rows)
 
-def calculate_ipsae(mol_file, pae_matrix, pae_cutoff=10, dist_cutoff=10.0):
-    mol = None
-    if isinstance(mol_file, Molecule):
-        mol = mol_file
-    elif isinstance(mol_file, str):
-        try:
-            mol = Molecule(mol_file)
-        except:
-            raise FileNotFoundError(f"File {mol_file} does not exists")
+def calculate_ipsae(
+    mol_file: Union[str, Molecule],
+    pae_matrix: np.ndarray,
+    pae_cutoff: float = 10.0,
+) -> pd.DataFrame:
+    """Compute ipSAE for every ordered chain pair (Dunbrack lab, 2025).
+
+    Three variants are returned per pair:
+
+    - ``ipSAE``       — per-residue d0 normalisation (d0res).
+    - ``ipSAE_d0chn`` — combined-chain-length d0 normalisation.
+    - ``ipSAE_d0dom`` — interface-domain-length d0 normalisation (preferred for ranking).
+
+    Parameters
+    ----------
+    mol_file : str or Molecule
+        Path to a ``.cif`` / ``.pdb`` file or a pre-loaded :class:`Molecule`.
+    pae_matrix : np.ndarray
+        Full PAE matrix (N_res × N_res).
+    pae_cutoff : float
+        PAE threshold (Å) for defining interface residue pairs.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: ``chain1``, ``chain2``, ``ipSAE``, ``ipSAE_d0chn``, ``ipSAE_d0dom``.
+        One row per ordered pair (permutations).
+    """
+    mol = _load_mol(mol_file)
         
     cb_mask = np.logical_or(mol.name == "CB", np.logical_and(mol.resname == "GLY",  mol.name == "CA"))
     numres = cb_mask.sum()
-    # mol_residues = mol.resid[cb_mask]
-
-    # coordinates = mol.coords[cb_mask].reshape(-1,3)
-    # distances = np.sqrt(((coordinates[:, np.newaxis, :] - coordinates[np.newaxis, :, :])**2).sum(axis=2))
     chains = mol.chain[cb_mask]
     unique_chains = [str(i) for i in np.unique(chains)]
-    
+
     ipsae = pd.DataFrame({"chain1": [], "chain2": [], "ipSAE": [], "ipSAE_d0chn": [], "ipSAE_d0dom": []})
-
-    # d0res_byres = init_chainpairdict_npzeros(unique_chains, numres)
-
-    # d0_nucleic_acid = 2.0
-    
     chain_dict = classify_chains(chains, mol.resname)
     chain_pair_type = init_chainpairdict_zeros(unique_chains)
     for chain1 in unique_chains:
@@ -288,8 +349,6 @@ def calculate_ipsae(mol_file, pae_matrix, pae_cutoff=10, dist_cutoff=10.0):
         d0chn = calc_d0(n0chn, chain_pair_type[chain1][chain2])
         ptm_matrix_d0chn=ptm_func_vec(pae_matrix, d0chn)
 
-        # valid_pairs_iptm = (chains == chain2)
-        # valid_pairs_matrix = (chains == chain2) & (pae_matrix < pae_cutoff)
         interface_pae = pae_matrix[chains == chain1][:, chains == chain2]
         interface_pae_mask = interface_pae < pae_cutoff
 
@@ -320,7 +379,6 @@ def calculate_ipsae(mol_file, pae_matrix, pae_cutoff=10, dist_cutoff=10.0):
             interface_ptm_d0res = ptm_matrix_d0res[chains == chain1][:, chains == chain2]
             interface_ptm_d0res[np.logical_not(interface_pae_mask)] = np.nan
             ipsae_d0res_byres = np.nanmean(interface_ptm_d0res, axis=1)
-            # print(ipsae_d0res_byres.shape)
             tmp_ipSAE_d0res = np.nanmax(ipsae_d0res_byres)
             ipsae = pd.concat([ipsae, pd.DataFrame({"chain1": [chain1], "chain2": [chain2], 
                                                     "ipSAE": [tmp_ipSAE_d0res], "ipSAE_d0chn": [tmp_ipSAE_d0chn],
@@ -332,22 +390,35 @@ def calculate_ipsae(mol_file, pae_matrix, pae_cutoff=10, dist_cutoff=10.0):
     return ipsae.reset_index(drop=True)
 
 
-def calculate_all_metrics(mol_file, all_metrics):
-    mol = None
-    if isinstance(mol_file, Molecule):
-        mol = mol_file
-    elif isinstance(mol_file, str):
-        try:
-            mol = Molecule(mol_file)
-        except:
-            raise FileNotFoundError(f"File {mol_file} does not exists")
+def calculate_all_metrics(
+    mol_file: Union[str, Molecule],
+    all_metrics: dict,
+) -> dict:
+    """Compute the full set of interface metrics for a heterodimer model.
+
+    Calls :func:`calculate_ipsae`, :func:`calculate_LIS_family`,
+    :func:`calculate_pdockq`, and :func:`calculate_pdockq2` and aggregates
+    results into a flat dictionary keyed by column name.
+
+    Parameters
+    ----------
+    mol_file : str or Molecule
+        Path to the ``.cif`` model file or a pre-loaded :class:`Molecule`.
+    all_metrics : dict
+        Parsed model data as returned by ``process_full_data_af3 / boltz / colabfold``.
+        Required keys: ``pae``, ``cb_plddts``, ``token_chain_ids``.
+
+    Returns
+    -------
+    dict
+        All metric values keyed by column name (e.g. ``ipSAE_AB``, ``LIS_AB``,
+        ``Best_iLIS``, ``pDockQ2_AB``, …).
+    """
+    mol = _load_mol(mol_file)
 
     pae = all_metrics["pae"]
-    # plddt_by_atom = all_metrics["atom_plddts"]
     plddt_by_residue = all_metrics["cb_plddts"]
     chain_by_res = np.array(all_metrics["token_chain_ids"])
-
-    # import pdb;pdb.set_trace()
 
     ipsae = calculate_ipsae(mol, pae)
 

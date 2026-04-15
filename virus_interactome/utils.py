@@ -12,6 +12,7 @@ from .metrics import ptm_func_vec, calc_d0
 
 
 def check_sequence_validity(seq: str) -> bool:
+    """Return True if *seq* is non-empty and contains only standard amino acid letters."""
     if not seq:
         return False
     VALID_AMINO_ACIDS = set("ACDEFGHIKLMNPQRSTVWY")
@@ -401,7 +402,7 @@ def process_full_data_colabfold(mol_file: str,
 
 def process_full_data_af3(mol_file: str,
                           json_path: str | None = None,
-                          summary_json_path: str | None = None,)-> dict: ## Maybe this should be a mol_file also?
+                          summary_json_path: str | None = None,) -> dict:
     
     """
     Processes AlphaFold3 full data JSON and extracts structural metadata.
@@ -454,9 +455,6 @@ def process_full_data_af3(mol_file: str,
     
     mol = Molecule(mol_file)
     chain_by_res = mol.chain[mol.name == "CA"]
-
-    # mol_path = json_path.replace("full_data", "model").replace(".json", ".cif")
-    mol = Molecule(mol_file)
     ca_mask = mol.name == "CA"
     cb_mask = np.logical_or(mol.name == "CB", np.logical_and(mol.resname == "GLY",  mol.name == "CA"))
     cb_plddt = np.array(full_data.get("atom_plddts"))[cb_mask]
@@ -479,10 +477,7 @@ def process_full_data_af3(mol_file: str,
     full_data["atom_plddts"] = np.array(full_data["atom_plddts"])
     full_data["cb_plddts"] = np.array(cb_plddt)
     full_data["ca_plddts"] = np.array(ca_plddt)
-    # full_data["contact_probs"] = np.array(full_data["contact_probs"])
     full_data["token_chain_ids"] = token_chain_ids
-    
-    # full_data["chain_lengths"] = chain_lengths 
     full_data["chain_boundaries_by_res"] = chain_boundaries
     full_data["chain_boundaries_by_atom"] = chain_boundaries_by_atom
     return full_data

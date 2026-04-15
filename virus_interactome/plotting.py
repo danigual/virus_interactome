@@ -13,41 +13,34 @@ def plot_paes(
     chain_boundaries: list = None,
     chain_ids: list = None,
     title: str = None,
-    # ptm: float = None,
-    # iptm: float = None,
     save_name: str = None,
     ax=None
 ):
-    """
-    Generates a Predicted Aligned Error (PAE) heatmap using AlphaFold3 output data.
-
-    This function visualizes the PAE matrix, which estimates the positional error between residues
-    in a predicted protein structure. It overlays chain boundaries and labels, and includes a colorbar
-    indicating the expected error in Ångströms. The plot can be displayed or saved to a file.
+    """Render a PAE heatmap (green colormap, 0–25 Å) with optional chain boundary overlays.
 
     Parameters
     ----------
-    summary_confidences_path : str
-        Path to the JSON file containing summary confidence metrics (e.g., pTM, ipTM).
-    fulldata_path : str
-        Path to the JSON file containing the full PAE matrix and chain metadata.
+    pae_matrix : np.ndarray
+        Square PAE matrix (N_res × N_res).
+    chain_boundaries : dict, optional
+        ``{chain_id: (start_idx, end_idx)}`` mapping used to draw boundary lines and axis labels.
+    chain_ids : list, optional
+        Unused when *chain_boundaries* is provided (labels are derived from its keys).
+    title : str, optional
+        Plot title.
     save_name : str, optional
-        If provided, the plot will be saved to this filename. If None, the plot is shown interactively.
+        Output file path. If None the plot is shown interactively.
+    ax : matplotlib.axes.Axes, optional
+        Existing axes to draw on. A new figure is created when None.
 
     Returns
     -------
-    str or None
-        The filename where the plot was saved, or None if the plot was displayed.
-
-    Notes
-    -----
-    - The PAE matrix is visualized using a green colormap with values ranging from 0 to 25 Å.
-    - Chain boundaries are marked with black lines.
-    - Chain labels are placed at the midpoint of each chain.
-    - The plot title includes pTM and ipTM values extracted from the summary file.
+    matplotlib.axes.Axes
+        The axes containing the plot.
     """
     if ax is not None:
         plt.sca(ax)
+        fig = ax.figure
     else:
         fig, ax = plt.subplots(figsize=(8, 6))
     
@@ -64,18 +57,10 @@ def plot_paes(
             chain_ids.append(chain_id)
             midpoints.append((start_idx + end_idx) / 2)
 
-        # if chain_ids is not None:
-        #     ax.set_xticklabels(chain_ids)
-        
-        # Label axes
-        # midpoints = [(start + end) / 2 for start, end in chain_boundaries]
         ax.set_xticks(midpoints)
         ax.set_yticks(midpoints)
         ax.set_xticklabels(chain_ids)
-
-        if chain_ids is not None:
-            ax.set_xticklabels(chain_ids)
-            ax.set_yticklabels(chain_ids)
+        ax.set_yticklabels(chain_ids)
 
     # Colorbar
     axins = inset_axes(ax, width="100%", height="2.5%", loc="lower center", borderpad=-5)
@@ -216,31 +201,28 @@ def plot_plddt(plddts: np.ndarray,
                chain_boundaries: list = None,
                chain_ids: list = None,
                save_name: str = None, ax=None):
-    """
-    Generates a pLDDT confidence plot for atoms in a predicted protein structure.
+    """Render a per-residue pLDDT confidence plot with AlphaFold colour bands.
 
-    This function visualizes per-atom confidence scores (pLDDT) from AlphaFold3 predictions.
-    It uses color-coded confidence bands and overlays chain boundaries. The plot can be displayed
-    or saved to a file.
+    Colour bands follow the AlphaFold convention:
+    very high (>90, blue), high (70–90, cyan), low (50–70, orange), very low (<50, yellow).
 
     Parameters
     ----------
-    fulldata_path : str
-        Path to the JSON file containing full AlphaFold3 output data, including atom-level pLDDT scores.
+    plddts : np.ndarray
+        Per-residue pLDDT values (0–100).
+    chain_boundaries : dict, optional
+        ``{chain_id: (start_idx, end_idx)}`` mapping used to draw chain-boundary lines.
+    chain_ids : list, optional
+        Unused when *chain_boundaries* is provided (labels are derived from its keys).
     save_name : str, optional
-        If provided, the plot will be saved to this filename. If None, the plot is shown interactively.
+        Output file path. If None the plot is shown interactively.
+    ax : matplotlib.axes.Axes, optional
+        Existing axes to draw on. A new figure is created when None.
 
     Returns
     -------
-    str or None
-        The filename where the plot was saved, or None if the plot was displayed.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the input JSON file does not exist.
-    KeyError
-        If expected keys are missing in the input data.
+    matplotlib.axes.Axes
+        The axes containing the plot.
     """
 
     if ax is not None:
@@ -279,12 +261,7 @@ def plot_plddt(plddts: np.ndarray,
             chain_ids.append(chain_id)
             midpoints.append((start + end) / 2)
 
-        # Label axes
         ax.set_xticks(midpoints)
-
-        # if chain_ids is not None:
-        #     ax.set_xticklabels(chain_ids)
-        
         ax.set_xticklabels(chain_ids)
 
     plddt_legend = {
@@ -294,21 +271,20 @@ def plot_plddt(plddts: np.ndarray,
         "Very low (pLDDT < 50)": "#f9d61386",
     }
 
-    ax.legend(plddt_legend, title="pLDDT Confidence", prop={'size': 10}, 
-            #   loc="lower center",
+    ax.legend(plddt_legend, title="pLDDT Confidence", prop={'size': 10},
               bbox_to_anchor=(0.85, 1.15),
-            frameon=False,
-            ncol=4)
+              frameon=False,
+              ncol=4)
 
     ax.set_ylabel("pLDDT")
 
     if save_name is None:
-        plt.tight_layout
+        plt.tight_layout()
         plt.show()
     else:
-        plt.tight_layout
+        plt.tight_layout()
         plt.savefig(save_name, dpi=300, bbox_inches="tight")
-    
+
     plt.close(fig)
 
     return ax
@@ -371,12 +347,12 @@ def plot_pae_clusters(submatrix, low_pae_coords: list, cluster_labels_pae: list,
     ax[1].set_ylim(submatrix.shape[0], 0)
 
     if save_name is None:
-        plt.tight_layout
+        plt.tight_layout()
         plt.show()
     else:
-        plt.tight_layout
+        plt.tight_layout()
         plt.savefig(save_name, dpi=300, bbox_inches="tight")
-    
+
     plt.close(fig)
 
     return save_name

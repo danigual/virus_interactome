@@ -104,8 +104,6 @@ class InteractomeWriter:
             ValueError: If the instance is not in valid usage (e.g., Proteome A is missing).
         """
 
-        # if self.mode != "inter" or self.proteome_b is None:
-        #     raise ValueError("generate_inter_pairs() requires 'inter' mode with a valid proteome_b.")
         if self.proteome_a is None:
              raise ValueError("generate_intra_pairs() requires a valid proteome_a.")
 
@@ -421,7 +419,6 @@ class InteractomeWriter:
                 
                 # 4. Calculate Size and Validate
                 total_res = sum(len(s) * c for _, s, c in seq_list)
-                # total_res = sum(len("".join(s.split())) * c for _, s, c in seq_list)
                 is_over_limit = total_res > residue_threshold
                 
                 base_name = filename_fmt.format(engine=engine_lower, name=name, ext=ext)
@@ -490,7 +487,6 @@ class InteractomeWriter:
         """
 
         total_res = 0
-        # if len(seq_list) == 0:
         if not seq_list:
             return False, "Sequence list cannot be empty."
         
@@ -1049,23 +1045,12 @@ class InteractomeRunner:
                     
                 all_job_info.append([job_name, n_chains, n_aa])
 
-
-                # all_job_info.append(
-                #     [tmp_job.get("name"), ## Job name
-                #      sum([i.get("proteinChain").get("count") for i in tmp_job.get("sequences")]), ## Number of chains
-                #      sum([len(i.get("proteinChain").get("sequence")) for i in tmp_job.get("sequences")]), ## Total number of residues
-                #      ]
-                # )
-
         df = pd.DataFrame(all_job_info, columns = ["PPI", "num_chain", "num_aa"])
 
-        # Check Outputs 
+        # Check Outputs
         num_models_list = []
-        # for tmp_job_name, _, _ in all_job_info:
         for job_name in df["PPI"]:
-            # Pathlib approach: Safer than glob strings like f"{path}/{name}/*"
             job_output_dir = self.output_dir / job_name
-            # tmp_num_models = len(glob(f"{self.path_of_outputs}/{tmp_job_name}/*model*cif"))
             if job_output_dir.exists():
                 count = len(list(job_output_dir.glob("*model*cif")))
             else:
@@ -1085,10 +1070,6 @@ class InteractomeRunner:
         df.loc[mask_running, "status"] = "RUNNING"
         # FAILED: 0 models (Not started or crashed)
         df.loc[df["num_models"] == 0, "status"] = "FAILED"
-        # mode_num_models = int(df.num_models.mode().values)
-        # df.loc[df.num_models == mode_num_models, "status"] = "COMPLETED"
-        # df.loc[df.num_models != mode_num_models, "status"] = "PENDING"
-        # df.loc[df.num_models == 0, "status"] = "FAILED"
 
         # Sort
         custom_order = ['FAILED', 'RUNNING', 'PENDING', 'COMPLETED']
@@ -1600,9 +1581,8 @@ class InteractomeProcessor:
 
         """
         # Find coordinates below threshold
-        # np.argwhere returns indices of shape (N, 2) directly. Cleaner than column_stack/where.
+        # np.argwhere returns indices of shape (N, 2) directly.
         low_pae_coords = np.argwhere(pae_submatrix < threshold)
-        # low_pae_coords = np.column_stack(np.where(pae_submatrix < threshold))
         
         # Early Exit (Fail Fast)
         if low_pae_coords.size == 0:
@@ -1738,13 +1718,10 @@ class InteractomeProcessor:
         base_name = path_obj.stem # removes .cif or .pdb
         
         model_number = int(base_name.split("model_")[-1].split("_")[0])
-        # model_number = int(base_name.split("_")[-1].replace("model_",""))
 
         # Load Full Data
         if model_type.lower() == "af3":
             full_data = process_full_data_af3(str(path_obj))
-            # full_data = process_full_data_af3(model_file)
-            # molecule_model = MoleculeModel.from_af3(model_file)
         elif model_type.lower() == "boltz":
             full_data = process_full_data_boltz(str(path_obj))
         elif model_type.lower() == "colabfold":
@@ -1754,7 +1731,6 @@ class InteractomeProcessor:
 
         ## Plotting pLDDT
         plddt_path = path_obj.with_name(f"{path_obj.stem}_plddt.png")
-        # plddt_save_name = model_file.replace(".cif", "_plddt.png").replace(".pdb", "_plddt.png")
 
         plot_plddt(full_data["ca_plddts"],
                    full_data["chain_boundaries_by_res"],
@@ -1763,7 +1739,6 @@ class InteractomeProcessor:
         
         # Plotting PAE
         pae_path = path_obj.with_name(f"{path_obj.stem}_pae.png")
-        # pae_save_name = model_file.replace(".cif", "_pae.png").replace(".pdb", "_pae.png")
         
         plot_paes(full_data["pae"],
                   full_data["chain_boundaries_by_res"],
@@ -1776,18 +1751,14 @@ class InteractomeProcessor:
         cluster_data = pd.DataFrame()
 
         chain_ids = full_data.get("token_chain_ids")
-        # chain_ids = full_data["token_chain_ids"]
         unique_chains = sorted(list(set(chain_ids))) if chain_ids is not None else []
 
         if len(unique_chains) == 2:
-        # if len(set(full_data["token_chain_ids"])) == 2: ## We have two chains
-            
             # We explicitly identify chains
             chain_a, chain_b = unique_chains[0], unique_chains[1]
 
             # Metrics
             all_metrics = calculate_all_metrics(str(path_obj), full_data)
-            # all_metrics = calculate_all_metrics(model_file, full_data)
 
             # Symmetrized PAE Matrix Calculation
             pae = full_data["pae"]
@@ -1903,8 +1874,6 @@ class InteractomeProcessor:
         new_interactome_list = []
         new_clusters_list = []
 
-        # We set default workers if not provided in kwargs
-        # max_workers = kwargs.get('max_workers', None) # None lets ProcessPoolExecutor decide
         with concurrent.futures.ProcessPoolExecutor(**kwargs) as executor:
             worker = partial(self.process_ppi,
                              model_type=self.engine,
@@ -2278,10 +2247,12 @@ class InteractomeAnalyzer:
     
     @property
     def binder_data(self)-> Optional[pd.DataFrame]:
+        """Peptide-protein candidate DataFrame set during pipeline execution."""
         return self._binder_data
-    
+
     @binder_data.setter
     def binder_data(self, df: pd.DataFrame):
+        """Set the binder candidate DataFrame directly."""
         self._binder_data = df
 
     # -------------------------------------------------------------------------
@@ -2290,10 +2261,12 @@ class InteractomeAnalyzer:
     
     @property
     def interactome_path(self)-> Optional[Path]:
+        """Path to the loaded interactome CSV file."""
         return self._interactome_path
-    
+
     @property
     def interactome_data(self)-> Optional[pd.DataFrame]:
+        """Loaded interactome DataFrame (None until ``interactome_path`` is set)."""
         return self._interactome_data 
     
     @interactome_path.setter
@@ -2332,10 +2305,12 @@ class InteractomeAnalyzer:
     
     @property
     def cluster_path(self)-> Optional[Path]:
-        return self._cluster_path 
-    
+        """Path to the loaded cluster CSV file."""
+        return self._cluster_path
+
     @property
     def cluster_data(self)-> Optional[pd.DataFrame]:
+        """Loaded cluster DataFrame (None until ``cluster_path`` is set)."""
         return self._cluster_data 
     
     @cluster_path.setter
@@ -2390,6 +2365,7 @@ class InteractomeAnalyzer:
        
     @property
     def models_path(self)-> Optional[str]:
+        """Common root directory for model ``.cif`` files."""
         return self._models_path 
 
     @models_path.setter
@@ -2404,16 +2380,13 @@ class InteractomeAnalyzer:
         old_path = self._models_path if self._models_path else ""
         logger.info(f"Relocating models: replacing '{old_path}' with '{new_model_path}'")
         
-        # Update Cluster Data
-        # regex=False ensures special characters (like Windows backslashes) are treated literally
+        # Update Cluster Data (regex=False: treat path separators as literals)
         if "path" in self._cluster_data.columns:
             self._cluster_data["path"] = self._cluster_data["path"].astype(str).str.replace(old_path, new_model_path, regex=False)
-            # self._cluster_data.loc[: , "path"] = self._cluster_data.path.str.replace(self._models_path, new_model_path)
-        
+
         # Update Interactome Data
         if "Folder" in self._interactome_data.columns:
             self._interactome_data["Folder"] = self._interactome_data["Folder"].astype(str).str.replace(old_path, new_model_path, regex=False)
-            # self._interactome_data.loc[: , "Folder"] = self._interactome_data.Folder.str.replace(self._models_path, new_model_path)
         
         self._models_path = new_model_path
         logger.info(f"Path relocation complete. New root: {self._models_path}")
@@ -2439,6 +2412,7 @@ class InteractomeAnalyzer:
         """
     
     def __len__(self)-> int:
+        """Return the number of PPI rows in the loaded interactome (0 if not loaded)."""
         if self._interactome_data is not None:
             return len(self._interactome_data)
         return 0
@@ -2530,24 +2504,11 @@ class InteractomeAnalyzer:
         )
         candidate_clusters = df[mask].copy()
 
-        # df = df[(df.x_len > 0) & (df.y_len > 0)]
-        # candidate_clusters = df[df.Cluster_ratio > cluster_ratio_threshold].copy()
-        # candidate_clusters = candidate_clusters.loc[
-        #     (candidate_clusters.x_len >= min_peptide_len) & 
-        #     (candidate_clusters.y_len >= min_peptide_len), :]
-
         # 4. Process Candidates (Identify Binder vs Peptide)
-        # Lists to store new column data
         new_cols = {
             "Binder_chain": [], "Binder_name": [], "Binder_start": [], "Binder_end": [],
             "Peptide_chain": [], "Peptide_name": [], "Peptide_start": [], "Peptide_end": []
         }
-        
-        peptide_start, peptide_end = [], []
-        binder_start, binder_end = [],[]
-        binder_name, peptide_name = [], []
-        peptide_chain = []
-        binder_chain = []
 
         for _, row in candidate_clusters.iterrows():
             # Robust split (take first two elements only) to handle names like "GenA__GenB__v2"
@@ -2565,54 +2526,26 @@ class InteractomeAnalyzer:
                 # X is longer
                 new_cols["Binder_chain"].append("A")
                 new_cols["Peptide_chain"].append("B")
-                # binder_chain.append("A")
-                # peptide_chain.append("B")
-
                 new_cols["Peptide_start"].append(int(row["y_min"]))
                 new_cols["Peptide_end"].append(int(row["y_max"]))
                 new_cols["Binder_start"].append(int(row["x_min"]))
                 new_cols["Binder_end"].append(int(row["x_max"]))
-                # peptide_start.append(int(row.y_min))
-                # peptide_end.append(int(row.y_max))
-                # binder_start.append(int(row.x_min))
-                # binder_end.append(int(row.x_max))
-                
                 new_cols["Binder_name"].append(orf_a)
                 new_cols["Peptide_name"].append(orf_b)
-                # binder_name.append(orf_a)
-                # peptide_name.append(orf_b)
             else:
                 # Y is longer
                 new_cols["Binder_chain"].append("B")
                 new_cols["Peptide_chain"].append("A")
-                # binder_chain.append("B")
-                # peptide_chain.append("A")
                 new_cols["Peptide_start"].append(int(row["x_min"]))
                 new_cols["Peptide_end"].append(int(row["x_max"]))
                 new_cols["Binder_start"].append(int(row["y_min"]))
                 new_cols["Binder_end"].append(int(row["y_max"]))
-                # peptide_start.append(int(row.x_min))
-                # peptide_end.append(int(row.x_max))
-                # binder_start.append(int(row.y_min))
-                # binder_end.append(int(row.y_max))
-
                 new_cols["Binder_name"].append(orf_b)
                 new_cols["Peptide_name"].append(orf_a)
-                # binder_name.append(orf_b)
-                # peptide_name.append(orf_a)
         
         # 5. Assign new columns to DataFrame
         for col_name, data_list in new_cols.items():
             candidate_clusters[col_name] = data_list
-
-        # candidate_clusters[f"Binder_chain"] = binder_chain
-        # candidate_clusters["Binder_name"] = binder_name
-        # candidate_clusters["Peptide_chain"] = peptide_chain
-        # candidate_clusters["Peptide_name"] = peptide_name
-        # candidate_clusters["Peptide_start"] = peptide_start
-        # candidate_clusters["Peptide_end"] = peptide_end
-        # candidate_clusters[f"Binder_start"] = binder_start
-        # candidate_clusters[f"Binder_end"] = binder_end
         
         
         # Return with a clean index
@@ -2646,7 +2579,6 @@ class InteractomeAnalyzer:
         peptide_chain = str(data["Peptide_chain"])
         peptide_start = int(data["Peptide_start"])
         peptide_end = int(data["Peptide_end"])
-        # mol_path, peptide_chain , peptide_start, peptide_end = data[["path", "Peptide_chain", "Peptide_start", "Peptide_end"]]
 
         mol = Molecule(mol_path)
 
@@ -2773,7 +2705,6 @@ class InteractomeAnalyzer:
         # 3. Apply that boolean mask to the resids of CAs.
         high_conf_mask = reference_mol.beta[mask_ca] > 70
         reference_resids = reference_mol.resid[mask_ca][high_conf_mask]
-        # reference_resids = reference_mol.resid[reference_mol.name == "CA"][reference_mol.beta[reference_mol.name == "CA"]>70]
         
         # Create selection string
         reference_resids = reference_resids.astype(str)
@@ -3013,12 +2944,9 @@ class InteractomeAnalyzer:
             f.write(f"hide #3/A cartoon\n") # Hide the Binder chain in the aligned peptide models
             f.write(f"hide atoms\n")
             f.write(f"rename #4 Peptide_centers\n")
-            # f.write(f"rename #5 Centroids\n")
             f.write(f"save {session_path}\n")
             f.write(f"exit\n")
 
-        # Execute ChimeraX using subprocess (safer than os.system)
-        # os.system(f"chimerax --nogui {script_path}") ##--nogui 
         logger.info(f"Executing ChimeraX script: {script_path}")
         try:
             subprocess.run(["chimerax", "--nogui", str(script_path)], check=True)
@@ -3073,8 +3001,6 @@ class InteractomeAnalyzer:
         ref_resids = ref_mol.get("resid", sel="protein")
         
         # 4. Calculate Peptide Centroids (Chain B, Alpha Carbons)
-        # We assume all models have a Chain B with CA atoms (enforced by previous steps)
-        # mols_centroids = np.array([tmp_mol.get("coords", sel="chain B and name CA").mean(axis=0) for tmp_mol in mols])
         
         valid_centroids = []
         valid_indices = []
