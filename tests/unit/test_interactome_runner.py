@@ -426,6 +426,28 @@ class TestCheckColabfoldRunEdge:
         assert row["status"] == "COMPLETED"
 
 
+class TestWriteMissingJobsSourceMissing:
+    def test_source_file_not_found_logs_error(self, tmp_path, caplog):
+        """Line 1237: logs error when source input file is absent from input_dir."""
+        import logging
+        caplog.set_level(logging.ERROR)
+        inp = tmp_path / "inp"
+        out = tmp_path / "out"
+        inp.mkdir()
+        # Runner whose status reports a FAILED job but no .json exists for it
+        runner = InteractomeRunner.__new__(InteractomeRunner)
+        runner.input_dir = inp
+        runner.output_dir = out
+        runner.mode = "af3"
+        runner.inputs = []
+        runner.status = pd.DataFrame({"PPI": ["Ghost__Job"], "status": ["FAILED"]})
+        missing_dir = tmp_path / "missing"
+        runner.write_missing_jobs(output_path=str(missing_dir))
+        assert "Source file not found" in caplog.text
+        # No file should have been copied
+        assert len(list(missing_dir.glob("*.json"))) == 0
+
+
 class TestRequeueMissingJobsEdge:
     def test_empty_status_warns(self, tmp_path, caplog):
         """write_missing_jobs logs warning and returns when status is None."""
@@ -536,6 +558,52 @@ class TestRunSingleColabfoldJobMocked:
         assert result["returncode"] == 0
 
 
+class TestRunColabfoldFastas:
+    def test_dry_run_sequential(self, colabfold_dirs):
+        """L1293-1318: runs pending jobs sequentially in dry_run mode."""
+        inp, out = colabfold_dirs
+        runner = InteractomeRunner(str(inp), str(out), mode="colabfold")
+        results = runner.run_colabfold_fastas(dry_run=True)
+        assert len(results) == 2
+        assert all(r["status"] == "DRY_RUN" for r in results)
+        assert all(r["returncode"] == 0 for r in results)
+
+    def test_dry_run_parallel(self, colabfold_dirs):
+        """L1319-1326: ThreadPoolExecutor branch with max_workers=2."""
+        inp, out = colabfold_dirs
+        runner = InteractomeRunner(str(inp), str(out), mode="colabfold")
+        results = runner.run_colabfold_fastas(dry_run=True, max_workers=2)
+        assert len(results) == 2
+        assert all(r["status"] == "DRY_RUN" for r in results)
+
+    def test_all_completed_returns_empty(self, colabfold_dirs):
+        """L1296-1298: all jobs completed → returns [] immediately."""
+        inp, out = colabfold_dirs
+        out.mkdir()
+        _make_pdb_outputs(out, "ProtA__ProtB", 5)
+        _make_pdb_outputs(out, "ProtC__ProtD", 5)
+        runner = InteractomeRunner(str(inp), str(out), mode="colabfold")
+        results = runner.run_colabfold_fastas()
+        assert results == []
+
+    def test_missing_fasta_skipped(self, colabfold_dirs, caplog):
+        """L1305-1307: job in status with no FASTA → skipped with warning."""
+        import logging
+        from unittest.mock import patch
+        caplog.set_level(logging.WARNING)
+        inp, out = colabfold_dirs
+        runner = InteractomeRunner(str(inp), str(out), mode="colabfold")
+        # Inject a ghost job (no FASTA file) into the pending list
+        fake_status = pd.DataFrame({
+            "PPI": ["Ghost__Job", "ProtA__ProtB", "ProtC__ProtD"],
+            "status": ["FAILED", "FAILED", "FAILED"],
+        })
+        with patch.object(runner, "check_colabfold_run", return_value=fake_status):
+            results = runner.run_colabfold_fastas(dry_run=True)
+        assert len(results) == 2  # Ghost__Job skipped, 2 real jobs ran
+        assert "FASTA not found" in caplog.text
+
+
 class TestRunColabfoldCsvMocked:
     def test_csv_failed_subprocess(self, tmp_path):
         """Non-zero returncode from CSV batch yields FAILED status."""
@@ -567,6 +635,23 @@ class TestRunColabfoldCsvMocked:
         with patch("subprocess.run", side_effect=FileNotFoundError("not found")):
             with pytest.raises(FileNotFoundError):
                 runner.run_colabfold_csv(str(csv), str(out))
+
+    def test_csv_successful_subprocess(self, tmp_path):
+        """L1430: returncode=0 logs success and returns COMPLETED status."""
+        from unittest.mock import patch, MagicMock
+        csv = tmp_path / "batch.csv"
+        csv.write_text("id,sequence\ntest,AAAA\n")
+        out = tmp_path / "out"
+        runner = InteractomeRunner.__new__(InteractomeRunner)
+        runner.input_dir = tmp_path
+        runner.output_dir = out
+        runner.mode = "colabfold"
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        with patch("subprocess.run", return_value=mock_proc):
+            result = runner.run_colabfold_csv(str(csv), str(out))
+        assert result["status"] == "COMPLETED"
+        assert result["returncode"] == 0
 
 
 class TestRunSingleColabfoldJob:

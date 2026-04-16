@@ -254,3 +254,92 @@ class TestProcessPpi:
         )
         # prefix="Prot" replaces "Prot" in dir name "ProtA__ProtB" → "A__B"
         assert summary["PPI"] == "A__B"
+
+
+# ---------------------------------------------------------------------------
+# process_ppi — Boltz engine (L1726)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def boltz_model_in_ppi_dir(tmp_path, data_dir):
+    """Copies Boltz2 dummy files into a PPI-named directory for process_ppi."""
+    ppi_dir = tmp_path / "pvi__protease"
+    ppi_dir.mkdir()
+    src = data_dir / "boltz_dummy_example"
+    for name in [
+        "pvi__protease_model_0.cif",
+        "confidence_pvi__protease_model_0.json",
+        "pae_pvi__protease_model_0.npz",
+        "plddt_pvi__protease_model_0.npz",
+        "pde_pvi__protease_model_0.npz",
+    ]:
+        shutil.copy2(src / name, ppi_dir / name)
+    return ppi_dir / "pvi__protease_model_0.cif"
+
+
+@pytest.mark.slow
+class TestProcessPpiBoltz:
+    def test_boltz_returns_tuple(self, boltz_model_in_ppi_dir):
+        """L1726: process_ppi dispatches to process_full_data_boltz."""
+        result = InteractomeProcessor.process_ppi(str(boltz_model_in_ppi_dir), model_type="boltz")
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+
+    def test_boltz_summary_keys(self, boltz_model_in_ppi_dir):
+        summary, _ = InteractomeProcessor.process_ppi(str(boltz_model_in_ppi_dir), model_type="boltz")
+        assert {"PPI", "ORF_A", "ORF_B", "Model_num", "ipTM", "pTM"}.issubset(summary.keys())
+
+    def test_boltz_ppi_parsed_from_dir_name(self, boltz_model_in_ppi_dir):
+        summary, _ = InteractomeProcessor.process_ppi(str(boltz_model_in_ppi_dir), model_type="boltz")
+        assert summary["PPI"] == "pvi__protease"
+        assert summary["ORF_A"] == "pvi"
+        assert summary["ORF_B"] == "protease"
+
+
+# ---------------------------------------------------------------------------
+# process_models — orchestration (L1836-1932)
+# ---------------------------------------------------------------------------
+
+class _SyncPool:
+    """Drop-in replacement for ProcessPoolExecutor that runs synchronously."""
+    def __init__(self, **kw):
+        pass
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        pass
+    def map(self, fn, iterable):
+        return list(map(fn, iterable))
+
+
+@pytest.mark.slow
+class TestProcessModels:
+    def test_creates_output_csvs(self, af3_model_in_ppi_dir, tmp_path):
+        """L1836-1932: process_models produces interactome_data.csv and clusters_data.csv."""
+        from unittest.mock import patch
+        proc = InteractomeProcessor([str(af3_model_in_ppi_dir)], engine="af3")
+        out_dir = tmp_path / "output"
+        with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool):
+            proc.process_models(str(out_dir))
+        assert (out_dir / "interactome_data.csv").exists()
+        df = pd.read_csv(out_dir / "interactome_data.csv")
+        assert len(df) == 1
+        assert "PPI" in df.columns
+
+    def test_resume_skips_already_processed(self, af3_model_in_ppi_dir, tmp_path):
+        """L1850-1869: second call skips models already in existing CSV."""
+        from unittest.mock import patch
+        proc = InteractomeProcessor([str(af3_model_in_ppi_dir)], engine="af3")
+        out_dir = tmp_path / "output"
+        with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool):
+            proc.process_models(str(out_dir))
+        # Second call: all models already processed → early return, no re-processing
+        call_count = {"n": 0}
+        original_ppi = InteractomeProcessor.process_ppi
+        def counting_ppi(*args, **kwargs):
+            call_count["n"] += 1
+            return original_ppi(*args, **kwargs)
+        with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool):
+            with patch.object(InteractomeProcessor, "process_ppi", staticmethod(counting_ppi)):
+                proc.process_models(str(out_dir))
+        assert call_count["n"] == 0  # no model was reprocessed

@@ -497,6 +497,139 @@ class TestRunFullPipeline:
 # Empty interactome / cluster file edge cases
 # ---------------------------------------------------------------------------
 
+class TestLenNoData:
+    def test_len_returns_zero_when_no_data(self):
+        """Line 2418: __len__ returns 0 when interactome_data is not loaded."""
+        assert len(InteractomeAnalyzer()) == 0
+
+
+class TestClusterPathMixedPaths:
+    def test_mixed_abs_relative_paths_warns_and_clears_models_path(self, tmp_path, caplog):
+        """Lines 2358-2360: os.path.commonpath raises ValueError for mixed paths → models_path=""."""
+        import logging
+        caplog.set_level(logging.WARNING)
+        cluster_csv = tmp_path / "clusters.csv"
+        cluster_csv.write_text(
+            "PPI,path,cluster_id\n"
+            "A__B,/abs/path/model_0.cif,0\n"
+            "A__B,relative/path/model_1.cif,1\n"
+        )
+        analyzer = InteractomeAnalyzer()
+        analyzer.cluster_path = str(cluster_csv)
+        assert analyzer.models_path == ""
+        assert "Could not automatically determine" in caplog.text
+
+
+class TestRunFullPipelineIpsaeFilter:
+    def test_ipsae_filter_logs_report(self, analyzer_with_data, caplog, monkeypatch):
+        """Lines 2438-2457: ipsae_filter branch logs count of high-confidence PPIs."""
+        import logging
+        caplog.set_level(logging.INFO)
+        # Bypass analyze_peptide_proteins_pairs (needs MoleculeKit + real CIF files)
+        monkeypatch.setattr(analyzer_with_data, "analyze_peptide_proteins_pairs", lambda **kw: None)
+        analyzer_with_data.run_full_pipeline(ipsae_filter=0.3)
+        assert "PPIs are above" in caplog.text
+
+    def test_ipsae_filter_col_not_found_skips_log(self, tmp_path, monkeypatch):
+        """ipsae_col resolution skips logging when no ipSAE column present."""
+        import logging
+        df = pd.DataFrame({"PPI": ["A__B"], "Folder": ["/fake"], "other": [1.0]})
+        csv = tmp_path / "i.csv"
+        df.to_csv(csv, index=False)
+        cluster_csv = tmp_path / "c.csv"
+        cluster_csv.write_text("PPI,path,cluster_id\nA__B,/fake/m.cif,0\n")
+        analyzer = InteractomeAnalyzer()
+        analyzer.interactome_path = str(csv)
+        analyzer.cluster_path = str(cluster_csv)
+        monkeypatch.setattr(analyzer, "analyze_peptide_proteins_pairs", lambda **kw: None)
+        # Should complete without error even though no ipSAE column exists
+        analyzer.run_full_pipeline(ipsae_filter=0.5)
+
+
+class TestGetCandidateClusters:
+    @pytest.fixture
+    def analyzer_with_geometry_clusters(self, dummy_interactome_csv, tmp_path):
+        """Analyzer with cluster data that has full geometry columns."""
+        cluster_csv = tmp_path / "geo_clusters.csv"
+        cluster_csv.write_text(
+            "PPI,path,cluster_id,model_num,cluster_ratio,x_len,y_len,x_min,x_max,y_min,y_max\n"
+            # High ratio, x > y → Binder=A=ProtA, Peptide=B=ProtB
+            "ProtA__ProtB,/fake/m1.cif,0,1,10.0,50,5,0,50,100,105\n"
+            # High ratio, y > x → Binder=B=ProtB, Peptide=A=ProtA
+            "ProtA__ProtB,/fake/m2.cif,1,2,9.0,5,40,0,5,100,140\n"
+            # Low ratio → excluded
+            "ProtA__ProtC,/fake/m3.cif,0,1,2.0,10,10,0,10,0,10\n"
+            # x_len < min_peptide_len (3 < 5) → excluded even with high ratio
+            "ProtA__ProtC,/fake/m4.cif,1,2,8.0,3,40,0,3,0,40\n"
+        )
+        analyzer = InteractomeAnalyzer()
+        analyzer.interactome_path = str(dummy_interactome_csv)
+        analyzer.cluster_path = str(cluster_csv)
+        return analyzer
+
+    def test_high_ratio_rows_included(self, analyzer_with_geometry_clusters):
+        result = analyzer_with_geometry_clusters._get_candidate_clusters(cluster_ratio_threshold=7.0)
+        # Only rows 1 and 2 have ratio > 7 AND x_len/y_len >= 5
+        assert len(result) == 2
+
+    def test_binder_assignment_x_longer(self, analyzer_with_geometry_clusters):
+        """x_len > y_len → Binder=chain A, Peptide=chain B."""
+        result = analyzer_with_geometry_clusters._get_candidate_clusters(cluster_ratio_threshold=7.0)
+        row = result[result["cluster_id"] == 0].iloc[0]
+        assert row["Binder_chain"] == "A"
+        assert row["Peptide_chain"] == "B"
+        assert row["Binder_name"] == "ProtA"
+        assert row["Peptide_name"] == "ProtB"
+
+    def test_binder_assignment_y_longer(self, analyzer_with_geometry_clusters):
+        """y_len > x_len → Binder=chain B, Peptide=chain A."""
+        result = analyzer_with_geometry_clusters._get_candidate_clusters(cluster_ratio_threshold=7.0)
+        row = result[result["cluster_id"] == 1].iloc[0]
+        assert row["Binder_chain"] == "B"
+        assert row["Peptide_chain"] == "A"
+        assert row["Binder_name"] == "ProtB"
+        assert row["Peptide_name"] == "ProtA"
+
+    def test_low_ratio_excluded(self, analyzer_with_geometry_clusters):
+        result = analyzer_with_geometry_clusters._get_candidate_clusters(cluster_ratio_threshold=7.0)
+        assert "ProtA__ProtC" not in result["PPI"].values
+
+    def test_min_peptide_len_filter(self, analyzer_with_geometry_clusters):
+        """x_len < min_peptide_len excluded regardless of cluster_ratio."""
+        result = analyzer_with_geometry_clusters._get_candidate_clusters(
+            cluster_ratio_threshold=7.0, min_peptide_len=5
+        )
+        # Row 4 has x_len=3 < 5 → excluded
+        assert len(result) == 2
+
+    def test_empty_cluster_data_returns_empty(self):
+        """No cluster data loaded → returns empty DataFrame."""
+        result = InteractomeAnalyzer()._get_candidate_clusters()
+        assert result.empty
+
+    def test_legacy_cluster_ratio_column(self, dummy_interactome_csv, tmp_path):
+        """Legacy 'Cluster_ratio' column name is handled."""
+        cluster_csv = tmp_path / "legacy.csv"
+        cluster_csv.write_text(
+            "PPI,path,cluster_id,Cluster_ratio,x_len,y_len,x_min,x_max,y_min,y_max\n"
+            "ProtA__ProtB,/fake/m.cif,0,10.0,50,5,0,50,100,105\n"
+        )
+        analyzer = InteractomeAnalyzer()
+        analyzer.interactome_path = str(dummy_interactome_csv)
+        analyzer.cluster_path = str(cluster_csv)
+        result = analyzer._get_candidate_clusters(cluster_ratio_threshold=7.0)
+        assert len(result) == 1
+
+
+class TestCompareEnginesMissingColSilenced:
+    def test_delta_col_keyerror_silenced(self, analyzer_with_data):
+        """Lines 3335-3337: KeyError caught silently when other_df has no metric columns."""
+        other_df = pd.DataFrame({"PPI": ["ProtA__ProtB", "ProtA__ProtC"]})
+        result = analyzer_with_data.compare_engines(other_df)
+        delta_cols = [c for c in result.columns if c.startswith("delta_")]
+        assert len(delta_cols) == 0
+
+
 class TestEmptyFileEdgeCases:
     def test_empty_interactome_csv_raises(self, tmp_path):
         csv = tmp_path / "empty.csv"

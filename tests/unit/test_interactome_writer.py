@@ -335,6 +335,41 @@ class TestWriteInteractomeJobsExtended:
             if m["idB"] == "Protein2":
                 assert m["countB"] == 3
 
+    def test_intra_pairs_swap_actually_triggers(self, tmp_path):
+        """Lines 273-274: swap branch activates when FASTA is in reverse-alpha order."""
+        fasta = tmp_path / "reverse.fasta"
+        fasta.write_text(">ZProtein\nMKTAY\n>AProtein\nGVALS\n")
+        out = tmp_path / "out"
+        w = InteractomeWriter(str(fasta))
+        metas = w.write_interactome_jobs("af3", str(out), mode="intra_pairs")
+        assert len(metas) == 1
+        # Swap must have occurred: idA="AProtein" < idB="ZProtein"
+        assert metas[0]["idA"] == "AProtein"
+        assert metas[0]["idB"] == "ZProtein"
+
+    def test_colabfold_engine_intra_pairs(self, dummy_fasta_path, tmp_path):
+        """Lines 393-394, 440-442: ColabFold engine writes one .fasta per pair."""
+        from pathlib import Path
+        w = InteractomeWriter(str(dummy_fasta_path))
+        metas = w.write_interactome_jobs("colabfold", str(tmp_path), mode="intra_pairs")
+        assert len(metas) == 6  # C(4,2)
+        fasta_files = list(tmp_path.glob("*.fasta"))
+        assert len(fasta_files) == 6
+        # Verify content: file_path points to existing file with correct format
+        first_file = Path(metas[0]["file_path"])
+        content = first_file.read_text()
+        assert content.startswith(f">{metas[0]['name']}\n")
+        assert ":" in content.split("\n")[1]
+
+    def test_boltz2_chain_id_double_letters(self):
+        """Lines 625-627: chain_id_generator yields AA, AB... when copies exceed 26."""
+        seqs = [("ProtA", "ACDE", 27)]
+        result = InteractomeWriter.get_boltz2_input(seqs)
+        ids = result["sequences"][0]["protein"]["id"]
+        assert len(ids) == 27
+        assert ids[25] == "Z"   # 26th chain (0-indexed)
+        assert ids[26] == "AA"  # 27th chain — double-letter branch
+
 
 # ---------------------------------------------------------------------------
 # write_interactome_jobs
