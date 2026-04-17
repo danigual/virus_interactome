@@ -20,7 +20,8 @@ dependencies = [
     "tqdm",
     "scikit-learn",
     "moleculekit",
-    "PyYAML"
+    "PyYAML",
+    "requests"
 ]
 
 [pytest]

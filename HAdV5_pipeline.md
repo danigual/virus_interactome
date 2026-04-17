@@ -46,6 +46,25 @@ writer.write_interactome_jobs(
 
 ---
 
+## Stage 1b — Monomer Input Generation (`InteractomeWriter`, `mode='single'`)
+
+Monomeric folding jobs can be generated alongside or independently of the interactome pairs:
+
+```python
+writer = InteractomeWriter("HAdV5_AC_000008_1_modified.fa")
+writer.write_interactome_jobs(
+    engine="boltz2",       # or "af3", "colabfold"
+    output_dir="2_mono/input/",
+    mode="single",         # one file per protein
+)
+```
+
+- Produces one `.yaml` (Boltz2) / `.json` (AF3) / `.fasta` (ColabFold) per protein.
+- `index.csv` metadata: `idA` = protein ID, `idB` = `""`, `countB` = `""`.
+- For run monitoring: `InteractomeRunner.check_run(expected_models=1)` (Boltz2) or `expected_models=5` (AF3).
+
+---
+
 ## Stage 2 — Structure Prediction (External)
 
 Prediction runs were submitted externally to the folding engines. The pipeline monitors and manages these runs via `InteractomeRunner`.
@@ -148,6 +167,32 @@ For each `.cif` file:
 
 ---
 
+## Stage 3b — Monomer Processing (`InteractomeProcessor.process_monomers`)
+
+After monomer structure prediction, extract pLDDT statistics in parallel:
+
+```python
+from glob import glob
+mono_cifs = glob("2_mono/output/**/*model*.cif", recursive=True)
+
+processor = InteractomeProcessor(model_list=mono_cifs, engine="boltz2")
+processor.process_monomers(output_path="3_mono_results/", max_workers=4)
+```
+
+Output: `monomer_data.csv`
+
+| Column | Content |
+|---|---|
+| `protein_id` | Parsed from parent folder name |
+| `cif_path` | Absolute path to the `.cif` file |
+| `n_residues` | Sequence length |
+| `plddt_mean` | Mean per-residue pLDDT |
+| `plddt_median` | Median per-residue pLDDT |
+
+Resume-logic identical to `process_models`: already-processed CIF paths are skipped on re-runs.
+
+---
+
 ## Stage 4 — Analysis and Prioritization (`InteractomeAnalyzer`)
 
 **Goal:** Load the processed CSVs and apply biological filters to identify high-confidence interactions and candidate peptide-binding sites.
@@ -226,6 +271,46 @@ analyzer.run_full_pipeline(
 
 ---
 
+## Stage 4b — Structural Homology Search (`InteractomeAnalyzer.run_foldseek_search`)
+
+Searches protein monomer structures against Foldseek databases to find structural homologs.
+Operates standalone — does not require `interactome_data` to be loaded.
+
+```python
+analyzer = InteractomeAnalyzer(output_path="4_analysis/")
+
+df = analyzer.run_foldseek_search(
+    protein_ids=["E1A", "pVII", "hexon"],   # any subset of proteins
+    monomer_cif_dir="2_mono/output/",       # root with one subdir per protein
+    databases=["afdb-swissprot", "pdb100"], # default; add "afdb50" for broader search
+    top_n=10,
+    evalue_cutoff=1e-3,
+    best_plddt=False,    # True → selects model with highest mean pLDDT per protein
+)
+```
+
+Expected `monomer_cif_dir` layout (same as engine output for `mode='single'`):
+```
+2_mono/output/
+├── E1A/
+│   └── E1A_model_0.cif
+├── pVII/
+│   └── pVII_model_0.cif
+└── hexon/
+    └── hexon_model_0.cif
+```
+
+### Outputs
+
+| File | Content |
+|---|---|
+| `foldseek_results/{protein_id}.tsv` | Raw Foldseek hits (all columns) per protein |
+| `foldseek_summary.csv` | Top-N filtered hits across all proteins |
+
+**`foldseek_summary.csv` columns:** `protein_id`, `rank`, `target`, `fident`, `alnlen`, `evalue`, `bits`, `qstart`, `qend`, `tstart`, `tend`
+
+---
+
 ## Data Flow Summary
 
 ```
@@ -234,23 +319,24 @@ HAdV5.fa
     ▼
 [ProteomeManager]
     │  clean sequences dict
-    ▼
-[InteractomeWriter]
-    │  {idA}__{idB}.json / .yaml   +   index.csv
-    ▼
-[AF3 / Boltz2]  (external HPC/GPU)
-    │  {idA}__{idB}/*model_N.cif
-    ▼
-[InteractomeRunner.check_run]   ← monitors, re-queues missing jobs
-    │
-    ▼
-[InteractomeProcessor.process_models]
-    │  interactome_data.csv   (metrics per model)
-    │  clusters_data.csv      (PAE clusters per model)
-    ▼
-[InteractomeAnalyzer]
-    ├── get_confidence_tiers()          → tiered_df
-    ├── plot_confidence_landscape()     → landscape.png / .html
+    ├──────────────────────────────────────────────┐
+    ▼                                              ▼
+[InteractomeWriter mode=intra_pairs]    [InteractomeWriter mode=single]
+    │  {idA}__{idB}.json/.yaml                 │  {pid}.json/.yaml
+    ▼                                          ▼
+[AF3 / Boltz2 / ColabFold]          [AF3 / Boltz2 / ColabFold]
+    │  {idA}__{idB}/*model_N.cif           │  {pid}/*model_0.cif
+    ▼                                          ▼
+[InteractomeRunner.check_run]       [InteractomeRunner.check_run
+    │  monitors, re-queues                  expected_models=1 or 5]
+    ▼                                          ▼
+[InteractomeProcessor.process_models]  [InteractomeProcessor.process_monomers]
+    │  interactome_data.csv                │  monomer_data.csv
+    │  clusters_data.csv                   ▼
+    ▼                             [InteractomeAnalyzer.run_foldseek_search]
+[InteractomeAnalyzer]                      │  foldseek_results/{pid}.tsv
+    ├── get_confidence_tiers()             └  foldseek_summary.csv
+    ├── plot_confidence_landscape()
     └── analyze_peptide_proteins_pairs()
             ├── filtered PDBs
             ├── aligned PDBs

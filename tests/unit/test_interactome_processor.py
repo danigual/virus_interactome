@@ -1,6 +1,8 @@
 import pytest
 import numpy as np
 import pandas as pd
+from pathlib import Path
+from unittest.mock import patch
 from virus_interactome.interactome import InteractomeProcessor
 
 
@@ -343,3 +345,154 @@ class TestProcessModels:
             with patch.object(InteractomeProcessor, "process_ppi", staticmethod(counting_ppi)):
                 proc.process_models(str(out_dir))
         assert call_count["n"] == 0  # no model was reprocessed
+
+
+# ---------------------------------------------------------------------------
+# _extract_monomer_plddt — static method
+# ---------------------------------------------------------------------------
+
+class TestExtractMonomerpLDDT:
+    """Tests for InteractomeProcessor._extract_monomer_plddt."""
+
+    def _make_full_data(self, n: int = 10, plddt_val: float = 80.0) -> dict:
+        return {"ca_plddts": np.full(n, plddt_val)}
+
+    def test_returns_correct_keys(self, tmp_path):
+        cif = tmp_path / "mono_model_0.cif"
+        cif.write_text("")
+        with patch("virus_interactome.interactome.process_full_data_af3",
+                   return_value=self._make_full_data(10, 80.0)):
+            result = InteractomeProcessor._extract_monomer_plddt(cif, "af3")
+        assert set(result.keys()) == {"plddt_mean", "plddt_median", "n_residues"}
+
+    def test_correct_plddt_values(self, tmp_path):
+        cif = tmp_path / "mono_model_0.cif"
+        cif.write_text("")
+        plddts = np.array([70.0, 80.0, 90.0, 85.0, 75.0])
+        with patch("virus_interactome.interactome.process_full_data_af3",
+                   return_value={"ca_plddts": plddts}):
+            result = InteractomeProcessor._extract_monomer_plddt(cif, "af3")
+        assert result["plddt_mean"] == pytest.approx(np.mean(plddts))
+        assert result["plddt_median"] == pytest.approx(np.median(plddts))
+        assert result["n_residues"] == 5
+
+    def test_boltz_engine(self, tmp_path):
+        cif = tmp_path / "mono_model_0.cif"
+        cif.write_text("")
+        with patch("virus_interactome.interactome.process_full_data_boltz",
+                   return_value=self._make_full_data(20, 75.0)):
+            result = InteractomeProcessor._extract_monomer_plddt(cif, "boltz")
+        assert result["n_residues"] == 20
+
+    def test_boltz2_alias(self, tmp_path):
+        cif = tmp_path / "mono_model_0.cif"
+        cif.write_text("")
+        with patch("virus_interactome.interactome.process_full_data_boltz",
+                   return_value=self._make_full_data(15, 85.0)):
+            result = InteractomeProcessor._extract_monomer_plddt(cif, "boltz2")
+        assert result["n_residues"] == 15
+
+    def test_colabfold_engine(self, tmp_path):
+        cif = tmp_path / "mono_model_0.cif"
+        cif.write_text("")
+        with patch("virus_interactome.interactome.process_full_data_colabfold",
+                   return_value=self._make_full_data(8, 90.0)):
+            result = InteractomeProcessor._extract_monomer_plddt(cif, "colabfold")
+        assert result["plddt_mean"] == pytest.approx(90.0)
+
+    def test_parse_failure_returns_nan(self, tmp_path):
+        cif = tmp_path / "mono_model_0.cif"
+        cif.write_text("")
+        with patch("virus_interactome.interactome.process_full_data_af3",
+                   side_effect=RuntimeError("parse error")):
+            result = InteractomeProcessor._extract_monomer_plddt(cif, "af3")
+        assert np.isnan(result["plddt_mean"])
+        assert np.isnan(result["plddt_median"])
+        assert np.isnan(result["n_residues"])
+
+    def test_unsupported_engine_returns_nan(self, tmp_path):
+        cif = tmp_path / "mono_model_0.cif"
+        cif.write_text("")
+        result = InteractomeProcessor._extract_monomer_plddt(cif, "rosettafold")
+        assert np.isnan(result["plddt_mean"])
+
+
+# ---------------------------------------------------------------------------
+# process_monomers — instance method
+# ---------------------------------------------------------------------------
+
+class TestProcessMonomers:
+    """Tests for InteractomeProcessor.process_monomers."""
+
+    def _make_cif_dir(self, tmp_path: Path, proteins: list) -> tuple:
+        """Create monomer folder structure and return (model_paths, cif_root)."""
+        cif_paths = []
+        for pid in proteins:
+            d = tmp_path / pid
+            d.mkdir(parents=True)
+            cif = d / f"{pid}_model_0.cif"
+            cif.write_text("")
+            cif_paths.append(cif)
+        return cif_paths, tmp_path
+
+    def _fake_plddt(self, n: int = 10, val: float = 80.0) -> dict:
+        return {"ca_plddts": np.full(n, val)}
+
+    def test_creates_monomer_csv(self, tmp_path):
+        cif_paths, _ = self._make_cif_dir(tmp_path / "models", ["protA", "protB"])
+        proc = InteractomeProcessor([str(p) for p in cif_paths], engine="af3")
+        out_dir = tmp_path / "out"
+        with patch("virus_interactome.interactome.process_full_data_af3",
+                   return_value=self._fake_plddt(10, 80.0)), \
+             patch("concurrent.futures.ProcessPoolExecutor", _SyncPool):
+            df = proc.process_monomers(str(out_dir))
+        assert (out_dir / "monomer_data.csv").exists()
+        assert len(df) == 2
+
+    def test_output_columns(self, tmp_path):
+        cif_paths, _ = self._make_cif_dir(tmp_path / "models", ["protA"])
+        proc = InteractomeProcessor([str(p) for p in cif_paths], engine="af3")
+        out_dir = tmp_path / "out"
+        with patch("virus_interactome.interactome.process_full_data_af3",
+                   return_value=self._fake_plddt(12, 85.0)), \
+             patch("concurrent.futures.ProcessPoolExecutor", _SyncPool):
+            df = proc.process_monomers(str(out_dir))
+        assert set(df.columns) >= {"protein_id", "cif_path", "n_residues", "plddt_mean", "plddt_median"}
+
+    def test_protein_id_from_folder_name(self, tmp_path):
+        cif_paths, _ = self._make_cif_dir(tmp_path / "models", ["hexon"])
+        proc = InteractomeProcessor([str(p) for p in cif_paths], engine="af3")
+        out_dir = tmp_path / "out"
+        with patch("virus_interactome.interactome.process_full_data_af3",
+                   return_value=self._fake_plddt()), \
+             patch("concurrent.futures.ProcessPoolExecutor", _SyncPool):
+            df = proc.process_monomers(str(out_dir))
+        assert df.iloc[0]["protein_id"] == "hexon"
+
+    def test_resume_skips_existing(self, tmp_path):
+        cif_paths, _ = self._make_cif_dir(tmp_path / "models", ["protA", "protB"])
+        proc = InteractomeProcessor([str(p) for p in cif_paths], engine="af3")
+        out_dir = tmp_path / "out"
+        fake_data = self._fake_plddt()
+        with patch("virus_interactome.interactome.process_full_data_af3", return_value=fake_data), \
+             patch("concurrent.futures.ProcessPoolExecutor", _SyncPool):
+            proc.process_monomers(str(out_dir))
+        # Second call: nothing should be re-processed
+        call_count = {"n": 0}
+        original = InteractomeProcessor._extract_monomer_plddt.__func__ if hasattr(
+            InteractomeProcessor._extract_monomer_plddt, "__func__") else InteractomeProcessor._extract_monomer_plddt
+        def counting(*args, **kwargs):
+            call_count["n"] += 1
+            return fake_data
+        with patch("virus_interactome.interactome.process_full_data_af3", return_value=fake_data), \
+             patch.object(InteractomeProcessor, "_extract_monomer_plddt", staticmethod(counting)), \
+             patch("concurrent.futures.ProcessPoolExecutor", _SyncPool):
+            proc.process_monomers(str(out_dir))
+        assert call_count["n"] == 0
+
+    def test_empty_model_list_returns_empty_df(self, tmp_path):
+        proc = InteractomeProcessor([], engine="af3")
+        out_dir = tmp_path / "out"
+        with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool):
+            df = proc.process_monomers(str(out_dir))
+        assert df.empty

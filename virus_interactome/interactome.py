@@ -993,9 +993,11 @@ class InteractomeRunner:
         no specific threshold is provided.
 
         Args:
-            expected_models (Optional[int], optional): The number of models required 
-                to mark a job as COMPLETED. 
-                If None, defaults to 10 for 'af3' and 5 for 'boltz2'. 
+            expected_models (Optional[int], optional): The number of models required
+                to mark a job as COMPLETED.
+                If None, defaults to 10 for 'af3' and 5 for 'boltz2'.
+                For monomer runs (``mode='single'``), pass the value explicitly:
+                ``expected_models=5`` (AF3) or ``expected_models=1`` (Boltz2).
                 Defaults to None.
 
         Returns:
@@ -1930,6 +1932,145 @@ class InteractomeProcessor:
             final_clusters_df.to_csv(clusters_csv, index=False)
         
         logger.info(f"Done. Data saved to {out_dir}")
+
+    @staticmethod
+    def _extract_monomer_plddt(
+        cif_path: Path,
+        engine: str,
+    ) -> Dict[str, Any]:
+        """
+        Extracts pLDDT statistics from a single-chain (monomer) CIF file.
+
+        Parameters
+        ----------
+        cif_path : Path
+            Path to the monomer ``.cif`` model file.
+        engine : str
+            Engine that produced the file. One of ``'af3'``, ``'boltz'``, ``'boltz2'``,
+            ``'colabfold'``.
+
+        Returns
+        -------
+        dict
+            Keys: ``plddt_mean``, ``plddt_median``, ``n_residues``.
+            Values are ``np.nan`` if parsing fails.
+        """
+        nan_result: Dict[str, Any] = {
+            "plddt_mean": np.nan,
+            "plddt_median": np.nan,
+            "n_residues": np.nan,
+        }
+        try:
+            eng = engine.lower()
+            if eng == "af3":
+                full_data = process_full_data_af3(str(cif_path))
+            elif eng in ("boltz", "boltz2"):
+                full_data = process_full_data_boltz(str(cif_path))
+            elif eng == "colabfold":
+                full_data = process_full_data_colabfold(str(cif_path))
+            else:
+                raise ValueError(f"Unsupported engine '{engine}'.")
+
+            plddts: np.ndarray = full_data["ca_plddts"]
+            return {
+                "plddt_mean": float(np.mean(plddts)),
+                "plddt_median": float(np.median(plddts)),
+                "n_residues": int(len(plddts)),
+            }
+        except Exception as exc:
+            logger.warning(f"Could not extract pLDDT from {cif_path}: {exc}")
+            return nan_result
+
+    def process_monomers(
+        self,
+        output_path: Union[str, Path] = ".",
+        prefix: str = "",
+        **kwargs,
+    ) -> pd.DataFrame:
+        """
+        Processes a list of monomer CIF files in parallel and writes a summary CSV.
+
+        Extracts per-protein pLDDT statistics (mean, median) without computing
+        interface metrics (ipSAE, LIS, etc.), which are undefined for monomers.
+        Implements the same resume-logic as :meth:`process_models`: already-processed
+        proteins are skipped on re-runs.
+
+        Parameters
+        ----------
+        output_path : str or Path, optional
+            Directory where ``monomer_data.csv`` is saved. Defaults to ``"."``.
+        prefix : str, optional
+            Substring stripped from folder names when parsing the protein ID.
+            Defaults to ``""``.
+        **kwargs
+            Forwarded to :class:`concurrent.futures.ProcessPoolExecutor`
+            (e.g. ``max_workers=4``).
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with columns:
+            ``protein_id``, ``cif_path``, ``n_residues``,
+            ``plddt_mean``, ``plddt_median``.
+            Also written to ``{output_path}/monomer_data.csv``.
+
+        Notes
+        -----
+        For AF3 monomers the default is 5 models per protein; for Boltz2, 1 model.
+        Pass the appropriate ``model_list`` to :class:`InteractomeProcessor`
+        accordingly.
+        """
+        import tqdm
+
+        out_dir = Path(output_path)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        monomer_csv = out_dir / "monomer_data.csv"
+
+        existing_df = pd.DataFrame()
+        models_to_process = self.model_paths.copy()
+
+        # Resume logic: skip already-processed CIF paths
+        if monomer_csv.exists():
+            logger.info(f"Found existing data at {monomer_csv}. Resuming run...")
+            existing_df = pd.read_csv(monomer_csv)
+            if "cif_path" in existing_df.columns:
+                processed = set(existing_df["cif_path"].astype(str))
+                models_to_process = [
+                    p for p in models_to_process if str(p) not in processed
+                ]
+                logger.info(
+                    f"Skipping {len(self.model_paths) - len(models_to_process)} "
+                    "already processed models."
+                )
+
+        if not models_to_process:
+            logger.info("All monomer models already processed. Exiting.")
+            return existing_df
+
+        logger.info(f"Processing {len(models_to_process)} monomer models...")
+
+        def _worker(cif_path: Path) -> Dict[str, Any]:
+            dir_name = cif_path.parent.name
+            protein_id = dir_name.replace(prefix, "")
+            stats = InteractomeProcessor._extract_monomer_plddt(cif_path, self.engine)
+            return {"protein_id": protein_id, "cif_path": str(cif_path), **stats}
+
+        new_rows: list = []
+        with concurrent.futures.ProcessPoolExecutor(**kwargs) as executor:
+            for row in tqdm.tqdm(
+                executor.map(_worker, models_to_process),
+                total=len(models_to_process),
+                desc="Processing Monomers",
+            ):
+                new_rows.append(row)
+
+        new_df = pd.DataFrame(new_rows)
+        final_df = pd.concat([existing_df, new_df], ignore_index=True)
+        final_df = final_df.round(2)
+        final_df.to_csv(monomer_csv, index=False)
+        logger.info(f"Monomer data saved to {monomer_csv}")
+        return final_df
+
 
 class InteractomeAnalyzer:
     """
@@ -3419,3 +3560,351 @@ class InteractomeAnalyzer:
         )
         logger.info(f"Cluster sizes:\n{pd.Series(labels).value_counts().sort_index()}")
         return result.reset_index(drop=True)
+
+    # -------------------------------------------------------------------------
+    # Foldseek structural homology search
+    # -------------------------------------------------------------------------
+
+    _FOLDSEEK_API = "https://search.foldseek.com/api"
+
+    def _submit_foldseek_job(
+        self,
+        cif_content: str,
+        databases: List[str],
+        mode: str = "3diaa",
+    ) -> str:
+        """
+        Submits a structure search to the Foldseek web API.
+
+        Parameters
+        ----------
+        cif_content : str
+            Raw text content of the CIF file.
+        databases : list of str
+            Foldseek database identifiers (e.g. ``["afdb-swissprot", "pdb100"]``).
+        mode : str, optional
+            Search mode. ``"3diaa"`` (default) or ``"tmalign"``.
+
+        Returns
+        -------
+        str
+            Ticket ID assigned by the Foldseek server.
+
+        Raises
+        ------
+        ImportError
+            If ``requests`` is not installed.
+        RuntimeError
+            If the server returns a non-200 status code.
+        """
+        try:
+            import requests
+        except ImportError:
+            raise ImportError("requests is required for Foldseek searches. Install it with: pip install requests")
+
+        payload: Dict[str, Any] = {"q": cif_content, "mode": mode}
+        for db in databases:
+            payload.setdefault("database[]", [])
+            payload["database[]"].append(db)  # type: ignore[union-attr]
+
+        response = requests.post(f"{self._FOLDSEEK_API}/ticket", data=payload, timeout=30)
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Foldseek submission failed (HTTP {response.status_code}): {response.text}"
+            )
+        ticket_id: str = response.json()["id"]
+        return ticket_id
+
+    def _poll_foldseek_job(
+        self,
+        ticket_id: str,
+        poll_interval: int = 10,
+        timeout: int = 600,
+    ) -> None:
+        """
+        Polls the Foldseek API until the job completes or times out.
+
+        Parameters
+        ----------
+        ticket_id : str
+            Ticket ID returned by :meth:`_submit_foldseek_job`.
+        poll_interval : int, optional
+            Seconds between status checks. Defaults to 10.
+        timeout : int, optional
+            Maximum total wait time in seconds. Defaults to 600.
+
+        Raises
+        ------
+        TimeoutError
+            If the job does not complete within ``timeout`` seconds.
+        RuntimeError
+            If the server reports an ``ERROR`` status.
+        """
+        try:
+            import requests
+        except ImportError:
+            raise ImportError("requests is required for Foldseek searches. Install it with: pip install requests")
+
+        elapsed = 0
+        while elapsed < timeout:
+            resp = requests.get(f"{self._FOLDSEEK_API}/ticket/{ticket_id}", timeout=30)
+            resp.raise_for_status()
+            status = resp.json().get("status", "")
+            if status == "COMPLETE":
+                return
+            if status == "ERROR":
+                raise RuntimeError(f"Foldseek job {ticket_id} reported ERROR status.")
+            time.sleep(poll_interval)
+            elapsed += poll_interval
+
+        raise TimeoutError(
+            f"Foldseek job {ticket_id} did not complete within {timeout}s."
+        )
+
+    def _download_foldseek_results(
+        self,
+        ticket_id: str,
+        out_dir: Path,
+        protein_id: str,
+    ) -> Path:
+        """
+        Downloads and decompresses Foldseek results for one protein.
+
+        Parameters
+        ----------
+        ticket_id : str
+            Completed ticket ID.
+        out_dir : Path
+            Directory where the raw TSV is written.
+        protein_id : str
+            Used as the output filename stem: ``{protein_id}.tsv``.
+
+        Returns
+        -------
+        Path
+            Path to the written TSV file.
+
+        Raises
+        ------
+        RuntimeError
+            If the download request fails.
+        """
+        try:
+            import requests
+        except ImportError:
+            raise ImportError("requests is required for Foldseek searches. Install it with: pip install requests")
+
+        import io
+        import tarfile
+
+        resp = requests.get(
+            f"{self._FOLDSEEK_API}/result/download/{ticket_id}",
+            timeout=120,
+            stream=True,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"Failed to download Foldseek results for {protein_id} "
+                f"(HTTP {resp.status_code}): {resp.text}"
+            )
+
+        tsv_path = out_dir / f"{protein_id}.tsv"
+        raw_bytes = resp.content
+
+        # The API returns a tar.gz archive containing one or more TSV files
+        try:
+            with tarfile.open(fileobj=io.BytesIO(raw_bytes), mode="r:gz") as tar:
+                tsv_lines: List[str] = []
+                for member in tar.getmembers():
+                    if member.name.endswith(".tsv") or member.name.endswith(".m8"):
+                        f = tar.extractfile(member)
+                        if f is not None:
+                            tsv_lines.append(f.read().decode("utf-8"))
+                content = "\n".join(tsv_lines)
+        except tarfile.TarError:
+            # Fallback: server returned plain TSV
+            content = raw_bytes.decode("utf-8")
+
+        tsv_path.write_text(content, encoding="utf-8")
+        return tsv_path
+
+    def run_foldseek_search(
+        self,
+        protein_ids: List[str],
+        monomer_cif_dir: Union[str, Path],
+        databases: List[str] = ("afdb-swissprot", "pdb100"),  # type: ignore[assignment]
+        top_n: int = 10,
+        evalue_cutoff: float = 1e-3,
+        output_dir: Optional[Union[str, Path]] = None,
+        best_plddt: bool = False,
+        poll_interval: int = 10,
+        timeout: int = 600,
+        mode: str = "3diaa",
+    ) -> pd.DataFrame:
+        """
+        Searches each protein's monomer structure against Foldseek databases.
+
+        Operates standalone — does not require :attr:`interactome_data` to be loaded.
+        For each protein in ``protein_ids`` the method locates the corresponding
+        CIF file in ``monomer_cif_dir``, submits it to the Foldseek web API,
+        polls until completion, downloads results, and aggregates a summary.
+
+        The folder layout expected inside ``monomer_cif_dir`` mirrors the output of
+        AF3/Boltz2/ColabFold in single-protein mode::
+
+            monomer_cif_dir/
+            ├── proteinA/
+            │   ├── proteinA_model_0.cif
+            │   └── proteinA_model_1.cif
+            └── proteinB/
+                └── proteinB_model_0.cif
+
+        Parameters
+        ----------
+        protein_ids : list of str
+            Protein identifiers to search. Each must have a matching subdirectory
+            inside ``monomer_cif_dir``.
+        monomer_cif_dir : str or Path
+            Root directory containing one subdirectory per protein, each with
+            ``*model*.cif`` files.
+        databases : list of str, optional
+            Foldseek databases to search. Defaults to
+            ``["afdb-swissprot", "pdb100"]``.
+            Other available options: ``"afdb50"``, ``"afdb-proteome"``,
+            ``"mgnify_esm30"``, ``"gmgcl_id"``.
+        top_n : int, optional
+            Maximum number of hits to retain per protein in the summary.
+            Defaults to 10.
+        evalue_cutoff : float, optional
+            Hits with e-value above this threshold are discarded. Defaults to 1e-3.
+        output_dir : str or Path, optional
+            Root output directory. Defaults to :attr:`output_path`.
+            Raw TSVs are written to ``{output_dir}/foldseek_results/``.
+            The summary CSV is written to ``{output_dir}/foldseek_summary.csv``.
+        best_plddt : bool, optional
+            If ``False`` (default), uses the model with the lowest index
+            (``model_0`` first, by sorted filename). If ``True``, parses all
+            available models and selects the one with the highest mean pLDDT —
+            useful when multiple models per protein are present.
+        poll_interval : int, optional
+            Seconds between Foldseek status checks. Defaults to 10.
+        timeout : int, optional
+            Maximum seconds to wait for a single job. Defaults to 600.
+        mode : str, optional
+            Foldseek search mode. ``"3diaa"`` (default) or ``"tmalign"``.
+
+        Returns
+        -------
+        pd.DataFrame
+            Summary DataFrame with columns:
+            ``protein_id``, ``rank``, ``target``, ``fident``, ``alnlen``,
+            ``evalue``, ``bits``, ``qstart``, ``qend``, ``tstart``, ``tend``.
+            Also written to ``{output_dir}/foldseek_summary.csv``.
+
+        Raises
+        ------
+        FileNotFoundError
+            If no CIF file is found for a given protein ID.
+        RuntimeError
+            If the Foldseek API returns an unexpected error.
+        TimeoutError
+            If a job exceeds ``timeout`` seconds.
+        """
+        databases = list(databases)
+        base_dir = Path(output_dir) if output_dir is not None else self.output_path
+        raw_dir = base_dir / "foldseek_results"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        summary_csv = base_dir / "foldseek_summary.csv"
+
+        cif_root = Path(monomer_cif_dir)
+        summary_rows: List[Dict[str, Any]] = []
+
+        _RAW_COLS = [
+            "query", "target", "fident", "alnlen", "mismatch",
+            "gapopen", "qstart", "qend", "tstart", "tend", "evalue", "bits",
+        ]
+
+        for protein_id in protein_ids:
+            protein_dir = cif_root / protein_id
+            if not protein_dir.exists():
+                logger.warning(f"No directory found for '{protein_id}' in {cif_root}. Skipping.")
+                continue
+
+            cif_candidates = sorted(protein_dir.glob("*model*.cif"))
+            if not cif_candidates:
+                logger.warning(f"No CIF files found for '{protein_id}'. Skipping.")
+                continue
+
+            # Select which model to submit
+            if best_plddt and len(cif_candidates) > 1:
+                best_cif: Optional[Path] = None
+                best_score = -1.0
+                for candidate in cif_candidates:
+                    try:
+                        # engine unknown here — try all parsers
+                        for eng in ("af3", "boltz", "colabfold"):
+                            try:
+                                stats = InteractomeProcessor._extract_monomer_plddt(candidate, eng)
+                                score = stats.get("plddt_mean", -1.0)
+                                if not np.isnan(score) and score > best_score:
+                                    best_score = score
+                                    best_cif = candidate
+                                break
+                            except Exception:
+                                continue
+                    except Exception:
+                        continue
+                cif_path = best_cif if best_cif is not None else cif_candidates[0]
+            else:
+                cif_path = cif_candidates[0]
+
+            logger.info(f"Submitting {protein_id} ({cif_path.name}) to Foldseek...")
+
+            try:
+                cif_content = cif_path.read_text(encoding="utf-8")
+                ticket_id = self._submit_foldseek_job(cif_content, databases, mode=mode)
+                self._poll_foldseek_job(ticket_id, poll_interval=poll_interval, timeout=timeout)
+                tsv_path = self._download_foldseek_results(ticket_id, raw_dir, protein_id)
+            except (RuntimeError, TimeoutError, OSError) as exc:
+                logger.error(f"Foldseek search failed for '{protein_id}': {exc}")
+                continue
+
+            # Parse raw TSV
+            try:
+                df_raw = pd.read_csv(
+                    tsv_path,
+                    sep="\t",
+                    header=None,
+                    names=_RAW_COLS,
+                    comment="#",
+                )
+            except Exception as exc:
+                logger.warning(f"Could not parse TSV for '{protein_id}': {exc}")
+                continue
+
+            df_filtered = df_raw[df_raw["evalue"] <= evalue_cutoff].copy()
+            df_top = df_filtered.sort_values("evalue").head(top_n).reset_index(drop=True)
+            df_top.insert(0, "protein_id", protein_id)
+            df_top.insert(1, "rank", range(1, len(df_top) + 1))
+
+            keep_cols = [
+                "protein_id", "rank", "target", "fident", "alnlen",
+                "evalue", "bits", "qstart", "qend", "tstart", "tend",
+            ]
+            summary_rows.append(df_top[[c for c in keep_cols if c in df_top.columns]])
+            logger.info(
+                f"  {protein_id}: {len(df_top)} hits retained "
+                f"(e-value ≤ {evalue_cutoff}, top {top_n})."
+            )
+
+        if summary_rows:
+            summary_df = pd.concat(summary_rows, ignore_index=True)
+        else:
+            summary_df = pd.DataFrame(columns=[
+                "protein_id", "rank", "target", "fident", "alnlen",
+                "evalue", "bits", "qstart", "qend", "tstart", "tend",
+            ])
+
+        summary_df.to_csv(summary_csv, index=False)
+        logger.info(f"Foldseek summary saved to {summary_csv}")
+        return summary_df

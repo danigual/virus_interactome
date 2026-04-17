@@ -422,6 +422,14 @@ class TestWriteInteractomeJobs:
         for m in metas:
             assert required_keys.issubset(set(m.keys()))
 
+    def test_single_mode_idb_empty(self, dummy_fasta_path, tmp_path):
+        """mode='single' produces monomer jobs: idB must be empty, countB must be empty."""
+        w = InteractomeWriter(str(dummy_fasta_path))
+        metas = w.write_interactome_jobs("af3", str(tmp_path), mode="single")
+        for m in metas:
+            assert m["idB"] == ""
+            assert m["countB"] == ""
+
 
 # ---------------------------------------------------------------------------
 # _build_colabfold_seq_str (static method)
