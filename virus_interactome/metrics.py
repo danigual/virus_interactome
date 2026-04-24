@@ -237,14 +237,12 @@ def calculate_ipsae(mol_file, pae_matrix, pae_cutoff=10, dist_cutoff=10.0):
             interface_ptm_d0chn = ptm_matrix_d0chn[chains == chain1][:, chains == chain2]
             interface_ptm_d0chn[np.logical_not(interface_pae_mask)] = np.nan
             ipsae_d0chn_byres = np.nanmean(interface_ptm_d0chn, axis=1)
-            
             tmp_ipSAE_d0chn = np.nanmax(ipsae_d0chn_byres)
 
             res_chain1_indices, res_chain2_indices = np.where(interface_pae_mask)
             unique_res_chain1_indexes = np.unique(res_chain1_indices)
             unique_res_chain2_indexes = np.unique(res_chain2_indices)
             n0dom = len(unique_res_chain1_indexes) + len(unique_res_chain2_indexes)
-
             d0dom = calc_d0(n0dom, chain_pair_type[chain1][chain2])
             ptm_matrix_d0dom = ptm_func_vec(pae_matrix, d0dom)
             valid_pairs_matrix = (chains == chain2) & (pae_matrix < pae_cutoff)
@@ -253,15 +251,15 @@ def calculate_ipsae(mol_file, pae_matrix, pae_cutoff=10, dist_cutoff=10.0):
             ipsae_d0dom_byres = np.nanmean(interface_ptm_d0dom, axis=1)
             tmp_ipSAE_d0dom = np.nanmax(ipsae_d0dom_byres)
             
-            
             n0res_byres_all = np.sum(valid_pairs_matrix, axis=1)
             d0res_byres = calc_d0_array(n0res_byres_all, chain_pair_type[chain1][chain2])
             ptm_matrix_d0res = np.array([ptm_func_vec(pae_matrix[i], d0res_byres[i]) for i in range(numres)])
             interface_ptm_d0res = ptm_matrix_d0res[chains == chain1][:, chains == chain2]
             interface_ptm_d0res[np.logical_not(interface_pae_mask)] = np.nan
             ipsae_d0res_byres = np.nanmean(interface_ptm_d0res, axis=1)
-            # print(ipsae_d0res_byres.shape)
             tmp_ipSAE_d0res = np.nanmax(ipsae_d0res_byres)
+            # print(ipsae_d0res_byres.shape)
+
             ipsae = pd.concat([ipsae, pd.DataFrame({"chain1": [chain1], "chain2": [chain2], 
                                                     "ipSAE": [tmp_ipSAE_d0res], "ipSAE_d0chn": [tmp_ipSAE_d0chn],
                                                     "ipSAE_d0dom": [tmp_ipSAE_d0dom]})])
