@@ -9,7 +9,9 @@ import os
 from moleculekit.molecule import Molecule
 from pathlib import Path
 from .metrics import ptm_func_vec, calc_d0
-
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+import numpy as np
 
 def check_sequence_validity(seq: str) -> bool:
     """Return True if *seq* is non-empty and contains only standard amino acid letters."""
@@ -170,7 +172,6 @@ def load_boltz_input(yaml_path: Union[str, Path], job_name: str | None  = None)-
         }
     ]
     return job
-
 
 def process_full_data_boltz(mol_file: str, 
                             pae_file: str | None = None,
@@ -399,7 +400,6 @@ def process_full_data_colabfold(mol_file: str,
         **msa_metrics,
     }
 
-
 def process_full_data_af3(mol_file: str,
                           json_path: str | None = None,
                           summary_json_path: str | None = None,) -> dict:
@@ -481,3 +481,171 @@ def process_full_data_af3(mol_file: str,
     full_data["chain_boundaries_by_res"] = chain_boundaries
     full_data["chain_boundaries_by_atom"] = chain_boundaries_by_atom
     return full_data
+
+def df_to_pdf(
+    df,
+    output_path,
+    bold_rules=None,
+    zebra_color="#eef6ff",  # light pastel blue
+    fontsize=10,
+    table_scale=(1.0, 1.4),
+    fontname="DejaVu Sans",
+    cell_alignment="center",
+    figure_size=(8.27, 3.5),  # ~A4 width by a short height; auto expands if needed
+    left_margin=0.2,
+    right_margin=0.2,
+    top_margin=0.2,
+    bottom_margin=0.2,
+):
+    """
+    Render a pandas DataFrame to a PDF with:
+      - Bold header row
+      - Zebra striping on data rows
+      - Conditional bolding per column based on 'bold_rules'
+    
+    Parameters
+    ----------
+    df : pandas.DataFrame
+    output_path : str
+        Path to the output PDF.
+    bold_rules : dict or None
+        Mapping column -> rule. Each rule can be:
+          - ('gt', 10) or ('in', {5, 6}) or ('contains', 'abc'), etc.
+          - {'op': 'gt', 'value': 10}
+          - callable(value) -> bool
+        Supported ops: gt, ge, lt, le, eq, ne, contains, in
+    zebra_color : str
+        Hex or named color for alternating rows (white ↔ zebra_color).
+    fontsize : int
+        Base font size for table text.
+    table_scale : tuple(float, float)
+        (x, y) scale factors for the table sizing.
+    fontname : str
+        Matplotlib font family name.
+    cell_alignment : {'center','left','right'}
+        Alignment for cell text.
+    figure_size : tuple(float, float)
+        Matplotlib figure size in inches.
+    margins : float
+        Margins around the table.
+    """
+    import matplotlib.pyplot as plt
+
+    nrows, ncols = df.shape
+    if ncols == 0:
+        raise ValueError("DataFrame has no columns.")
+    
+    # --- Build predicate constructors ---
+    def _to_number(x):
+        try:
+            # Handle numpy/pandas NA
+            if x is None or (isinstance(x, float) and np.isnan(x)):
+                return None
+            return float(x)
+        except Exception:
+            return None
+
+    def _make_predicate(spec):
+        # callable rule
+        if callable(spec):
+            return lambda v: bool(spec(v))
+        # tuple/list like ('gt', 5)
+        if isinstance(spec, (tuple, list)) and len(spec) == 2:
+            op, value = spec
+        # dict like {'op': 'gt', 'value': 5}
+        elif isinstance(spec, dict) and "op" in spec and "value" in spec:
+            op, value = spec["op"], spec["value"]
+        else:
+            raise ValueError(
+                f"Invalid rule specification: {spec!r}. "
+                "Use a callable, a tuple ('op', value), or a dict {'op':..., 'value':...}."
+            )
+
+        op = str(op).lower()
+
+        if op == "gt":
+            return lambda v: (_to_number(v) is not None) and (_to_number(v) > float(value))
+        if op == "ge":
+            return lambda v: (_to_number(v) is not None) and (_to_number(v) >= float(value))
+        if op == "lt":
+            return lambda v: (_to_number(v) is not None) and (_to_number(v) < float(value))
+        if op == "le":
+            return lambda v: (_to_number(v) is not None) and (_to_number(v) <= float(value))
+        if op == "eq":
+            return lambda v: v == value
+        if op == "ne":
+            return lambda v: v != value
+        if op == "contains":
+            return lambda v: (v is not None) and (str(value) in str(v))
+        if op == "in":
+            value_set = set(value) if not isinstance(value, set) else value
+            return lambda v: v in value_set
+
+        raise ValueError(
+            f"Unsupported operator '{op}'. "
+            "Supported: gt, ge, lt, le, eq, ne, contains, in."
+        )
+
+    # Build predicates for columns present in df
+    col_predicates = {}
+    if bold_rules:
+        for col, spec in bold_rules.items():
+            if col in df.columns:
+                col_predicates[col] = _make_predicate(spec)
+            else:
+                # Silently ignore missing columns, or you can raise/warn if preferred
+                pass
+
+    fig, ax = plt.subplots(figsize=figure_size)
+    ax.axis("off")
+
+    # Build table
+    tbl = ax.table(
+        cellText=df.values,
+        colLabels=list(df.columns),
+        loc="center",
+        cellLoc=cell_alignment,
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(fontsize)
+    tbl.scale(*table_scale)
+
+    # Header styling: bold headers
+    for c in range(ncols):
+        header_cell = tbl[(0, c)]
+        header_cell.set_text_props(weight="bold", fontname=fontname)
+
+    # Zebra striping for data rows: i=1..nrows map to df rows 0..nrows-1
+    for r in range(1, nrows + 1):
+        row_color = zebra_color if (r % 2 == 0) else "white"
+        for c in range(ncols):
+            cell = tbl[(r, c)]
+            cell.set_facecolor(row_color)
+            cell.set_text_props(fontname=fontname)
+
+    # Conditional bolding per column
+    if col_predicates:
+        for r in range(1, nrows + 1):
+            df_row_idx = r - 1
+            for c, col in enumerate(df.columns):
+                pred = col_predicates.get(col)
+                if pred is None:
+                    continue
+                value = df.iloc[df_row_idx, c]
+                try:
+                    if pred(value):
+                        tbl[(r, c)].set_text_props(weight="bold")
+                except Exception:
+                    # If predicate errors on a value, just skip that cell
+                    pass
+
+    # Add some margins so the table doesn't hug the edges
+    plt.subplots_adjust(
+        left=left_margin, right=1 - right_margin, top=1 - top_margin, bottom=bottom_margin
+    )
+
+    # Save to PDF
+    with PdfPages(output_path) as pdf:
+        pdf.savefig(fig, bbox_inches="tight")
+
+    plt.close(fig)
