@@ -14,8 +14,10 @@ from moleculekit.molecule import Molecule
 import concurrent.futures
 from functools import partial
 import os
+from .model import Engine, Model
 
-from .utils import process_full_data_af3, process_full_data_boltz, process_full_data_colabfold
+
+# from .utils import process_full_data_af3, process_full_data_boltz, process_full_data_colabfold
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -36,16 +38,17 @@ class ProteomeManager:
         fasta_file : str or None
             Path to FASTA file. If None, no proteome is loaded.
         """
-        self.sequences = {}
+        self._sequences = {}
         self.invalid_sequences = {}
         self.high_similarity_pairs = []
-        self.identity_matrix = None
+        # self.identity_matrix = None
         self.identity_table = None
         self.sequence_properties = None
         self._ids_cache: Optional[Tuple[str, ...]] = None
         self._order_mode: str = "insertion"
-        self.model_info: Optional[pd.DataFrame] = None
-        self.model_info_extended: Optional[pd.DataFrame] = None
+        self.model_info_by_model: Optional[pd.DataFrame] = None
+        self.model_info_by_orf: Optional[pd.DataFrame] = None
+        # self.model_info_extended: Optional[pd.DataFrame] = None
         self._model_engine: Optional[str] = None
 
         if fasta_file:
@@ -54,6 +57,10 @@ class ProteomeManager:
         self._file_path = fasta_file
 
     @property
+    def sequences(self) -> dict:
+        return self._sequences
+    
+    @property
     def ids(self) -> Tuple[str, ...]:
         """
         Immutable tuple of valid protein IDs.
@@ -61,9 +68,9 @@ class ProteomeManager:
         """
         if self._ids_cache is None:
             if self._order_mode == "insertion":
-                self._ids_cache = tuple(self.sequences.keys())
+                self._ids_cache = tuple(self._sequences.keys())
             else:
-                self._ids_cache = tuple(sorted(self.sequences.keys()))
+                self._ids_cache = tuple(sorted(self._sequences.keys()))
         return self._ids_cache
 
     @staticmethod
@@ -77,6 +84,11 @@ class ProteomeManager:
     @file_path.setter
     def file_path(self, fasta_file: str) -> None:
         self.load_proteome(fasta_file)
+    
+    @sequences.setter
+    def sequences(self, sequences: dict) -> None:
+        self._sequences = sequences
+        self._ids_cache = None
 
     @staticmethod
     def _get_orf_id_from_path(path: str, engine: str) -> Optional[str]:
@@ -102,7 +114,7 @@ class ProteomeManager:
         max_len = max(len(seq1), len(seq2))
         return i, j, score / max_len
     
-    def __str__(self) -> str:
+    def __repr__(self) -> str:
         summary_data = self.summary()
         return (
             f"ProteomeManager Summary:\n"
@@ -116,7 +128,7 @@ class ProteomeManager:
         )
     
     def __len__(self) -> int:
-        return len(self.sequences)
+        return len(self._sequences)
     
     def seq_from_id(self, protein_id: str) -> str:
         """
@@ -137,9 +149,9 @@ class ProteomeManager:
         KeyError
             If the protein ID is not found in the proteome.
         """
-        if protein_id not in self.sequences:
+        if protein_id not in self._sequences:
             raise KeyError(f"Protein ID '{protein_id}' not found in proteome.")
-        return self.sequences[protein_id]
+        return self._sequences[protein_id]
 
     # -------------------------
     # 1. Loading and validation
@@ -252,20 +264,20 @@ class ProteomeManager:
                 logger.warning(f"Duplicate protein ID '{short_id}' found. Overwriting previous entry.")
             proteome_dict[short_id] = str(protein.seq)
 
-        self.sequences = proteome_dict
+        self._sequences = proteome_dict
         self._file_path = fasta_file
         logger.info(f"Proteome loaded successfully with {len(proteome_dict)} proteins.")
 
-        if self.sequences:
-            logger.info("Computing sequence identity matrix...")
-            self.compute_identity_matrix(n_jobs=10, similarity_threshold=0.95)
+        # if self._sequences:
+        #     logger.info("Computing sequence identity matrix...")
+        #     self.compute_identity_matrix(n_jobs=10, similarity_threshold=0.95)
         # self.identity_matrix = similarity_matrix
         # self.identity_table = similarity_data
         # logger.info(f"Proteome loaded successfully with {len(proteome_dict)} proteins.")
         # self.sequence_properties = self.compute_properties()
         return proteome_dict
     
-    def compute_identity_matrix(self, n_jobs: int = 4,  similarity_threshold: float = 0.95) -> pd.DataFrame:
+    def compute_identity(self, n_jobs: int = 4,  similarity_threshold: float = 0.95) -> pd.DataFrame:
         """
         Compute pairwise sequence identity using multiprocessing.
         Only computes unique pairs (i < j), avoids redundant and self-comparisons.
@@ -274,13 +286,13 @@ class ProteomeManager:
         from concurrent.futures import ProcessPoolExecutor
         from itertools import combinations
 
-        if not self.sequences:
+        if not self._sequences:
             raise ValueError("Proteome is empty. Load a proteome first.")
 
-        labels = list(self.sequences.keys())
-        sequences = list(self.sequences.values())
+        labels = list(self._sequences.keys())
+        sequences = list(self._sequences.values())
         n = len(sequences)
-        matrix = np.eye(n)  # Initialize with 1.0 on diagonal
+        # matrix = np.eye(n)  # Initialize with 1.0 on diagonal
         df_similarity = []
 
         # Prepare unique pairs
@@ -289,8 +301,8 @@ class ProteomeManager:
         # Parallel execution
         with ProcessPoolExecutor(max_workers=n_jobs) as executor:
             for i, j, identity in tqdm(executor.map(self._compute_identity, pairs), total=len(pairs), desc="Computing identities"):
-                matrix[i][j] = identity
-                matrix[j][i] = identity
+                # matrix[i][j] = identity
+                # matrix[j][i] = identity
 
                 df_similarity.append([labels[i], labels[j], identity])
 
@@ -299,66 +311,67 @@ class ProteomeManager:
                     logger.warning(msg)
                     self.high_similarity_pairs.append((labels[i], labels[j], identity))
 
-        df_similarity_matrix = pd.DataFrame(matrix, index=labels, columns=labels)
+        # df_similarity_matrix = pd.DataFrame(matrix, index=labels, columns=labels)
         df_similarity = pd.DataFrame(df_similarity, columns=['ORF1', 'ORF2', 'Identity'])
-        self.identity_matrix = df_similarity_matrix
+        # self.identity_matrix = df_similarity_matrix
         self.identity_table = df_similarity
-        return df_similarity_matrix
+        return df_similarity
+        # return df_similarity_matrix
 
-    def plot_identity_heatmap(self, output_image: str, cmap: str = "coolwarm", vmin: float = 0.2, vmax: float = 1.0, show: bool = False):
-        """
-        Plot heatmap from self.identity_matrix using Matplotlib only.
+    # def plot_identity_heatmap(self, output_image: str, cmap: str = "coolwarm", vmin: float = 0.2, vmax: float = 1.0, show: bool = False):
+    #     """
+    #     Plot heatmap from self.identity_matrix using Matplotlib only.
 
-        Parameters
-        ----------
-        output_image : str
-            Path to save the heatmap image.
-        cmap : str
-            Colormap for the heatmap.
-        vmin, vmax : float
-            Min and max values for color scale.
-        show : bool
-            If True, display the plot interactively instead of saving.
-        """
-        import matplotlib.pyplot as plt
-        if self.identity_matrix is None:
-            raise ValueError("Identity matrix not computed. Run compute_identity_matrix() first.")
+    #     Parameters
+    #     ----------
+    #     output_image : str
+    #         Path to save the heatmap image.
+    #     cmap : str
+    #         Colormap for the heatmap.
+    #     vmin, vmax : float
+    #         Min and max values for color scale.
+    #     show : bool
+    #         If True, display the plot interactively instead of saving.
+    #     """
+    #     import matplotlib.pyplot as plt
+    #     if self.identity_matrix is None:
+    #         raise ValueError("Identity matrix not computed. Run compute_identity_matrix() first.")
 
-        fig, ax = plt.subplots(figsize=(14, 14))
-        cax = ax.imshow(self.identity_matrix.values, cmap=cmap, vmin=vmin, vmax=vmax)
+    #     fig, ax = plt.subplots(figsize=(14, 14))
+    #     cax = ax.imshow(self.identity_matrix.values, cmap=cmap, vmin=vmin, vmax=vmax)
 
-        # Add colorbar
-        fig.colorbar(cax, ax=ax)
+    #     # Add colorbar
+    #     fig.colorbar(cax, ax=ax)
 
-        # Set ticks and labels
-        ax.set_xticks(range(len(self.identity_matrix.columns)))
-        ax.set_yticks(range(len(self.identity_matrix.index)))
-        ax.set_xticklabels(self.identity_matrix.columns, rotation=90)
-        ax.set_yticklabels(self.identity_matrix.index)
+    #     # Set ticks and labels
+    #     ax.set_xticks(range(len(self.identity_matrix.columns)))
+    #     ax.set_yticks(range(len(self.identity_matrix.index)))
+    #     ax.set_xticklabels(self.identity_matrix.columns, rotation=90)
+    #     ax.set_yticklabels(self.identity_matrix.index)
 
-        ax.set_title("Sequence Identity Heatmap", fontsize=14)
-        plt.tight_layout()
+    #     ax.set_title("Sequence Identity Heatmap", fontsize=14)
+    #     plt.tight_layout()
 
-        if show:
-            plt.show()
-        else:
-            plt.savefig(output_image, dpi=300)
-            plt.close()
+    #     if show:
+    #         plt.show()
+    #     else:
+    #         plt.savefig(output_image, dpi=300)
+    #         plt.close()
 
-    def get_sequence(self, protein_id: str) -> str:
-        """
-        Retrieve a protein sequence by its ID.
-        Raises KeyError if the ID is not found.
-        """
-        if protein_id not in self.sequences:
-            raise KeyError(f"Protein ID '{protein_id}' not found in proteome.")
-        return self.sequences[protein_id]
+    # def get_sequence(self, protein_id: str) -> str:
+    #     """
+    #     Retrieve a protein sequence by its ID.
+    #     Raises KeyError if the ID is not found.
+    #     """
+    #     if protein_id not in self._sequences:
+    #         raise KeyError(f"Protein ID '{protein_id}' not found in proteome.")
+    #     return self._sequences[protein_id]
 
-    def get_ids(self) -> list[str]:
-        """
-        Return a list of all protein IDs in the proteome.
-        """
-        return list(self.sequences.keys())
+    # def get_ids(self) -> list[str]:
+    #     """
+    #     Return a list of all protein IDs in the proteome.
+    #     """
+    #     return list(self._sequences.keys())
     
     def filter_by_regex(self, pattern: str, return_sequences: bool = False) -> dict | list[str]:
         """
@@ -378,7 +391,7 @@ class ProteomeManager:
         """
         import re
         regex = re.compile(pattern)
-        matches = {pid: seq for pid, seq in self.sequences.items() if regex.search(pid)}
+        matches = {pid: seq for pid, seq in self._sequences.items() if regex.search(pid)}
         return matches if return_sequences else list(matches.keys())
 
     def compute_properties(self) -> pd.DataFrame:
@@ -392,11 +405,11 @@ class ProteomeManager:
             ['id', 'length', 'molecular_weight', 'isoelectric_point',
             'instability_index', 'gravy', 'aromaticity']
         """
-        if not self.sequences:
+        if not self._sequences:
             raise ValueError("Proteome is empty. Load a proteome first.")
 
         data = []
-        for pid, seq in self.sequences.items():
+        for pid, seq in self._sequences.items():
             analysis = ProteinAnalysis(seq)
             length = len(seq)
             mw = molecular_weight(seq, seq_type="protein")
@@ -430,7 +443,7 @@ class ProteomeManager:
             Dictionary with proteome metrics.
         """
                 
-        if not self.sequences:
+        if not self._sequences:
                 return {
                     "total_sequences": 0,
                     "total_residues": 0,
@@ -441,8 +454,8 @@ class ProteomeManager:
                     "high_similarity_pairs": len(self.high_similarity_pairs)
                 }
 
-        lengths = [len(seq) for seq in self.sequences.values()]
-        total_sequences = len(self.sequences)
+        lengths = [len(seq) for seq in self._sequences.values()]
+        total_sequences = len(self._sequences)
         total_residues = sum(lengths)
         avg_length = total_residues / total_sequences
 
@@ -477,9 +490,9 @@ class ProteomeManager:
         # tqdm gives you a nice progress bar for the proteome loop
         from tqdm import tqdm
         
-        logger.info(f"Starting PDB screening for {len(self.sequences)} sequences...")
+        logger.info(f"Starting PDB screening for {len(self._sequences)} sequences...")
         
-        for protein_id, sequence in tqdm(self.sequences.items(), desc="Proteome Search"):
+        for protein_id, sequence in tqdm(self._sequences.items(), desc="Proteome Search"):
             # 1. Get hits from API
             df_hits = self.search_pdb_sequence(sequence, protein_name=protein_id, **kwargs)
             
@@ -661,11 +674,11 @@ class ProteomeManager:
             print(f"  ORF: {orf_id}")
             print(SEP)
 
-            if orf_id not in self.sequences:
+            if orf_id not in self._sequences:
                 print(f"  [!] '{orf_id}' not found in proteome.")
                 continue
 
-            seq = self.sequences[orf_id]
+            seq = self._sequences[orf_id]
 
             # ── SEQUENCE ──────────────────────────────────────────────
             print("\n[SEQUENCE]")
@@ -675,7 +688,7 @@ class ProteomeManager:
             charge_ph7 = IsoelectricPoint(seq).charge_at_pH(7.0)
             preview = seq[:30] + ("..." if len(seq) > 30 else "")
             print(f"  Length      : {len(seq)} aa")
-            print(f"  Preview     : {preview}")
+            # print(f"  Preview     : {preview}")
             print(f"  MW          : {mw:.1f} Da")
             print(f"  pI          : {pi:.2f}")
             print(f"  Charge@pH7  : {charge_ph7:+.2f}")
@@ -684,37 +697,65 @@ class ProteomeManager:
             instability = analysis.instability_index()
             print(f"  Instability : {instability:.1f} ({'unstable' if instability > 40 else 'stable'})")
             aa_counts = analysis.count_amino_acids()
-            aa_str = ", ".join(f"{aa}:{cnt}" for aa, cnt in sorted(aa_counts.items()) if cnt > 0)
-            print(f"  AA comp     : {aa_str}")
+            aa_str = ", ".join(f"{aa}:{round(100 * cnt / len(seq), 2)}" for aa, cnt in sorted(aa_counts.items()) if cnt > 0)
+            print(f"  AA comp (%) : {aa_str}")
 
             # ── MODELS ────────────────────────────────────────────────
             print("\n[MODELS]")
-            if self.model_info_extended is not None and orf_id in self.model_info_extended["ORF"].values:
-                row = self.model_info_extended[self.model_info_extended["ORF"] == orf_id].iloc[0]
-                n_models = len(self.model_info[self.model_info["ORF"] == orf_id])
+            if self.model_info_by_model is not None and orf_id in self.model_info_by_model["id"].values:
+                row = self.model_info_by_model[self.model_info_by_model["id"] == orf_id].iloc[0]
+                n_models = self.model_info_by_model[self.model_info_by_model["id"] == orf_id].shape[0]
                 print(f"  Engine      : {self._model_engine or 'unknown'}")
                 print(f"  N models    : {n_models}")
-                for col in ["pTM", "mean_plddt", "mean_pae"]:
+                for col in ["pTM", "mean_plddt", "mean_pae", "ptm", "iptm"]:
                     if col in row.index:
                         print(f"  {col:<12}: {row[col]:.3f}")
             else:
                 print("  No model data. Run load_model_info() first.")
 
             # ── SIMILARITY ────────────────────────────────────────────
-            print("\n[SIMILARITY]  (pairs ≥ 0.95 precomputed)")
+            print("\n[SIMILARITY]  ")
+
             if self.identity_table is None:
-                print("  Not computed. Run compute_identity_matrix() first.")
-            else:
-                matches = [
-                    (o1, o2, ident) for o1, o2, ident in self.high_similarity_pairs
-                    if o1 == orf_id or o2 == orf_id
-                ]
-                if not matches:
-                    print("  None found.")
-                else:
-                    for o1, o2, ident in matches:
-                        partner = o2 if o1 == orf_id else o1
-                        print(f"  {partner:<30} identity={ident:.2%}")
+                self.compute_identity()
+                # print("  Not computed. Run compute_identity_matrix() first.")
+            identity_sel = self.identity_table[
+                (self.identity_table["ORF1"] == orf_id) | (self.identity_table["ORF2"] == orf_id)
+            ].sort_values(by="Identity", ascending=False)
+            print("TOP 5 similar ORFs:\n")
+            print(identity_sel.head(5).to_string(index=False))
+
+            print("\nIdentity distribution:\n")
+
+            bins = np.arange(0, 1.1, 0.1)
+
+            counts, _ = np.histogram(identity_sel.Identity, bins=bins)
+
+            percentages = counts / counts.sum() * 100
+
+            
+            STAR_SCALE = 5.0  # 1 star per 1%
+
+            lines = []
+            for i, p in enumerate(percentages):
+                stars = "*" * int(round(p / STAR_SCALE))
+                lines.append(f"{bins[i]:.1f}–{bins[i+1]:.1f}: {p:6.2f}%  {stars}")
+
+            summary = "\n".join(lines)
+
+            print(summary)
+
+            # import pdb; pdb.set_trace()
+            # matches = [
+            #     (o1, o2, ident) for o1, o2, ident in self.high_similarity_pairs
+            #     if o1 == orf_id or o2 == orf_id
+            # ]
+            # if not matches:
+            #     print("  None found.")
+            # else:
+            #     for o1, o2, ident in matches:
+            #         partner = o2 if o1 == orf_id else o1
+            #         print(f"  {partner:<30} identity={ident:.2%}")
 
             # ── PPIs ──────────────────────────────────────────────────
             if interactome_df is not None:
@@ -749,65 +790,66 @@ class ProteomeManager:
                     print(fs_rows[cols].to_string(index=False))
 
         # ── IDENTITY THRESHOLD PROMPT (after all ORFs) ────────────────
-        if self.identity_table is not None and not self.identity_table.empty:
-            if identity_threshold is None:
-                try:
-                    raw = input("\n[IDENTITY] Enter threshold (0–100%) to list similar pairs, or Enter to skip: ").strip()
-                    identity_threshold = float(raw) if raw else None
-                except (EOFError, ValueError):
-                    identity_threshold = None
+        # if self.identity_table is not None and not self.identity_table.empty:
+        #     if identity_threshold is None:
+        #         try:
+        #             raw = input("\n[IDENTITY] Enter threshold (0–100%) to list similar pairs, or Enter to skip: ").strip()
+        #             identity_threshold = float(raw) if raw else None
+        #         except (EOFError, ValueError):
+        #             identity_threshold = None
 
-            if identity_threshold is not None:
-                thresh = identity_threshold / 100.0
-                for orf_id in orf_ids:
-                    mask = (
-                        (
-                            (self.identity_table["ORF1"] == orf_id)
-                            | (self.identity_table["ORF2"] == orf_id)
-                        )
-                        & (self.identity_table["Identity"] >= thresh)
-                    )
-                    partners = self.identity_table[mask]
-                    if not partners.empty:
-                        print(f"\n  {orf_id} — partners ≥ {identity_threshold:.0f}%:")
-                        for _, r in partners.iterrows():
-                            partner = r["ORF2"] if r["ORF1"] == orf_id else r["ORF1"]
-                            print(f"    {partner:<30} {r['Identity']:.2%}")
+        #     if identity_threshold is not None:
+        #         thresh = identity_threshold / 100.0
+        #         for orf_id in orf_ids:
+        #             mask = (
+        #                 (
+        #                     (self.identity_table["ORF1"] == orf_id)
+        #                     | (self.identity_table["ORF2"] == orf_id)
+        #                 )
+        #                 & (self.identity_table["Identity"] >= thresh)
+        #             )
+        #             partners = self.identity_table[mask]
+        #             if not partners.empty:
+        #                 print(f"\n  {orf_id} — partners ≥ {identity_threshold:.0f}%:")
+        #                 for _, r in partners.iterrows():
+        #                     partner = r["ORF2"] if r["ORF1"] == orf_id else r["ORF1"]
+        #                     print(f"    {partner:<30} {r['Identity']:.2%}")
 
-    def load_model_info_monomer(self, model_dir: str, engine: str) -> pd.DataFrame:
+    def _load_model_info_monomer(self, model_path: str, engine: str) -> pd.DataFrame:
         """
         Load and parse model information from AlphaFold/Boltz output directories.
         """
-
-        model_number = None
-        if engine.lower() == "af3":
-            full_data = process_full_data_af3(model_dir)
-            orf_id = Path(model_dir).parent.name
-        elif engine.lower() == "boltz":
-            full_data = process_full_data_boltz(model_dir)
-            orf_id = Path(model_dir).parent.name
-        elif engine.lower() == "colabfold":
-            full_data = process_full_data_colabfold(model_dir)
-            orf_id = ProteomeManager._get_orf_id_from_path(model_dir, "colabfold")
-            model_number = int(os.path.basename(model_dir).split("model_")[1].split("_")[0])
-        else:
-            raise ValueError("engine should be 'AF3', 'Boltz' or 'ColabFold'")
+        model = Model(model_path, engine=engine)
+        return model.summary()
+        # model_number = None
+        # if engine == Engine.AF3:
+        #     full_data = process_full_data_af3(model_dir)
+        #     orf_id = Path(model_dir).parent.name
+        # elif engine == Engine.BOLTZ:
+        #     full_data = process_full_data_boltz(model_dir)
+        #     orf_id = Path(model_dir).parent.name
+        # elif engine == Engine.COLABFOLD:
+        #     full_data = process_full_data_colabfold(model_dir)
+        #     orf_id = ProteomeManager._get_orf_id_from_path(model_dir, "colabfold")
+        #     model_number = int(os.path.basename(model_dir).split("model_")[1].split("_")[0])
+        # else:
+        #     raise ValueError("engine should be 'AF3', 'Boltz' or 'ColabFold'")
         
-        summary_dict = {"ORF": orf_id,
-                "Model_num": model_number, 
-                "ipTM": full_data.get("iptm_chain_pair", 0)[0][0], 
-                "pTM": full_data.get("ptm", 0),
-                "mean_plddt": np.mean(full_data.get("ca_plddts", 0)),
-                "mean_pae": np.mean(full_data.get("pae", 0)),
-                }
+        # summary_dict = {"ORF": orf_id,
+        #         "Model_num": model_number, 
+        #         "ipTM": full_data.get("iptm_chain_pair", 0)[0][0], 
+        #         "pTM": full_data.get("ptm", 0),
+        #         "mean_plddt": np.mean(full_data.get("ca_plddts", 0)),
+        #         "mean_pae": np.mean(full_data.get("pae", 0)),
+        #         }
         
-        return summary_dict
+        # return summary_dict
     
-    def load_model_info(self, model_dir: str, engine: str = "AF3", file_ext: str = "cif") -> pd.DataFrame:
+    def load_model_info(self, model_dir: str, engine: str | Engine = "AF3") -> pd.DataFrame:
         """
         Load and parse model information from AlphaFold/Boltz/ColabFold output directories.
 
-        Only processes ORFs that have both a sequence in ``self.sequences`` and at least one
+        Only processes ORFs that have both a sequence in ``self._sequences`` and at least one
         model file on disk.  ORFs missing either are skipped with a warning.  If no proteome
         has been loaded, all found model files are processed.
 
@@ -826,65 +868,262 @@ class ProteomeManager:
             Per-model summary rows (same as ``self.model_info``).
         """
         from glob import glob
+        engine = Engine(engine.lower()) if isinstance(engine, str) else engine
 
-        all_model_data = glob(f"{model_dir}/*/*.{file_ext}")
+        if engine == Engine.AF3 or engine == Engine.BOLTZ:
+            file_ext = "cif"
+        elif engine == Engine.COLABFOLD:
+            file_ext = "pdb"
 
-        # Build orf_id → [file paths] mapping
-        orf_to_files: dict[str, list[str]] = {}
-        for f in all_model_data:
-            orf_id = self._get_orf_id_from_path(f, engine)
-            if orf_id is not None:
-                orf_to_files.setdefault(orf_id, []).append(f)
+        all_model_data = {}
+        all_models = []
+        for seq_id in self.ids:
+            seq_id_models = glob(f"{model_dir}/{seq_id}/*.{file_ext}")
+            if len(seq_id_models) == 0:
+                logger.warning(f"ORF '{seq_id}': no model files found in '{model_dir}' matching '*{seq_id}*/*.{file_ext}'.")
+            all_model_data[seq_id] = seq_id_models
+            all_models.extend(seq_id_models)
 
-        if self.sequences:
-            sequence_orfs = set(self.sequences.keys())
-            model_orfs_raw = set(orf_to_files.keys())
+        self.orf_models = all_model_data
 
-            # Defensive: resolve case-insensitive matches before flagging as missing
-            seq_lower_map = {k.lower(): k for k in sequence_orfs}
-            resolved_orf_to_files: dict[str, list[str]] = {}
-            for raw_orf, files in orf_to_files.items():
-                if raw_orf in sequence_orfs:
-                    resolved_orf_to_files.setdefault(raw_orf, []).extend(files)
-                elif raw_orf.lower() in seq_lower_map:
-                    canonical = seq_lower_map[raw_orf.lower()]
-                    logger.warning(
-                        "ORF ID case mismatch: model dir '%s' matched to sequence key '%s'. "
-                        "Using canonical ID.", raw_orf, canonical
-                    )
-                    resolved_orf_to_files.setdefault(canonical, []).extend(files)
-                else:
-                    resolved_orf_to_files.setdefault(raw_orf, []).extend(files)
-
-            model_orfs = set(resolved_orf_to_files.keys())
-
-            for orf in sorted(sequence_orfs - model_orfs):
-                logger.warning("ORF '%s': sequence loaded but no model files found — skipping.", orf)
-            for orf in sorted(model_orfs - sequence_orfs):
-                logger.warning("ORF '%s': model files found but no sequence in proteome — skipping.", orf)
-
-            valid_orfs = sequence_orfs & model_orfs
-            filtered_files = [f for orf in valid_orfs for f in resolved_orf_to_files[orf]]
-        else:
-            logger.info("No sequences loaded; processing all model files found in '%s'.", model_dir)
-            filtered_files = all_model_data
-
-        if not filtered_files:
-            logger.warning("No valid model files to process after cross-checking sequences and structures.")
+        if len(all_models) == 0:
+            logger.warning(f"No model files found in '{model_dir}' matching '*/*.{file_ext}'.")
             return pd.DataFrame()
+        
+        # import pdb;pdb.set_trace()
+        # Build orf_id → [file paths] mapping
+        # orf_to_files: dict[str, list[str]] = {}
+        # for f in all_model_data:
+        #     orf_id = self._get_orf_id_from_path(f, engine)
+        #     if orf_id is not None:
+        #         orf_to_files.setdefault(orf_id, []).append(f)
+
+        # if self._sequences:
+        #     sequence_orfs = set(self._sequences.keys())
+        #     model_orfs_raw = set(orf_to_files.keys())
+
+        #     # Defensive: resolve case-insensitive matches before flagging as missing
+        #     seq_lower_map = {k.lower(): k for k in sequence_orfs}
+        #     resolved_orf_to_files: dict[str, list[str]] = {}
+        #     for raw_orf, files in orf_to_files.items():
+        #         if raw_orf in sequence_orfs:
+        #             resolved_orf_to_files.setdefault(raw_orf, []).extend(files)
+        #         elif raw_orf.lower() in seq_lower_map:
+        #             canonical = seq_lower_map[raw_orf.lower()]
+        #             logger.warning(
+        #                 "ORF ID case mismatch: model dir '%s' matched to sequence key '%s'. "
+        #                 "Using canonical ID.", raw_orf, canonical
+        #             )
+        #             resolved_orf_to_files.setdefault(canonical, []).extend(files)
+        #         else:
+        #             resolved_orf_to_files.setdefault(raw_orf, []).extend(files)
+
+        #     model_orfs = set(resolved_orf_to_files.keys())
+
+        #     for orf in sorted(sequence_orfs - model_orfs):
+        #         logger.warning("ORF '%s': sequence loaded but no model files found — skipping.", orf)
+        #     for orf in sorted(model_orfs - sequence_orfs):
+        #         logger.warning("ORF '%s': model files found but no sequence in proteome — skipping.", orf)
+
+        #     valid_orfs = sequence_orfs & model_orfs
+        #     filtered_files = [f for orf in valid_orfs for f in resolved_orf_to_files[orf]]
+        # else:
+        #     logger.info("No sequences loaded; processing all model files found in '%s'.", model_dir)
+        #     filtered_files = all_model_data
+
+        # if not filtered_files:
+        #     logger.warning("No valid model files to process after cross-checking sequences and structures.")
+        #     return pd.DataFrame()
 
         model_df = []
         with concurrent.futures.ProcessPoolExecutor() as executor:
-            worker = partial(self.load_model_info_monomer, engine=engine)
-            for res in tqdm(executor.map(worker, filtered_files), total=len(filtered_files), desc="Loading model info"):
+            worker = partial(self._load_model_info_monomer, engine=engine)
+            for res in tqdm(executor.map(worker, all_models), total=len(all_models), desc="Loading model info"):
                 model_df.append(res)
 
         df = pd.DataFrame(model_df)
-        grouped_df = df.groupby("ORF").mean().drop("Model_num", axis=1, errors="ignore").reset_index()
-        self.model_info = df
-        self.model_info_extended = grouped_df
+        grouped_df = df.drop(["model_num", "path", "engine"], axis=1, errors="ignore").groupby("id").mean().reset_index()
+        self.model_info_by_model = df.sort_values(by="id").reset_index(drop=True)
+        self.model_info_by_orf = grouped_df.sort_values(by="id").reset_index(drop=True)
         self._model_engine = engine
         return df
 
+    def view(self, orf_id: str, mode: str = "plddt") -> None:
+        """
+        Visualize all models for a given ORF in ChimeraX.
+        Models are opened as separate structures and arranged in a grid.
+
+        Parameters
+        ----------
+        orf_id : str
+            The ORF to visualize.
+        mode : "plddt" | "chain" | "rainbow"
+            Coloring scheme passed to each model.
+        """
+        import subprocess
+        import tempfile
+
+        if not hasattr(self, "orf_models") or orf_id not in self.orf_models:
+            raise ValueError(
+                f"No model files found for '{orf_id}'. Run load_model_info() first."
+            )
+
+        model_paths = self.orf_models[orf_id]
+        if not model_paths:
+            raise ValueError(f"orf_models['{orf_id}'] is empty.")
+
+        lines = []
+        for i, path in enumerate(sorted(model_paths), start=1):
+            lines.append(f"open {path}")
+
+        # color all opened models
+        if mode == "plddt":
+            lines.append("color bfactor palette alphafold")
+        elif mode == "chain":
+            lines.append("rainbow chain")
+        elif mode == "rainbow":
+            lines.append("rainbow")
+
+        # lines.append("tile")   # arrange side by side in ChimeraX
+        lines.append(f"mm #2-{len(model_paths)} to #1")
+        mod = Model(model_paths[0], engine=self._model_engine)
+        lines += [f"alphafold pae #1 file {mod._extra_files['scores']} palette paegreen"]
+        lines.append("view")
+
+        script = "\n".join(lines)
+
+        # write to a temp file so we don't pollute the working directory
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".cxc", delete=False
+        ) as tmp:
+            tmp.write(script)
+            tmp_path = tmp.name
+
+        logger.info(f"Launching ChimeraX for {len(model_paths)} models of '{orf_id}'")
+        subprocess.run(["chimerax", tmp_path])
+
+    def filter_proteome(self, orfs_to_keep: list[str] | str) -> None:
+        """
+        Filter the proteome to only include specified ORFs.
+
+        Parameters
+        ----------
+        orfs_to_keep : list[str]
+            List of ORF IDs to retain in the proteome.  All others will be removed.
+        """
+        if not self._sequences:
+            logger.warning("Proteome is empty. Nothing to filter.")
+            return
+        
+        missing_orfs = [orf for orf in orfs_to_keep if orf not in self._sequences]
+        if missing_orfs:
+            logger.warning(f"The following ORFs were not found in the proteome and will be skipped: {missing_orfs}")
+
+        filtered_sequences = {orf: seq for orf, seq in self._sequences.items() if orf in orfs_to_keep}
+        
+        if not filtered_sequences:
+            logger.warning("No valid ORFs found to keep. Proteome will be empty.")
+        
+        self._sequences = filtered_sequences
+
+    def save(self, path: str) -> None:
+        """
+        Save the ProteomeManager to disk.
+        Pickle preserves all attributes including model_info, identity_table, etc.
+        """
+        import pickle
+        path = Path(path)
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
+        logger.info(f"ProteomeManager saved to {path}")
+
+    @classmethod
+    def load(cls, path: str) -> "ProteomeManager":
+        """
+        Load a ProteomeManager from a pickle file.
+        Usage: pm = ProteomeManager.load("my_proteome.pkl")
+        """
+        import pickle
+        with open(path, "rb") as f:
+            obj = pickle.load(f)
+        if not isinstance(obj, cls):
+            raise TypeError(f"Expected ProteomeManager, got {type(obj)}")
+        logger.info(f"ProteomeManager loaded from {path} ({len(obj)} sequences)")
+        return obj
+    
+    def filter(
+        self,
+        ids: list[str] | None = None,
+        min_length: int | None = None,
+        max_length: int | None = None,
+        regex: str | None = None,
+    ) -> "ProteomeManager":
+        """
+        Return a new ProteomeManager containing only the matching sequences.
+        All available derived data (model_info, identity_table) is subset accordingly.
+
+        Parameters
+        ----------
+        ids : list of str, optional
+            Explicit list of IDs to keep.
+        min_length, max_length : int, optional
+            Filter by sequence length.
+        regex : str, optional
+            Keep IDs matching this pattern.
+        """
+        import re
+        
+        # start with all, then narrow
+        selected = set(self._sequences.keys())
+
+        if ids is not None:
+            missing = set(ids) - selected
+            if missing:
+                logger.warning(f"IDs not found in proteome and will be ignored: {missing}")
+            selected &= set(ids)
+
+        if min_length is not None:
+            selected = {pid for pid in selected if len(self._sequences[pid]) >= min_length}
+
+        if max_length is not None:
+            selected = {pid for pid in selected if len(self._sequences[pid]) <= max_length}
+
+        if regex is not None:
+            pattern = re.compile(regex)
+            selected = {pid for pid in selected if pattern.search(pid)}
+
+        if not selected:
+            logger.warning("filter() produced an empty ProteomeManager.")
+
+        # build new instance — no fasta file, inject sequences directly
+        new_pm = ProteomeManager()
+        new_pm._sequences = {pid: self._sequences[pid] for pid in self._sequences if pid in selected}
+        new_pm._order_mode = self._order_mode
+        new_pm._model_engine = self._model_engine
+
+        # carry over derived data if available, subset to matching ids
+        if self.identity_table is not None:
+            mask = (
+                self.identity_table["ORF1"].isin(selected) &
+                self.identity_table["ORF2"].isin(selected)
+            )
+            new_pm.identity_table = self.identity_table[mask].reset_index(drop=True)
+            new_pm.high_similarity_pairs = [
+                (o1, o2, i) for o1, o2, i in self.high_similarity_pairs
+                if o1 in selected and o2 in selected
+            ]
+
+        if self.model_info_by_orf is not None:
+            new_pm.model_info_by_orf = self.model_info_by_orf[
+                self.model_info_by_orf["id"].isin(selected)
+            ].reset_index(drop=True)
+
+        if self.model_info_by_model is not None:
+            new_pm.model_info_by_model = self.model_info_by_model[
+                self.model_info_by_model["id"].isin(selected)
+            ].reset_index(drop=True)
+
+        logger.info(f"filter() → {len(new_pm)} sequences kept from {len(self)}")
+        return new_pm
     
     
