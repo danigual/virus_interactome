@@ -1,5 +1,7 @@
 import pytest
 import logging
+from pathlib import Path
+from unittest.mock import patch
 from virus_interactome.proteome_manager import ProteomeManager
 
 
@@ -383,3 +385,194 @@ def test_normalize_fasta_headers_output_loadable(tmp_path):
 
     assert "Hexon_fiber_major" in pm.sequences
     assert "DNA_polymerase" in pm.sequences
+
+
+# =============================================================================
+# _get_orf_id_from_path
+# =============================================================================
+
+def test_get_orf_id_af3_returns_parent_dir_name(tmp_path):
+    model_file = tmp_path / "E1A" / "model_0.cif"
+    assert ProteomeManager._get_orf_id_from_path(str(model_file), "af3") == "E1A"
+
+
+def test_get_orf_id_boltz_returns_parent_dir_name(tmp_path):
+    model_file = tmp_path / "pVII" / "model_0.cif"
+    assert ProteomeManager._get_orf_id_from_path(str(model_file), "boltz") == "pVII"
+
+
+def test_get_orf_id_colabfold_orf_token_in_basename(tmp_path):
+    model_file = tmp_path / "E1A" / "prefix_ORF3_model_1_rank_001.pdb"
+    assert ProteomeManager._get_orf_id_from_path(str(model_file), "colabfold") == "ORF3"
+
+
+def test_get_orf_id_colabfold_fallback_model_split(tmp_path):
+    model_file = tmp_path / "E1A" / "E1A_model_1_rank_001.pdb"
+    assert ProteomeManager._get_orf_id_from_path(str(model_file), "colabfold") == "E1A"
+
+
+def test_get_orf_id_colabfold_no_marker_returns_full_basename(tmp_path):
+    model_file = tmp_path / "E1A" / "myfile.pdb"
+    assert ProteomeManager._get_orf_id_from_path(str(model_file), "colabfold") == "myfile.pdb"
+
+
+def test_get_orf_id_unknown_engine_returns_none(tmp_path):
+    model_file = tmp_path / "E1A" / "model_0.cif"
+    assert ProteomeManager._get_orf_id_from_path(str(model_file), "unknown_engine") is None
+
+
+# =============================================================================
+# load_model_info helpers
+# =============================================================================
+
+def _make_model_dir(tmp_path, orfs, file_ext="cif", n_models=2):
+    """Create a fake engine output directory: tmp_path/{orf}/model_{i}.{ext}"""
+    for orf in orfs:
+        orf_dir = tmp_path / orf
+        orf_dir.mkdir(exist_ok=True)
+        for i in range(n_models):
+            (orf_dir / f"model_{i}.{file_ext}").touch()
+    return tmp_path
+
+
+def _mock_monomer(path, engine):
+    """Synchronous stand-in for load_model_info_monomer."""
+    orf_id = ProteomeManager._get_orf_id_from_path(path, engine)
+    return {"ORF": orf_id, "Model_num": None, "ipTM": 0.7, "pTM": 0.8,
+            "mean_plddt": 75.0, "mean_pae": 5.0}
+
+
+class _SyncPool:
+    """Drop-in for ProcessPoolExecutor that runs work in-process."""
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
+    def map(self, fn, iterable): return list(map(fn, iterable))
+
+
+# =============================================================================
+# load_model_info tests
+# =============================================================================
+
+def test_load_model_info_all_match_no_warnings(tmp_path, caplog):
+    model_dir = _make_model_dir(tmp_path, ["E1A", "pVII"], n_models=2)
+    pm = ProteomeManager()
+    pm.sequences = {"E1A": "MKTAY", "pVII": "GVALS"}
+
+    with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool), \
+         patch.object(ProteomeManager, "load_model_info_monomer", side_effect=_mock_monomer):
+        caplog.set_level(logging.WARNING)
+        df = pm.load_model_info(str(model_dir), engine="AF3")
+
+    assert len(df) == 4  # 2 ORFs × 2 models
+    assert set(df["ORF"]) == {"E1A", "pVII"}
+    assert "skipping" not in caplog.text
+
+
+def test_load_model_info_missing_structure_warns(tmp_path, caplog):
+    model_dir = _make_model_dir(tmp_path, ["E1A"], n_models=1)
+    pm = ProteomeManager()
+    pm.sequences = {"E1A": "MKTAY", "pX": "GVALS"}  # pX has no models
+
+    with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool), \
+         patch.object(ProteomeManager, "load_model_info_monomer", side_effect=_mock_monomer):
+        caplog.set_level(logging.WARNING)
+        pm.load_model_info(str(model_dir), engine="AF3")
+
+    assert "pX" in caplog.text
+    assert "sequence loaded but no model files found" in caplog.text
+
+
+def test_load_model_info_missing_sequence_warns(tmp_path, caplog):
+    model_dir = _make_model_dir(tmp_path, ["E1A", "pVII"], n_models=1)
+    pm = ProteomeManager()
+    pm.sequences = {"E1A": "MKTAY"}  # pVII has models but no sequence
+
+    with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool), \
+         patch.object(ProteomeManager, "load_model_info_monomer", side_effect=_mock_monomer):
+        caplog.set_level(logging.WARNING)
+        pm.load_model_info(str(model_dir), engine="AF3")
+
+    assert "pVII" in caplog.text
+    assert "model files found but no sequence" in caplog.text
+
+
+def test_load_model_info_no_sequences_processes_all(tmp_path, caplog):
+    model_dir = _make_model_dir(tmp_path, ["E1A", "pVII"], n_models=2)
+    pm = ProteomeManager()  # no FASTA loaded → sequences = {}
+
+    with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool), \
+         patch.object(ProteomeManager, "load_model_info_monomer", side_effect=_mock_monomer):
+        caplog.set_level(logging.INFO)
+        df = pm.load_model_info(str(model_dir), engine="AF3")
+
+    assert len(df) == 4
+    assert "No sequences loaded" in caplog.text
+
+
+def test_load_model_info_no_valid_files_returns_empty_df(tmp_path, caplog):
+    model_dir = _make_model_dir(tmp_path, ["pVII"], n_models=1)
+    pm = ProteomeManager()
+    pm.sequences = {"E1A": "MKTAY"}  # no intersection
+
+    with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool), \
+         patch.object(ProteomeManager, "load_model_info_monomer", side_effect=_mock_monomer):
+        caplog.set_level(logging.WARNING)
+        df = pm.load_model_info(str(model_dir), engine="AF3")
+
+    assert df.empty
+    assert "No valid model files" in caplog.text
+
+
+def test_load_model_info_case_insensitive_match_resolves(tmp_path, caplog):
+    model_dir = _make_model_dir(tmp_path, ["e1a"], n_models=1)  # lowercase dir
+    pm = ProteomeManager()
+    pm.sequences = {"E1A": "MKTAY"}  # uppercase key
+
+    with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool), \
+         patch.object(ProteomeManager, "load_model_info_monomer", side_effect=_mock_monomer):
+        caplog.set_level(logging.WARNING)
+        df = pm.load_model_info(str(model_dir), engine="AF3")
+
+    assert len(df) == 1
+    assert "case mismatch" in caplog.text
+    assert df.iloc[0]["ORF"] == "e1a"  # mock returns raw path parent name
+
+
+def test_load_model_info_custom_file_ext_pdb(tmp_path):
+    model_dir = _make_model_dir(tmp_path, ["E1A"], file_ext="pdb", n_models=2)
+    pm = ProteomeManager()
+    pm.sequences = {"E1A": "MKTAY"}
+
+    with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool), \
+         patch.object(ProteomeManager, "load_model_info_monomer", side_effect=_mock_monomer):
+        df = pm.load_model_info(str(model_dir), engine="AF3", file_ext="pdb")
+
+    assert len(df) == 2
+
+
+def test_load_model_info_default_ext_ignores_pdb_files(tmp_path):
+    """With default file_ext='cif', .pdb files in the same dir are not picked up."""
+    model_dir = _make_model_dir(tmp_path, ["E1A"], file_ext="pdb", n_models=2)
+    pm = ProteomeManager()
+    pm.sequences = {"E1A": "MKTAY"}
+
+    with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool), \
+         patch.object(ProteomeManager, "load_model_info_monomer", side_effect=_mock_monomer):
+        df = pm.load_model_info(str(model_dir), engine="AF3")  # file_ext="cif" by default
+
+    assert df.empty
+
+
+def test_load_model_info_sets_model_info_attributes(tmp_path):
+    model_dir = _make_model_dir(tmp_path, ["E1A"], n_models=2)
+    pm = ProteomeManager()
+    pm.sequences = {"E1A": "MKTAY"}
+
+    with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool), \
+         patch.object(ProteomeManager, "load_model_info_monomer", side_effect=_mock_monomer):
+        pm.load_model_info(str(model_dir), engine="AF3")
+
+    assert pm.model_info is not None
+    assert pm.model_info_extended is not None
+    assert "ORF" in pm.model_info_extended.columns
+    assert len(pm.model_info_extended) == 1  # 1 ORF, averaged across models
