@@ -75,6 +75,21 @@ class ProteomeManager:
         self.load_proteome(fasta_file)
 
     @staticmethod
+    def _get_orf_id_from_path(path: str, engine: str) -> Optional[str]:
+        """Return the ORF ID encoded in a model file path (engine-specific)."""
+        if engine.lower() in ("af3", "boltz"):
+            return Path(path).parent.name
+        elif engine.lower() == "colabfold":
+            basename = os.path.basename(path)
+            for part in basename.split("_"):
+                if "ORF" in part:
+                    return part
+            if "_model_" in basename:
+                return basename.split("_model_")[0]
+            return basename
+        return None
+
+    @staticmethod
     def _compute_identity(args):
         from Bio import pairwise2
         i, j, seq1, seq2 = args
@@ -237,10 +252,9 @@ class ProteomeManager:
         self._file_path = fasta_file
         logger.info(f"Proteome loaded successfully with {len(proteome_dict)} proteins.")
 
-        ## Computing sequence similarity 
-
-        logger.info("Computing sequence identity matrix...")
-        similarity_data, similarity_matrix = self.compute_identity_matrix(n_jobs=10, similarity_threshold=0.95)
+        if self.sequences:
+            logger.info("Computing sequence identity matrix...")
+            self.compute_identity_matrix(n_jobs=10, similarity_threshold=0.95)
         # self.identity_matrix = similarity_matrix
         # self.identity_table = similarity_data
         # logger.info(f"Proteome loaded successfully with {len(proteome_dict)} proteins.")
@@ -628,18 +642,16 @@ class ProteomeManager:
         Load and parse model information from AlphaFold/Boltz output directories.
         """
 
-        # Create MoleculeModel instance
-        orf_id = None
         model_number = None
         if engine.lower() == "af3":
             full_data = process_full_data_af3(model_dir)
-            # molecule_model = MoleculeModel.from_af3(model_file)
+            orf_id = Path(model_dir).parent.name
         elif engine.lower() == "boltz":
             full_data = process_full_data_boltz(model_dir)
-            # molecule_model = MoleculeModel.from_boltz(model_file)
+            orf_id = Path(model_dir).parent.name
         elif engine.lower() == "colabfold":
             full_data = process_full_data_colabfold(model_dir)
-            orf_id = [i for i in os.path.basename(model_dir).split("_") if "ORF" in i][0]
+            orf_id = ProteomeManager._get_orf_id_from_path(model_dir, "colabfold")
             model_number = int(os.path.basename(model_dir).split("model_")[1].split("_")[0])
         else:
             raise ValueError("engine should be 'AF3', 'Boltz' or 'ColabFold'")
@@ -654,25 +666,87 @@ class ProteomeManager:
         
         return summary_dict
     
-    def load_model_info(self, model_dir:str, engine:str = "AF3") -> pd.DataFrame:
+    def load_model_info(self, model_dir: str, engine: str = "AF3", file_ext: str = "cif") -> pd.DataFrame:
         """
-        Load and parse model information from AlphaFold/Boltz output directories.
+        Load and parse model information from AlphaFold/Boltz/ColabFold output directories.
+
+        Only processes ORFs that have both a sequence in ``self.sequences`` and at least one
+        model file on disk.  ORFs missing either are skipped with a warning.  If no proteome
+        has been loaded, all found model files are processed.
+
+        Parameters
+        ----------
+        model_dir : str
+            Root directory containing one sub-folder per ORF, each holding model files.
+        engine : str
+            One of ``"AF3"``, ``"Boltz"``, or ``"ColabFold"`` (case-insensitive).
+        file_ext : str
+            Extension of model files to search for (default ``"cif"``; use ``"pdb"`` if needed).
+
+        Returns
+        -------
+        pd.DataFrame
+            Per-model summary rows (same as ``self.model_info``).
         """
         from glob import glob
 
-        model_df = []
-        all_model_data = glob(f"{model_dir}/*/*pdb")# Just for testing, limit to 10 models
+        all_model_data = glob(f"{model_dir}/*/*.{file_ext}")
 
+        # Build orf_id → [file paths] mapping
+        orf_to_files: dict[str, list[str]] = {}
+        for f in all_model_data:
+            orf_id = self._get_orf_id_from_path(f, engine)
+            if orf_id is not None:
+                orf_to_files.setdefault(orf_id, []).append(f)
+
+        if self.sequences:
+            sequence_orfs = set(self.sequences.keys())
+            model_orfs_raw = set(orf_to_files.keys())
+
+            # Defensive: resolve case-insensitive matches before flagging as missing
+            seq_lower_map = {k.lower(): k for k in sequence_orfs}
+            resolved_orf_to_files: dict[str, list[str]] = {}
+            for raw_orf, files in orf_to_files.items():
+                if raw_orf in sequence_orfs:
+                    resolved_orf_to_files.setdefault(raw_orf, []).extend(files)
+                elif raw_orf.lower() in seq_lower_map:
+                    canonical = seq_lower_map[raw_orf.lower()]
+                    logger.warning(
+                        "ORF ID case mismatch: model dir '%s' matched to sequence key '%s'. "
+                        "Using canonical ID.", raw_orf, canonical
+                    )
+                    resolved_orf_to_files.setdefault(canonical, []).extend(files)
+                else:
+                    resolved_orf_to_files.setdefault(raw_orf, []).extend(files)
+
+            model_orfs = set(resolved_orf_to_files.keys())
+
+            for orf in sorted(sequence_orfs - model_orfs):
+                logger.warning("ORF '%s': sequence loaded but no model files found — skipping.", orf)
+            for orf in sorted(model_orfs - sequence_orfs):
+                logger.warning("ORF '%s': model files found but no sequence in proteome — skipping.", orf)
+
+            valid_orfs = sequence_orfs & model_orfs
+            filtered_files = [f for orf in valid_orfs for f in resolved_orf_to_files[orf]]
+        else:
+            logger.info("No sequences loaded; processing all model files found in '%s'.", model_dir)
+            filtered_files = all_model_data
+
+        if not filtered_files:
+            logger.warning("No valid model files to process after cross-checking sequences and structures.")
+            return pd.DataFrame()
+
+        model_df = []
         with concurrent.futures.ProcessPoolExecutor() as executor:
             worker = partial(self.load_model_info_monomer, engine=engine)
-            for res in tqdm(executor.map(worker, all_model_data)): #For testing
+            for res in tqdm(executor.map(worker, filtered_files), total=len(filtered_files), desc="Loading model info"):
                 model_df.append(res)
 
         df = pd.DataFrame(model_df)
-        grouped_df = df.groupby("ORF").mean().drop("Model_num", axis=1).reset_index()    
+        grouped_df = df.groupby("ORF").mean().drop("Model_num", axis=1, errors="ignore").reset_index()
         self.model_info = df
         self.model_info_extended = grouped_df
-        return pd.DataFrame(model_df)
+        return df
 
     
     
