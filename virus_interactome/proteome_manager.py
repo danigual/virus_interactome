@@ -44,8 +44,9 @@ class ProteomeManager:
         self.sequence_properties = None
         self._ids_cache: Optional[Tuple[str, ...]] = None
         self._order_mode: str = "insertion"
-        self.model_info_extended = None
-        self.model_info_extended = None
+        self.model_info: Optional[pd.DataFrame] = None
+        self.model_info_extended: Optional[pd.DataFrame] = None
+        self._model_engine: Optional[str] = None
 
         if fasta_file:
             self.load_proteome(fasta_file)
@@ -59,7 +60,10 @@ class ProteomeManager:
         Deterministic order: FASTA insertion order or alphabetical (configurable).
         """
         if self._ids_cache is None:
-            self._ids_cache = tuple(sorted(self.sequences.keys()))
+            if self._order_mode == "insertion":
+                self._ids_cache = tuple(self.sequences.keys())
+            else:
+                self._ids_cache = tuple(sorted(self.sequences.keys()))
         return self._ids_cache
 
     @staticmethod
@@ -297,10 +301,9 @@ class ProteomeManager:
 
         df_similarity_matrix = pd.DataFrame(matrix, index=labels, columns=labels)
         df_similarity = pd.DataFrame(df_similarity, columns=['ORF1', 'ORF2', 'Identity'])
-        self.high_similarity_pairs = pd.DataFrame(self.high_similarity_pairs, columns=['ORF1', 'ORF2', 'Identity'])
-        self.identity_matrix = df_similarity
+        self.identity_matrix = df_similarity_matrix
         self.identity_table = df_similarity
-        return df_similarity, df_similarity_matrix
+        return df_similarity_matrix
 
     def plot_identity_heatmap(self, output_image: str, cmap: str = "coolwarm", vmin: float = 0.2, vmax: float = 1.0, show: bool = False):
         """
@@ -373,7 +376,7 @@ class ProteomeManager:
         dict or list
             Matching IDs (and sequences if return_sequences=True).
         """
-        import matplotlib.pyplot as plt
+        import re
         regex = re.compile(pattern)
         matches = {pid: seq for pid, seq in self.sequences.items() if regex.search(pid)}
         return matches if return_sequences else list(matches.keys())
@@ -389,8 +392,6 @@ class ProteomeManager:
             ['id', 'length', 'molecular_weight', 'isoelectric_point',
             'instability_index', 'gravy', 'aromaticity']
         """
-        from Bio.SeqUtils import molecular_weight, IsoelectricPoint
-        from Bio.SeqUtils.ProtParam import ProteinAnalysis
         if not self.sequences:
             raise ValueError("Proteome is empty. Load a proteome first.")
 
@@ -625,17 +626,153 @@ class ProteomeManager:
     # -------------------------
     # 4. Monomer prediction
     # -------------------------
-    def create_af3_jobs(self, output_dir: str, template: str) -> None:
+    def describe_orf(
+        self,
+        orf_ids: str | list[str],
+        identity_threshold: Optional[float] = None,
+        interactome_df: Optional[pd.DataFrame] = None,
+        foldseek_df: Optional[pd.DataFrame] = None,
+        iptm_threshold: float = 0.6,
+    ) -> None:
         """
-        Generate input files for AlphaFold3 jobs.
-        """
-        pass
+        Print an interactive profile for one or more ORFs.
 
-    def create_boltz_jobs(self, output_dir: str, template: str) -> None:
+        Parameters
+        ----------
+        orf_ids : str or list[str]
+            ORF ID(s) to describe.
+        identity_threshold : float, optional
+            0–100 identity cutoff for the final similarity prompt.
+            If provided, skips the interactive input() call.
+        interactome_df : pd.DataFrame, optional
+            Output of InteractomeProcessor — must contain a 'PPI' column.
+        foldseek_df : pd.DataFrame, optional
+            Output of run_foldseek_search — must contain a 'protein_id' column.
+        iptm_threshold : float
+            Default ipTM cutoff for the PPI interactive filter (default 0.6).
         """
-        Generate input files for Boltz2 jobs.
-        """
-        pass
+        if isinstance(orf_ids, str):
+            orf_ids = [orf_ids]
+
+        SEP = "=" * 62
+
+        for orf_id in orf_ids:
+            print(f"\n{SEP}")
+            print(f"  ORF: {orf_id}")
+            print(SEP)
+
+            if orf_id not in self.sequences:
+                print(f"  [!] '{orf_id}' not found in proteome.")
+                continue
+
+            seq = self.sequences[orf_id]
+
+            # ── SEQUENCE ──────────────────────────────────────────────
+            print("\n[SEQUENCE]")
+            analysis = ProteinAnalysis(seq)
+            mw = molecular_weight(seq, seq_type="protein")
+            pi = IsoelectricPoint(seq).pi()
+            charge_ph7 = IsoelectricPoint(seq).charge_at_pH(7.0)
+            preview = seq[:30] + ("..." if len(seq) > 30 else "")
+            print(f"  Length      : {len(seq)} aa")
+            print(f"  Preview     : {preview}")
+            print(f"  MW          : {mw:.1f} Da")
+            print(f"  pI          : {pi:.2f}")
+            print(f"  Charge@pH7  : {charge_ph7:+.2f}")
+            print(f"  GRAVY       : {analysis.gravy():.3f}")
+            print(f"  Aromaticity : {analysis.aromaticity():.3f}")
+            instability = analysis.instability_index()
+            print(f"  Instability : {instability:.1f} ({'unstable' if instability > 40 else 'stable'})")
+            aa_counts = analysis.count_amino_acids()
+            aa_str = ", ".join(f"{aa}:{cnt}" for aa, cnt in sorted(aa_counts.items()) if cnt > 0)
+            print(f"  AA comp     : {aa_str}")
+
+            # ── MODELS ────────────────────────────────────────────────
+            print("\n[MODELS]")
+            if self.model_info_extended is not None and orf_id in self.model_info_extended["ORF"].values:
+                row = self.model_info_extended[self.model_info_extended["ORF"] == orf_id].iloc[0]
+                n_models = len(self.model_info[self.model_info["ORF"] == orf_id])
+                print(f"  Engine      : {self._model_engine or 'unknown'}")
+                print(f"  N models    : {n_models}")
+                for col in ["pTM", "mean_plddt", "mean_pae"]:
+                    if col in row.index:
+                        print(f"  {col:<12}: {row[col]:.3f}")
+            else:
+                print("  No model data. Run load_model_info() first.")
+
+            # ── SIMILARITY ────────────────────────────────────────────
+            print("\n[SIMILARITY]  (pairs ≥ 0.95 precomputed)")
+            if self.identity_table is None:
+                print("  Not computed. Run compute_identity_matrix() first.")
+            else:
+                matches = [
+                    (o1, o2, ident) for o1, o2, ident in self.high_similarity_pairs
+                    if o1 == orf_id or o2 == orf_id
+                ]
+                if not matches:
+                    print("  None found.")
+                else:
+                    for o1, o2, ident in matches:
+                        partner = o2 if o1 == orf_id else o1
+                        print(f"  {partner:<30} identity={ident:.2%}")
+
+            # ── PPIs ──────────────────────────────────────────────────
+            if interactome_df is not None:
+                print("\n[PPIs]")
+                ppi_mask = interactome_df["PPI"].apply(lambda p: orf_id in str(p).split("__"))
+                df_ppi = interactome_df[ppi_mask]
+                print(f"  Total PPIs  : {len(df_ppi)}")
+                if "Tier" in df_ppi.columns:
+                    for tier, cnt in df_ppi["Tier"].value_counts().items():
+                        print(f"    {tier}: {cnt}")
+                if "ipTM" in df_ppi.columns and not df_ppi.empty:
+                    try:
+                        raw = input(f"\n  Show PPIs with ipTM > {iptm_threshold} ? [Enter=yes / type threshold / 'n'=skip]: ").strip()
+                        if raw.lower() == "n":
+                            pass
+                        else:
+                            threshold = float(raw) if raw else iptm_threshold
+                            show_cols = [c for c in ["PPI", "ipTM", "Tier"] if c in df_ppi.columns]
+                            df_filtered = df_ppi[df_ppi["ipTM"] > threshold][show_cols]
+                            print(df_filtered.to_string(index=False) if not df_filtered.empty else "  (no results above threshold)")
+                    except (EOFError, ValueError):
+                        pass
+
+            # ── FOLDSEEK ──────────────────────────────────────────────
+            if foldseek_df is not None:
+                print("\n[FOLDSEEK]")
+                fs_rows = foldseek_df[foldseek_df["protein_id"] == orf_id]
+                if fs_rows.empty:
+                    print("  No hits found.")
+                else:
+                    cols = [c for c in ["rank", "target", "fident", "alnlen", "evalue", "bits"] if c in fs_rows.columns]
+                    print(fs_rows[cols].to_string(index=False))
+
+        # ── IDENTITY THRESHOLD PROMPT (after all ORFs) ────────────────
+        if self.identity_table is not None and not self.identity_table.empty:
+            if identity_threshold is None:
+                try:
+                    raw = input("\n[IDENTITY] Enter threshold (0–100%) to list similar pairs, or Enter to skip: ").strip()
+                    identity_threshold = float(raw) if raw else None
+                except (EOFError, ValueError):
+                    identity_threshold = None
+
+            if identity_threshold is not None:
+                thresh = identity_threshold / 100.0
+                for orf_id in orf_ids:
+                    mask = (
+                        (
+                            (self.identity_table["ORF1"] == orf_id)
+                            | (self.identity_table["ORF2"] == orf_id)
+                        )
+                        & (self.identity_table["Identity"] >= thresh)
+                    )
+                    partners = self.identity_table[mask]
+                    if not partners.empty:
+                        print(f"\n  {orf_id} — partners ≥ {identity_threshold:.0f}%:")
+                        for _, r in partners.iterrows():
+                            partner = r["ORF2"] if r["ORF1"] == orf_id else r["ORF1"]
+                            print(f"    {partner:<30} {r['Identity']:.2%}")
 
     def load_model_info_monomer(self, model_dir: str, engine: str) -> pd.DataFrame:
         """
@@ -746,6 +883,7 @@ class ProteomeManager:
         grouped_df = df.groupby("ORF").mean().drop("Model_num", axis=1, errors="ignore").reset_index()
         self.model_info = df
         self.model_info_extended = grouped_df
+        self._model_engine = engine
         return df
 
     
