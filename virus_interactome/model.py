@@ -45,7 +45,7 @@ class Model:
     def __init__(
         self,
         model_path: str | Path,
-        engine: Engine | str,
+        engine: Engine | str = Engine.COLABFOLD,
         extra_files: dict | None = None,   # e.g. {"scores": "path/to/scores.json"}
         is_complex: bool | None = None,    # None → infer from structure
     ):
@@ -382,8 +382,8 @@ class Model:
         return ModelMetrics(
                 pae = np.array(full_data.get("pae", 100)),
                 ptm = full_data.get("ptm", 0),
-                iptm = full_data.get("iptm", 0),
-                iptm_chain_pair = np.array(full_data.get("chain_pair_iptm")),
+                iptm = full_data.get("iptm", iptm_chain_pair[0,0]),
+                iptm_chain_pair = iptm_chain_pair,
                 atom_plddts = np.array(mol.beta),
                 # atom_plddts = np.array(full_data.get("atom_plddts")),
                 ca_plddts = np.array(plddt_data), # CA used as proxy (no separate CB file)
