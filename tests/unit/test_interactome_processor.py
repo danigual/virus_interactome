@@ -247,7 +247,7 @@ class TestProcessPpi:
         assert (parent / f"{stem}_cluster.png").exists()
 
     def test_invalid_model_type_raises(self, af3_model_in_ppi_dir):
-        with pytest.raises(ValueError, match="not supported"):
+        with pytest.raises(ValueError, match="not a valid Engine"):
             InteractomeProcessor.process_ppi(str(af3_model_in_ppi_dir), model_type="InvalidEngine")
 
     def test_prefix_stripping(self, af3_model_in_ppi_dir):
