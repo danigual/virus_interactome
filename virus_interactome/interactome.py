@@ -18,7 +18,8 @@ from typing import Dict, Iterable, List, Tuple, Optional, Any, Callable, Union
 from pathlib import Path
 from moleculekit.molecule import Molecule
 
-from .utils import load_json, load_boltz_input, check_sequence_validity, process_full_data_af3, process_full_data_boltz, process_full_data_colabfold
+from .utils import load_json, load_boltz_input, check_sequence_validity, parse_msa_metrics
+from .model import Engine, Model
 from .proteome_manager import ProteomeManager
 from .metrics import calculate_all_metrics
 from .plotting import plot_boxplots, plot_iptm_vs_ptm, plot_pae_clusters, plot_paes, plot_plddt
@@ -1716,93 +1717,78 @@ class InteractomeProcessor:
         orf_a = parts[0]
         orf_b = parts[1] if len(parts) > 1 else ""
 
-        # Assumes "...model_1..." format.
-        base_name = path_obj.stem # removes .cif or .pdb
-        
-        model_number = int(base_name.split("model_")[-1].split("_")[0])
+        # Load model — single entry point for all engines
+        model = Model(path_obj, engine=model_type)
+        m   = model._metrics
+        md  = model._model_data
 
-        # Load Full Data
-        if model_type.lower() == "af3":
-            full_data = process_full_data_af3(str(path_obj))
-        elif model_type.lower() == "boltz":
-            full_data = process_full_data_boltz(str(path_obj))
-        elif model_type.lower() == "colabfold":
-            full_data = process_full_data_colabfold(str(path_obj))
-        else:
-            raise ValueError(f"Model type '{model_type}' not supported. Use 'AF3', 'Boltz' or 'ColabFold'.")
+        model_number = model.model_num
+        chain_ids    = md.token_chain_ids
 
-        ## Plotting pLDDT
+        # Plotting pLDDT
         plddt_path = path_obj.with_name(f"{path_obj.stem}_plddt.png")
+        plot_plddt(m.ca_plddts, md.chain_boundaries_by_res, chain_ids, str(plddt_path))
 
-        plot_plddt(full_data["ca_plddts"],
-                   full_data["chain_boundaries_by_res"],
-                   full_data["token_chain_ids"],
-                   str(plddt_path))
-        
         # Plotting PAE
         pae_path = path_obj.with_name(f"{path_obj.stem}_pae.png")
-        
-        plot_paes(full_data["pae"],
-                  full_data["chain_boundaries_by_res"],
-                  set(full_data["token_chain_ids"]),
-                  f"{full_data.get('iptm', 'N/A')} ipTM - {full_data.get('ptm', 'N/A')} pTM",
-                  str(pae_path))
+        plot_paes(m.pae, md.chain_boundaries_by_res, set(chain_ids),
+                  f"{m.iptm} ipTM - {m.ptm} pTM", str(pae_path))
 
-        # Interface Analysis (Only for Pairs). Not for homomers
-        all_metrics = {}
+        # Interface analysis — heterodimers only
+        all_metrics  = {}
         cluster_data = pd.DataFrame()
-
-        chain_ids = full_data.get("token_chain_ids")
-        unique_chains = sorted(list(set(chain_ids))) if chain_ids is not None else []
+        unique_chains = sorted(set(chain_ids)) if chain_ids is not None else []
 
         if len(unique_chains) == 2:
-            # We explicitly identify chains
             chain_a, chain_b = unique_chains[0], unique_chains[1]
 
-            # Metrics
-            all_metrics = calculate_all_metrics(str(path_obj), full_data)
+            metrics_input = {
+                "pae":            m.pae,
+                "cb_plddts":      m.cb_plddts,
+                "token_chain_ids": chain_ids,
+            }
+            all_metrics = calculate_all_metrics(str(path_obj), metrics_input)
 
-            # Symmetrized PAE Matrix Calculation
-            pae = full_data["pae"]
-
-            # Matrix 1: Effect of A on B
-            pae_submatrix_1 = pae[chain_ids == chain_a][:, chain_ids == chain_b]
-            # Matrix 2: Effect of B on A (Transposed)
-            pae_submatrix_2 = pae[chain_ids == chain_b][:, chain_ids == chain_a].T
-            # Mean error between directions
+            pae_submatrix_1 = m.pae[chain_ids == chain_a][:, chain_ids == chain_b]
+            pae_submatrix_2 = m.pae[chain_ids == chain_b][:, chain_ids == chain_a].T
             submatrix = np.mean([pae_submatrix_1, pae_submatrix_2], axis=0)
 
-            # Clustering
             low_coords, cluster_labels = InteractomeProcessor.cluster_pae(submatrix)
 
-            # Plot clusters
             cluster_plot_path = path_obj.with_name(f"{path_obj.stem}_cluster.png")
-            plot_pae_clusters(submatrix,low_coords, cluster_labels, save_name=str(cluster_plot_path))
+            plot_pae_clusters(submatrix, low_coords, cluster_labels, save_name=str(cluster_plot_path))
 
             cluster_data = InteractomeProcessor.cluster_info(low_coords=low_coords, cluster_labels=cluster_labels)
-            
-            # Enrich DataFrame with Metadata
             if not cluster_data.empty:
-                cluster_data["PPI"] = ppi_id 
-                cluster_data["model_num"] = model_number 
-                cluster_data["path"] = str (path_obj) 
-               
+                cluster_data["PPI"]       = ppi_id
+                cluster_data["model_num"] = model_number
+                cluster_data["path"]      = str(path_obj)
 
-        # Return summary metrics and cluster details
-        summary_dict = {"PPI": ppi_id,
-                "ORF_A": orf_a,
-                "ORF_B": orf_b,
-                "Folder": str(path_obj.parent), 
-                "Model_num": model_number, 
-                "ipTM": full_data["iptm"], 
-                "pTM": full_data["ptm"],
-                "pTM_chain_A": full_data["iptm_chain_pair"][0][0], 
-                "pTM_chain_B": full_data["iptm_chain_pair"][1][1], 
-                "msa_depth": full_data.get("msa_depth", np.nan),
-                "msa_coverage": full_data.get("msa_coverage", np.nan),
-                **all_metrics
-                }
-        
+        # MSA metrics — only available for ColabFold (.a3m alongside the .cif)
+        msa_metrics = {"msa_depth": np.nan, "msa_coverage": np.nan}
+        if model._engine == Engine.COLABFOLD:
+            stem    = path_obj.stem
+            a3m_try = [path_obj.parent / f"{stem.split('_unrelaxed_')[0]}.a3m",
+                       path_obj.parent.parent / f"{stem.split('_unrelaxed_')[0]}.a3m"]
+            for a3m in a3m_try:
+                if a3m.exists():
+                    msa_metrics = parse_msa_metrics(str(a3m))
+                    break
+
+        summary_dict = {
+            "PPI":          ppi_id,
+            "ORF_A":        orf_a,
+            "ORF_B":        orf_b,
+            "Folder":       str(path_obj.parent),
+            "Model_num":    model_number,
+            "ipTM":         m.iptm,
+            "pTM":          m.ptm,
+            "pTM_chain_A":  m.iptm_chain_pair[0][0],
+            "pTM_chain_B":  m.iptm_chain_pair[1][1],
+            **msa_metrics,
+            **all_metrics,
+        }
+
         return summary_dict, cluster_data
     
   
@@ -1961,21 +1947,13 @@ class InteractomeProcessor:
             "n_residues": np.nan,
         }
         try:
-            eng = engine.lower()
-            if eng == "af3":
-                full_data = process_full_data_af3(str(cif_path))
-            elif eng in ("boltz", "boltz2"):
-                full_data = process_full_data_boltz(str(cif_path))
-            elif eng == "colabfold":
-                full_data = process_full_data_colabfold(str(cif_path))
-            else:
-                raise ValueError(f"Unsupported engine '{engine}'.")
-
-            plddts: np.ndarray = full_data["ca_plddts"]
+            engine_norm = "boltz" if str(engine).lower() == "boltz2" else engine
+            model  = Model(cif_path, engine=engine_norm)
+            plddts = model._metrics.ca_plddts
             return {
-                "plddt_mean": float(np.mean(plddts)),
+                "plddt_mean":   float(np.mean(plddts)),
                 "plddt_median": float(np.median(plddts)),
-                "n_residues": int(len(plddts)),
+                "n_residues":   int(len(plddts)),
             }
         except Exception as exc:
             logger.warning(f"Could not extract pLDDT from {cif_path}: {exc}")
@@ -2160,12 +2138,14 @@ class InteractomeAnalyzer:
         def _ipsae_classify(row) -> str:
             if ipsae_col not in row or pdockq2_col not in row:
                 return "Unknown"
-            msa_val     = row.get(msa_col, 0)
+            msa_val     = row.get(msa_col, np.nan)
             ipsae_val   = row[ipsae_col]
             pdockq2_val = row[pdockq2_col]
-            if ipsae_val > ipsae_threshold and pdockq2_val > pdockq2_threshold and msa_val > msa_threshold:
+            good_struct = ipsae_val > ipsae_threshold and pdockq2_val > pdockq2_threshold
+            msa_ok      = pd.isna(msa_val) or msa_val > msa_threshold
+            if good_struct and msa_ok:
                 return "Tier 1 (High Confidence)"
-            if ipsae_val > ipsae_threshold and pdockq2_val > pdockq2_threshold and msa_val <= msa_threshold:
+            if good_struct and not msa_ok:
                 return "Tier 2 (Specific/Novel)"
             if ipsae_val > ipsae_threshold and pdockq2_val <= pdockq2_threshold:
                 return "Tier 3 (Weak/Dynamic)"
