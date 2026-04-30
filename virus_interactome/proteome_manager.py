@@ -1123,6 +1123,16 @@ class ProteomeManager:
                 self.model_info_by_model["id"].isin(selected)
             ].reset_index(drop=True)
 
+        if hasattr(self, "orf_models"):
+            new_pm.orf_models = {k: v for k, v in self.orf_models.items() if k in selected}
+
+        if self.sequence_properties is not None:
+            new_pm.sequence_properties = self.sequence_properties[
+                self.sequence_properties.index.isin(selected)
+            ]
+
+        new_pm.invalid_sequences = dict(self.invalid_sequences)
+
         logger.info(f"filter() → {len(new_pm)} sequences kept from {len(self)}")
         return new_pm
     
