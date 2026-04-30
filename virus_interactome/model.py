@@ -270,14 +270,11 @@ class Model:
                 "scores": parent / f"{stem}.json",
             }
         elif self._engine == Engine.BOLTZ:
-            pae_stem = f"pae_{stem}"
-            plddt_stem = f"plddt_{stem}"
-            pde_stem = f"pde_{stem}"
             return {
-                "scores": parent / "predictions" / "confidence_model_0.json",
-                "pae": parent / f"{pae_stem}.npz",
-                "plddt": parent / f"{plddt_stem}.npz",
-                "pde": parent / f"{pde_stem}.npz"
+                "scores": parent / f"confidence_{stem}.json",
+                "pae":    parent / f"pae_{stem}.npz",
+                "plddt":  parent / f"plddt_{stem}.npz",
+                "pde":    parent / f"pde_{stem}.npz",
             }
         return {}
 
@@ -393,16 +390,41 @@ class Model:
                 chain_boundaries_by_atom = chain_boundaries_by_atom
             )
     
-    def _load_boltz_metrics(self) -> ModelMetrics:
-        pass
-        ## TODO: implement this based on Boltz's output format
-        # import json
-        # path = self._extra_files.get("scores")
-        # data = json.loads(path.read_text())
-        # return ModelMetrics(
-        #     pTM=data["ptm"],
-        #     mean_pLDDT=float(np.mean(data["plddt"])),
-        #     ranking_score=data.get("confidence_score", float("nan")),
-        #     ipTM=data.get("iptm"),
-        # )
+    def _load_boltz_metrics(self) -> tuple[ModelMetrics, ModelData]:
+        mol = self.molecule
+        confidence = load_json(self._extra_files["scores"])
+        pae_data   = np.load(self._extra_files["pae"])["pae"]
+        plddt_data = np.load(self._extra_files["plddt"])["plddt"] * 100  # 0–1 → 0–100
+
+        chain_by_res = mol.chain[mol.name == "CA"]
+        unique_chains = np.unique(chain_by_res)
+
+        chain_boundaries = {}
+        chain_boundaries_by_atom = {}
+        for chain_id in unique_chains:
+            res_idxs  = np.where(chain_by_res == chain_id)[0]
+            atom_idxs = np.where(mol.chain == chain_id)[0]
+            chain_boundaries[chain_id]         = (int(res_idxs.min()), int(res_idxs.max()))
+            chain_boundaries_by_atom[chain_id] = (int(atom_idxs.min()), int(atom_idxs.max()))
+
+        n_chains = len(unique_chains)
+        iptm_chain_pair = np.zeros((n_chains, n_chains))
+        pair_iptm = confidence.get("pair_chains_iptm", {})
+        for i in range(n_chains):
+            for j in range(n_chains):
+                iptm_chain_pair[i, j] = pair_iptm.get(str(i), {}).get(str(j), 0.0)
+
+        return ModelMetrics(
+            pae             = pae_data,
+            ptm             = confidence.get("ptm", 0),
+            iptm            = confidence.get("iptm", 0),
+            iptm_chain_pair = iptm_chain_pair,
+            atom_plddts     = np.array(mol.beta),
+            ca_plddts       = plddt_data,
+            cb_plddts       = plddt_data,
+        ), ModelData(
+            token_chain_ids          = chain_by_res,
+            chain_boundaries_by_res  = chain_boundaries,
+            chain_boundaries_by_atom = chain_boundaries_by_atom,
+        )
 

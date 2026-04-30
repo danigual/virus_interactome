@@ -280,7 +280,6 @@ def boltz_model_in_ppi_dir(tmp_path, data_dir):
 
 
 @pytest.mark.slow
-@pytest.mark.skip(reason="_load_boltz_metrics not yet implemented in Model")
 class TestProcessPpiBoltz:
     def test_boltz_returns_tuple(self, boltz_model_in_ppi_dir):
         """L1726: process_ppi dispatches to process_full_data_boltz."""
