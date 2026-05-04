@@ -4,886 +4,23 @@ import subprocess
 import logging
 import pandas as pd
 import numpy as np
-import yaml
-import json
 import concurrent.futures
-import warnings
 import csv
-import logging
 
 from sklearn.cluster import DBSCAN
 from functools import partial
-from itertools import combinations, product
-from typing import Dict, Iterable, List, Tuple, Optional, Any, Callable, Union
+from typing import Dict, List, Tuple, Optional, Any, Callable, Union
 from pathlib import Path
 from moleculekit.molecule import Molecule
 
-from .utils import load_json, load_boltz_input, check_sequence_validity, parse_msa_metrics
+from .utils import load_json, load_boltz_input, parse_msa_metrics
 from .model import Engine, Model
-from .proteome_manager import ProteomeManager
 from .metrics import calculate_all_metrics
-from .plotting import plot_boxplots, plot_iptm_vs_ptm, plot_pae_clusters, plot_paes, plot_plddt
+from .plotting import plot_pae_clusters, plot_paes, plot_plddt
 
-## Configure logger just in case (best practice)
 logger = logging.getLogger(__name__)
 
-    
-class InteractomeWriter:
-    """
-    Manages the configuration and writing of interactome data.
 
-    This class initializes the environment to analyze interactions within a single
-    proteome (intra) or between two different proteomes (inter). It normalizes the
-    input by converting file paths (str) into ProteomeManager instances.
-
-    Attributes:
-        proteome_a (ProteomeManager): Instance of the first managed proteome.
-        proteome_b (Optional[ProteomeManager]): Instance of the second proteome (if any).
-        mode (str): The operation mode detected; can be "intra" or "inter".
-    """
-
-    def __init__(self, proteome_a: str | ProteomeManager, proteome_b: str | ProteomeManager | None = None):
-
-        """
-        Initializes a new instance of InteractomeWriter.
-
-        Args:
-            proteome_a (str | ProteomeManager): Path to the first proteome file or 
-                an existing ProteomeManager instance. This is mandatory.
-            proteome_b (str | ProteomeManager | None, optional): Path or instance of the 
-                second proteome. If omitted or None, the mode is automatically set 
-                to "intra". Defaults to None.
-
-        Raises:
-            ValueError: If `proteome_a` is neither a string path nor a ProteomeManager 
-                instance.
-            ValueError: If `proteome_b` is neither a string path nor a ProteomeManager 
-                instance nor None.
-            
-        """
-
-        self.proteome_a = None
-        self.proteome_b = None
-        self.mode = "intra" # intra (intrainteractome) or inter (interactome between two proteomes)
-
-        if isinstance(proteome_a, str):
-            self.proteome_a = ProteomeManager(proteome_a)
-        elif isinstance(proteome_a, ProteomeManager):
-            self.proteome_a = proteome_a
-        else:
-            raise ValueError("proteome_a must be a string path or a ProteomeManager instance")
-        
-        if isinstance(proteome_b, str):
-            self.proteome_b = ProteomeManager(proteome_b)
-            self.mode = "inter"
-        elif isinstance(proteome_b, ProteomeManager):
-            self.proteome_b = proteome_b
-            self.mode = "inter"
-        elif proteome_b is None:
-            self.mode = "intra"
-        else:
-            raise ValueError("proteome_b must be a string, ProteomeManager, or None")
-
-    
-    def generate_intra_pairs(self) -> Iterable[Tuple[str, str]]:
-        """
-        Generates unique, unordered heteromeric pairs within Proteome A.
-
-        This method creates combinations of sequences (A, B) where A and B belong 
-        to Proteome A and A != B. This is used for calculating the intra-interactome.
-        
-        Note:
-            - Homomers (A, A) are excluded. Use `generate_homo_pairs()` for those.
-            - The order is canonical (based on the list order) to prevent duplicates 
-              (i.e., (A, B) is generated, but (B, A) is not).
-
-        Returns:
-            Iterable[Tuple[str, str]]: An iterator of tuples, where each tuple 
-            contains two distinct sequence IDs from Proteome A.
-
-        Raises:
-            ValueError: If the instance is not in valid usage (e.g., Proteome A is missing).
-        """
-
-        if self.proteome_a is None:
-             raise ValueError("generate_intra_pairs() requires a valid proteome_a.")
-
-        ids = list(self.proteome_a.sequences.keys())
-
-        return combinations(ids, 2)
-
-    def generate_inter_pairs(self)-> Iterable[Tuple[str, str]]:
-        """
-        Generates the Cartesian product of sequences between Proteome A and Proteome B.
-
-        This method produces all possible pairs (a, b) where 'a' belongs to Proteome A 
-        and 'b' belongs to Proteome B. This is the standard approach for analyzing 
-        inter-species or inter-system interactions.
-
-        Returns:
-            Iterable[Tuple[str, str]]: An iterator yielding tuples (id_a, id_b), 
-            representing the interaction candidates.
-
-        Raises:
-            ValueError: If the instance is not in 'inter' mode or if `proteome_b` 
-            has not been initialized.
-        """
-
-        # Ensure we are in the correct mode to prevent generating invalid data
-        if self.mode != "inter" or self.proteome_b is None:
-            raise ValueError("generate_inter_pairs() requires 'inter' mode with a valid proteome_b.")
-        
-       
-        ids_a = list(self.proteome_a.sequences.keys())
-        ids_b = list(self.proteome_b.sequences.keys())
-
-        return product(ids_a, ids_b)
-
-    def generate_homo_mers(self, nmin: int = 2, nmax: int = 6)-> Iterable[Tuple[str, int]]:
-        """
-        Generates homomeric configurations (oligomers) for sequences in Proteome A.
-
-        This method iterates through all sequences in the proteome and defines
-        oligomeric states ranging from 'nmin' to 'nmax' copies.
-        
-        Note:
-            This is strictly for the 'intra' mode. Homomers generally do not make 
-            sense in an 'inter' context (interactions between two different datasets) 
-            within this pipeline.
-
-        Args:
-            nmin (int, optional): Minimum number of copies (oligomer size). 
-                Must be >= 2. Defaults to 2.
-            nmax (int, optional): Maximum number of copies. 
-                Must be >= nmin. Defaults to 6.
-
-        Yields:
-            Iterable[Tuple[str, int]]: An iterator yielding tuples in the format 
-            (protein_id, num_copies).
-
-        Raises:
-            ValueError: If called in 'inter' mode.
-            ValueError: If 'nmin' < 2 (single copies should use `generate_single_run`).
-            ValueError: If 'nmax' is less than `nmin` (invalid range).
-        """
-
-        if self.mode == "inter":
-            raise ValueError("Homo mers can only be computed in 'intra' mode.")
-        if nmin < 2:
-            raise ValueError("nmin can not be lower than 2. If you want just 1 copy use the generate_single_run method")
-        
-        if nmax < nmin:
-            raise ValueError(f"nmax ({nmax}) must be greater than or equal to nmin ({nmin}).")
-        ids_a = list(self.proteome_a.sequences.keys())
-
-        for tmp_protein_id in ids_a:
-            for num_copies in range(nmin, nmax+1):
-                yield(tmp_protein_id, num_copies)
-     
-    def generate_single_run(
-        self,
-        source: str = "a",
-        ids_a: Optional[List[str]] = None,
-        ids_b: Optional[List[str]] = None
-    ) -> Iterable[Tuple[str, str, int]]:
-        
-        """
-        Generates jobs for single protein folding (monomers).
-
-        This method yields sequences for individual proteins (stoichiometry = 1).
-        It allows selecting specific subsets of IDs via 'ids_a' or 'ids_b'.
-
-        Args:
-            source (str, optional): The source proteome(s) to process.
-                - 'a': Only Proteome A.
-                - 'b': Only Proteome B (requires 'inter' mode).
-                - 'both': Proteome A followed by Proteome B.
-                Defaults to "a".
-            ids_a (Optional[List[str]], optional): A specific list of IDs from Proteome A 
-                to process. If None, processes all sequences in A. Defaults to None.
-            ids_b (Optional[List[str]], optional): A specific list of IDs from Proteome B 
-                to process. If None, processes all sequences in B. Defaults to None.
-
-        Yields:
-            Iterable[Tuple[str, str, int]]: An iterator yielding tuples in the format 
-            (protein_id, sequence_string, copy_count=1).
-
-        Raises:
-            ValueError: If 'source' is not one of 'a', 'b', or 'both'.
-            ValueError: If 'source' includes 'b' but the instance is not in 'inter' mode.
-        """
-
-        valid_sources = {"a", "b", "both"}
-        if source not in valid_sources:
-            raise ValueError(f"source must be one of {valid_sources}")
-
-        if source in {"b", "both"}:
-            if self.mode != "inter" or self.proteome_b is None:
-                raise ValueError("source='b' or 'both' requires 'inter' mode with a proteome_b.")
-        
-        if source in {"a", "both"}:
-            target_ids = ids_a if ids_a is not None else self.proteome_a.ids
-
-            for pid in target_ids:
-                yield (pid, self.proteome_a.sequences[pid], 1)
-
-        if source in {"b", "both"}:
-            target_ids = ids_b if ids_b is not None else self.proteome_b.ids
-
-            for pid in (ids_b or self.proteome_b.ids):
-                yield (pid, self.proteome_b.sequences[pid], 1)
-
-    @staticmethod
-    def _build_colabfold_seq_str(seq_list: List[Tuple[str, str, int]]) -> str:
-        """
-        Builds the ColabFold multimer sequence string (SEQ_A:SEQ_B:...).
-
-        Handles stoichiometry: count=2 for chain A repeats SEQ_A twice.
-
-        Parameters
-        ----------
-        seq_list : List[Tuple[str, str, int]]
-            List of (chain_id, sequence, count).
-
-        Returns
-        -------
-        str
-            Colon-separated sequence string ready for ColabFold.
-        """
-        parts = []
-        for _, seq, count in seq_list:
-            parts.extend([seq] * count)
-        return ":".join(parts)
-   
-    def _build_seq_list_from_entry(self, kind: str, entry, mode: str,
-                                counts_map: Optional[Dict[str, int]]) -> Tuple[list, str, str, str]:
-        """
-        Shared logic to build (seq_list, name, idA, idB) from an iterator entry.
-        Extracted to avoid duplication between FASTA and CSV writers.
-        """
-        seq_list = []
-        name = ""
-        idA, idB = "", ""
-
-        if kind == "pair":
-            idA_raw, idB_raw = entry
-            prot_A = self.proteome_a
-            prot_B = self.proteome_b if mode == "inter_pairs" else self.proteome_a
-
-            if mode == "intra_pairs" and idA_raw > idB_raw:
-                idA, idB = idB_raw, idA_raw
-                prot_A, prot_B = prot_B, prot_A
-            else:
-                idA, idB = idA_raw, idB_raw
-
-            cntA = counts_map.get(idA, 1) if counts_map else 1
-            cntB = counts_map.get(idB, 1) if counts_map else 1
-            seq_list = [(idA, prot_A.sequences[idA], cntA),
-                        (idB, prot_B.sequences[idB], cntB)]
-            name = f"{idA}__{idB}"
-
-        elif kind == "homo":
-            pid, copies = entry
-            seq_list = [(pid, self.proteome_a.sequences[pid], copies)]
-            name = f"{pid}__{copies}"
-            idA = pid
-
-        elif kind == "single":
-            pid, seq, cnt = entry
-            seq_list = [(pid, seq, cnt)]
-            name = pid
-            idA = pid
-
-        return seq_list, name, idA, idB 
-    
-    def _make_iterator(self, mode: str, nmin: int, nmax: int,
-                    ids_a: Optional[list], ids_b: Optional[list]):
-        """Builds the job iterator from mode. Shared between FASTA and CSV writers."""
-        if mode == "intra_pairs":
-            pairs = self.generate_intra_pairs()
-            if ids_a:
-                pairs = (p for p in pairs if p[0] in ids_a and p[1] in ids_a)
-            return (("pair", p) for p in pairs)
-
-        elif mode == "inter_pairs":
-            return (("pair", p) for p in self.generate_inter_pairs())
-
-        elif mode == "homomers":
-            return (("homo", h) for h in self.generate_homo_mers(nmin=nmin, nmax=nmax))
-
-        elif mode == "single":
-            source = "both" if self.mode == "inter" else "a"
-            return (("single", s) for s in self.generate_single_run(source=source, ids_a=ids_a, ids_b=ids_b))
-
-        else:
-            raise ValueError(f"Unknown mode: '{mode}'. Choose from: intra_pairs, inter_pairs, homomers, single.")
-
-
-    def write_interactome_jobs(
-        self,
-        engine: str,
-        output_dir: str,
-        *,
-        mode: str = "intra_pairs", 
-        include_homo: bool = False,
-        nmin: int = 2, 
-        nmax: int = 6,
-        counts_map: Optional[Dict[str, int]] = None,
-        ids_a: Optional[List[str]] = None,
-        ids_b: Optional[List[str]] = None,
-        af3_threshold: int = 5000,
-        af3_batch_size: int = 30,
-        boltz_threshold: int = 1600,
-        colabfold_threshold: int = 10000,
-        skip_over_threshold: bool = False,
-        filename_fmt: str = "{engine}_{name}.{ext}",
-        index_name: str = "index.csv",
-    ) -> List[dict]:
-        """
-        Orchestrates the creation of input files (jobs) for protein folding engines.
-
-        This method generates the necessary combinations (pairs, homomers, or monomers),
-        validates sequence lengths against engine limits, writes the specific JSON/YAML 
-        input files, and logs the metadata to a CSV index.
-
-        Args:
-            engine (str): The target folding engine. Options: 'af3' (AlphaFold 3) or 'boltz2'.
-            output_dir (str): Directory where input files and the index CSV will be saved.
-            mode (str, optional): Generation strategy. 
-                Options: 'intra_pairs', 'inter_pairs', 'homomers', 'single'. 
-                Defaults to "intra_pairs".
-            include_homo (bool, optional): [Reserved] If True, may include homomers in pair runs. 
-                Currently unused. Defaults to False.
-            nmin (int, optional): Minimum stoichiometry for homomers. Defaults to 2.
-            nmax (int, optional): Maximum stoichiometry for homomers. Defaults to 6.
-            counts_map (Optional[Dict[str, int]], optional): Custom stoichiometry override per ID. 
-                Defaults to None (1 copy).
-            ids_a (Optional[List[str]], optional): Filter specific IDs for Proteome A.
-            ids_b (Optional[List[str]], optional): Filter specific IDs for Proteome B.
-            af3_threshold (int, optional): Max total residues allowed for AF3. Defaults to 5000.
-            af3_batch_size (int, optional): [Reserved] Batch size for JSON grouping. Defaults to 30.
-            boltz_threshold (int, optional): Max total residues allowed for Boltz. Defaults to 1600.
-            skip_over_threshold (bool, optional): If True, files exceeding the residue 
-                threshold are not written to disk. Defaults to False.
-            filename_fmt (str, optional): F-string format for output filenames. 
-                Defaults to "{engine}_{name}.{ext}".
-            index_name (str, optional): Name of the metadata CSV file. Defaults to "index.csv".
-
-        Returns:
-            List[dict]: A list of metadata dictionaries representing every job processed 
-            (including skipped ones).
-
-        Raises:
-            ValueError: If 'engine' is not 'af3' or 'boltz2'.
-            ValueError: If 'mode' is unknown.
-            RuntimeError: If the iterator yields an unexpected data structure.
-        """
-
-        # 1. Setup Environment
-        out_path = Path(output_dir)
-        out_path.mkdir(parents=True, exist_ok=True)
-
-        engine_lower = engine.lower()
-        if engine_lower == "af3":
-            ext = "json"
-            residue_threshold = af3_threshold
-        elif engine_lower == "boltz2":
-            ext = "yaml"
-            residue_threshold = boltz_threshold
-        elif engine_lower == "colabfold":
-            ext = "fasta"
-            residue_threshold = colabfold_threshold
-        else:
-            raise ValueError(f"Unsupported engine '{engine}'. Must be 'af3', 'boltz2', or 'colabfold'.")
-
-        # 2. Select Generator based on mode
-        iterator = self._make_iterator(mode, nmin, nmax, ids_a, ids_b)
-
-        metas: List[dict] = []
-        index_path = out_path/ index_name
-
-        # 3. Process Jobs and Write CSV
-        with open(index_path, "w", newline="", encoding="utf-8") as fh:
-            fieldnames = [
-                "engine", "mode", "name", "idA", "idB", 
-                "countA", "countB", "total_residues", "warnings", "file_path"
-            ]
-            w = csv.DictWriter(fh, fieldnames=fieldnames)
-            w.writeheader()
-
-            for kind, entry in iterator:
-
-                seq_list, name, idA, idB = self._build_seq_list_from_entry(
-                    kind, entry, mode, counts_map
-                )
-
-                
-                # 4. Calculate Size and Validate
-                total_res = sum(len(s) * c for _, s, c in seq_list)
-                is_over_limit = total_res > residue_threshold
-                
-                base_name = filename_fmt.format(engine=engine_lower, name=name, ext=ext)
-                save_path_str = ""
-                warns = []
-
-                # Write file if within limits (or if we are not skipping)
-                if not (skip_over_threshold and is_over_limit):
-                    full_save_path = out_path / base_name
-                    save_path_str = str(full_save_path)
-                    if engine_lower == "af3":
-                        self.get_af3_input(seq_list, job_name=name,
-                        save_path=save_path_str,
-                        residue_threshold=residue_threshold)
-                    elif engine_lower == "boltz2":
-                        self.get_boltz2_input(seq_list, save_path=save_path_str,
-                        residue_threshold=residue_threshold)
-                    else:  # colabfold
-                        seq_str = self._build_colabfold_seq_str(seq_list)
-                        with open(full_save_path, "w", encoding="utf-8") as f:
-                            f.write(f">{name}\n{seq_str}\n")
-                    
-                if is_over_limit:
-                    warns.append(f"Skipped: total residues {total_res} exceed {residue_threshold}")
-                
-                # 5. Record Metadata
-                meta = {
-                    "engine": engine_lower,
-                    "mode": mode,
-                    "name": name,
-                    "idA": idA,
-                    "idB": idB,
-                    "countA": seq_list[0][2],
-                    "countB": seq_list[1][2] if len(seq_list) > 1 else "",
-                    "total_residues": total_res,
-                    "warnings": "|".join(warns),
-                    "file_path": save_path_str,
-                }
-                metas.append(meta)
-                w.writerow(meta)
-
-        return metas
-    
-    @staticmethod
-    def check_input(seq_list: List[Tuple[str,str,int]], residue_threshold: int = 5000)-> Tuple[bool, Optional[str]]:
-        """
-        Validates a list of sequences and checks for residue limits.
-        
-        This utility method ensures that the sequence list is not empty, 
-        counts are positive, and sequences are valid (using the global 
-        'check_sequence_validity' helper). It also issues a warning if 
-        the total number of residues exceeds the recommended threshold.
-
-        Args:
-            seq_list (List[Tuple[str, str, int]]): A list of tuples containing 
-                (chain_id, sequence, count).
-            residue_threshold (int, optional): The maximum recommended number 
-                of residues before issuing a warning. Defaults to 5000.
-
-        Returns:
-            Tuple[bool, Optional[str]]: 
-                - (True, None) if the input is valid (even if it exceeds the threshold, 
-                  only a warning is issued).
-                - (False, error_message) if a blocking error is found (empty list, 
-                  invalid sequence, etc.).
-        """
-
-        total_res = 0
-        if not seq_list:
-            return False, "Sequence list cannot be empty."
-        
-        for chain_id, seq, count in seq_list:
-            if count < 1:
-                return False, f"Count for {chain_id} needs to be at least 1."
-            
-            if not check_sequence_validity(seq):
-                return False, f"{chain_id} is not a valid protein sequence."
-
-            total_res += len(seq) * count
-
-        if total_res > residue_threshold:
-            msg = (
-                f"Total residues {total_res} exceed recommended maximum ({residue_threshold})."
-            )
-            warnings.warn(msg, category=UserWarning, stacklevel=2)
-        
-        return True, None
-
-    @staticmethod
-    def get_af3_input(
-        seq_list: List[Tuple[str, str, int]],
-        job_name: str = "AF3_job",
-        residue_threshold: int = 5000,
-        save_path: Optional[str] = None)-> Dict[str, Any]:
-
-        """
-        Generates the JSON input structure required for an AlphaFold 3 job.
-
-        This method validates the sequence list, constructs the specific dictionary 
-        format expected by the AF3 inference pipeline, and optionally writes it to 
-        a JSON file.
-
-        Args:
-            seq_list (List[Tuple[str, str, int]]): A list of tuples defining the complex.
-                Format: '[(chain_id, sequence_string, copy_count), ...]'.
-                Example: '[("A", "MVE...", 1), ("B", "SEQ...", 2)]'.
-            job_name (str, optional): The name of the job to be recorded in the JSON. 
-                Defaults to "AF3_job".
-            residue_threshold (int, optional): The maximum residue count before issuing 
-                a warning. Defaults to 5000.
-            save_path (Optional[str], optional): The file path where the JSON output 
-                should be saved. If None, the file is not created. Defaults to None.
-
-        Returns:
-            Dict[str, Any]: A dictionary containing the AF3 job payload. 
-            Structure:
-            {
-                "name": str,
-                "sequences": [
-                    {
-                        "proteinChain": {
-                            "id": str,
-                            "count": int,
-                            "sequence": str
-                        }
-                    }, ...
-                ],
-                "modelSeeds": []
-            }
-
-        Raises:
-            ValueError: If the input sequences fail the validation check (e.g., empty list, 
-            invalid characters, or zero counts).
-        """
-        # Validate the input using the static method defined in the class
-        is_valid, err_msg = InteractomeWriter.check_input(seq_list, residue_threshold=residue_threshold)
-        
-        if not is_valid:
-            raise ValueError(f"Invalid input for AF3: {err_msg}")
-        
-        sequences = []
-
-        for chain_id, seq, count in seq_list:
-            sequences.append(
-                {"proteinChain": {"id": chain_id, "count": count, "sequence": seq}}
-            )
-
-        data = {
-            "name": job_name,
-            "sequences": sequences,
-            "modelSeeds": []
-            }
-        
-        if save_path is not None:
-            with open(save_path, 'w', encoding='utf-8') as outfile:
-                json.dump(data, outfile, indent=4)
-
-        return data
-
-    @staticmethod
-    def get_boltz2_input(
-        seq_list: List[Tuple[str, str, int]], 
-        residue_threshold: int = 1600,
-        save_path: Optional[str] = None
-        )-> Dict[str, Any]:
-        """
-        Generates the YAML input structure required for Boltz 2.
-
-        This method assigns unique chain IDs (A, B, C...) to the provided sequences,
-        constructs the payload compliant with the Boltz YAML schema, and handles 
-        file writing with proper formatting.
-
-        Args:
-            seq_list (List[Tuple[str, str, int]]): A list of tuples defining the complex.
-                Format: '[(original_id, sequence, count), ...]'.
-            residue_threshold (int, optional): Threshold for residue count warnings. 
-                Defaults to 1600.
-            save_path (Optional[str], optional): Destination path for the YAML file. 
-                Defaults to None.
-
-        Returns:
-            Dict[str, Any]: The dictionary representation of the job payload.
-
-        Raises:
-            ValueError: If validation fails.
-        """
-        
-        # Validate input
-        is_valid, err_msg = InteractomeWriter.check_input(seq_list, residue_threshold=residue_threshold)
-      
-        if not is_valid:
-            raise ValueError(f"Invalid input for Boltz: {err_msg}")
-        
-
-        # Generator for Chain IDs: A, B, ... Z, AA, AB, ...
-        
-        def chain_id_generator():
-            from string import ascii_uppercase
-            from itertools import product
-            # Yield single letters first
-            for char in ascii_uppercase:
-                yield char
-            # Yield double letters (AA, AB...) if needed
-            for r in range(2, 4):
-                for combo in product(ascii_uppercase, repeat=r):
-                    yield "".join(combo)
-      
-        chain_gen = chain_id_generator()
-        seqs2yaml = []
-
-
-        for original_id, seq, counts in seq_list:
-
-            # Generate the specific IDs for this entry (e.g., if count=2 -> ['A', 'B'])
-            current_ids = [next(chain_gen) for _ in range(counts)]
-
-            tmp_job = {
-                "protein": {
-                    "id": current_ids,
-                    "sequence": seq, 
-                }
-            }
-            seqs2yaml.append(tmp_job)
-
-        data = {
-            "version": 1,
-            "sequences": seqs2yaml
-        }
-
-        if save_path:
-            yaml_str = yaml.dump(data, default_flow_style=None, sort_keys=False)
-
-            with open(save_path, 'w', encoding='utf-8') as outfile:
-                outfile.write(yaml_str)
-
-        return data
-
-    # =============================================================================
-    # STRATEGY A — One FASTA per job (630 files for 36-protein interactome)
-    # =============================================================================
-
-    def write_colabfold_fastas(
-        self,
-        output_dir: str,
-        *,
-        mode: str = "intra_pairs",
-        nmin: int = 2,
-        nmax: int = 6,
-        counts_map: Optional[Dict[str, int]] = None,
-        ids_a: Optional[List[str]] = None,
-        ids_b: Optional[List[str]] = None,
-        index_name: str = "colabfold_index.csv",
-    ) -> List[dict]:
-        """
-        Writes one FASTA file per job for colabfold_batch.
-
-        Each pair generates a separate .fasta file:
-
-            >ProtA__ProtB
-            SEQUENCEA:SEQUENCEB
-
-        This enables per-job control: easy resume, individual monitoring,
-        and selective re-runs of failed jobs.
-
-        Parameters
-        ----------
-        output_dir : str
-            Directory where FASTA files and the index CSV will be saved.
-        mode : str, optional
-            Generation strategy: 'intra_pairs', 'inter_pairs', 'homomers', 'single'.
-            Defaults to "intra_pairs".
-        nmin : int, optional
-            Minimum stoichiometry for homomers. Defaults to 2.
-        nmax : int, optional
-            Maximum stoichiometry for homomers. Defaults to 6.
-        counts_map : dict, optional
-            Custom stoichiometry override per protein ID. Defaults to None.
-        ids_a : list, optional
-            Subset of Proteome A IDs to process.
-        ids_b : list, optional
-            Subset of Proteome B IDs to process.
-        index_name : str, optional
-            Name for the metadata CSV. Defaults to "colabfold_index.csv".
-
-        Returns
-        -------
-        List[dict]
-            Metadata for every job written.
-
-        Notes
-        -----
-        - Produces N separate colabfold_batch calls (one per FASTA).
-        - Best for: fine-grained monitoring, partial re-runs, GPU parallelism across nodes.
-        - For 36 proteins → 630 FASTA files and 630 colabfold_batch calls.
-
-        .. deprecated::
-            Use ``write_interactome_jobs(engine='colabfold', ...)`` instead.
-            This method is kept for backwards compatibility.
-        """
-        out_path = Path(output_dir)
-        out_path.mkdir(parents=True, exist_ok=True)
-
-        iterator = self._make_iterator(mode, nmin, nmax, ids_a, ids_b)
-
-        metas: List[dict] = []
-        index_path = out_path / index_name
-
-        with open(index_path, "w", newline="", encoding="utf-8") as fh:
-            fieldnames = ["name", "mode", "idA", "idB", "countA", "countB",
-                        "total_residues", "file_path"]
-            w = csv.DictWriter(fh, fieldnames=fieldnames)
-            w.writeheader()
-
-            for kind, entry in iterator:
-                seq_list, name, idA, idB = self._build_seq_list_from_entry(
-                    kind, entry, mode, counts_map
-                )
-                total_res = sum(len(s) * c for _, s, c in seq_list)
-                seq_str = self._build_colabfold_seq_str(seq_list)
-
-                save_path = out_path / f"{name}.fasta"
-                with open(save_path, "w", encoding="utf-8") as f:
-                    f.write(f">{name}\n{seq_str}\n")
-
-                logger.debug(f"Written: {save_path.name} ({total_res} residues)")
-
-                meta = {
-                    "name": name,
-                    "mode": mode,
-                    "idA": idA,
-                    "idB": idB,
-                    "countA": seq_list[0][2],
-                    "countB": seq_list[1][2] if len(seq_list) > 1 else "",
-                    "total_residues": total_res,
-                    "file_path": str(save_path),
-                }
-                metas.append(meta)
-                w.writerow(meta)
-
-        logger.info(f"[FASTA strategy] Written {len(metas)} FASTA files to: {out_path}")
-        return metas
-
-
-    # =============================================================================
-    # STRATEGY B — Single CSV batch (one colabfold_batch call for all jobs)
-    # =============================================================================
-
-    def write_colabfold_csv(
-        self,
-        output_dir: str,
-        *,
-        mode: str = "intra_pairs",
-        nmin: int = 2,
-        nmax: int = 6,
-        counts_map: Optional[Dict[str, int]] = None,
-        ids_a: Optional[List[str]] = None,
-        ids_b: Optional[List[str]] = None,
-        csv_name: str = "colabfold_input.csv",
-        index_name: str = "colabfold_index.csv",
-    ) -> List[dict]:
-        """
-        Writes a single CSV file for colabfold_batch containing all jobs.
-
-        ColabFold's CSV format:
-
-            id,sequence
-            ProtA__ProtB,SEQUENCEA:SEQUENCEB
-            ProtC__ProtD,SEQUENCEC:SEQUENCED
-
-        A single colabfold_batch call processes all rows:
-
-            colabfold_batch input.csv outputs/
-
-        ColabFold internally handles the MSA queue and can reuse MSA results
-        across pairs sharing the same protein — significantly faster than
-        630 individual calls for an interactome of 36 proteins.
-
-        Parameters
-        ----------
-        output_dir : str
-            Directory where the CSV and index will be saved.
-        mode : str, optional
-            Generation strategy: 'intra_pairs', 'inter_pairs', 'homomers', 'single'.
-            Defaults to "intra_pairs".
-        nmin : int, optional
-            Minimum stoichiometry for homomers. Defaults to 2.
-        nmax : int, optional
-            Maximum stoichiometry for homomers. Defaults to 6.
-        counts_map : dict, optional
-            Custom stoichiometry override per protein ID. Defaults to None.
-        ids_a : list, optional
-            Subset of Proteome A IDs to process.
-        ids_b : list, optional
-            Subset of Proteome B IDs to process.
-        csv_name : str, optional
-            Filename for the ColabFold input CSV. Defaults to "colabfold_input.csv".
-        index_name : str, optional
-            Filename for the metadata index CSV. Defaults to "colabfold_index.csv".
-
-        Returns
-        -------
-        List[dict]
-            Metadata for every job in the CSV.
-
-        Notes
-        -----
-        - Produces a single colabfold_batch call.
-        - Best for: large interactomes, MSA reuse, single-node runs.
-        - ColabFold writes each job's output to a subfolder named after the 'id' column.
-        - For 36 proteins → 1 CSV with 630 rows and 1 colabfold_batch call.
-
-        Warnings
-        --------
-        - If the run is interrupted, you lose progress on all unfinished jobs.
-        Use `write_colabfold_fastas` if you need fine-grained resume control.
-        """
-        out_path = Path(output_dir)
-        out_path.mkdir(parents=True, exist_ok=True)
-
-        iterator = self._make_iterator(mode, nmin, nmax, ids_a, ids_b)
-
-        metas: List[dict] = []
-        cf_csv_path = out_path / csv_name
-        index_path = out_path / index_name
-
-        # Write ColabFold input CSV (id, sequence)
-        with open(cf_csv_path, "w", newline="", encoding="utf-8") as cf_fh, \
-            open(index_path, "w", newline="", encoding="utf-8") as idx_fh:
-
-            cf_writer = csv.writer(cf_fh)
-            cf_writer.writerow(["id", "sequence"])
-
-            idx_fieldnames = ["name", "mode", "idA", "idB", "countA", "countB",
-                            "total_residues"]
-            idx_writer = csv.DictWriter(idx_fh, fieldnames=idx_fieldnames)
-            idx_writer.writeheader()
-
-            for kind, entry in iterator:
-                seq_list, name, idA, idB = self._build_seq_list_from_entry(
-                    kind, entry, mode, counts_map
-                )
-                total_res = sum(len(s) * c for _, s, c in seq_list)
-                seq_str = self._build_colabfold_seq_str(seq_list)
-
-                cf_writer.writerow([name, seq_str])
-
-                meta = {
-                    "name": name,
-                    "mode": mode,
-                    "idA": idA,
-                    "idB": idB,
-                    "countA": seq_list[0][2],
-                    "countB": seq_list[1][2] if len(seq_list) > 1 else "",
-                    "total_residues": total_res,
-                }
-                metas.append(meta)
-                idx_writer.writerow(meta)
-
-        logger.info(
-            f"[CSV strategy] Written {len(metas)} jobs to: {cf_csv_path}\n"
-            f"  → Run with: colabfold_batch {cf_csv_path} <output_dir>"
-        )
-        return metas
-    
 class InteractomeRunner:
 
     """
@@ -2188,10 +1325,11 @@ class InteractomeAnalyzer:
         )
         return df
 
-    def plot_confidence_landscape(self, output_path: Optional[Union[str, Path]] = None):
+    def plot_confidence_landscape(self, output_path: Optional[Union[str, Path]] = None,
+                                  title: str = "Interactome Confidence Landscape"):
         """
         Generates a scatter plot of the interactome confidence landscape.
-        X-axis: pDockQ2, Y-axis: ipSAE_d0_dom, Size: msa_depth, Color: pLDDT_B (AlphaFold colors).
+        X-axis: pDockQ2, Y-axis: ipSAE_d0_dom, Size: msa_depth, Color: pLDDT (AlphaFold colors).
         """
         import matplotlib.pyplot as plt
         from matplotlib.colors import ListedColormap, BoundaryNorm
@@ -2253,7 +1391,7 @@ class InteractomeAnalyzer:
         
         plt.xlabel("Physical Plausibility (pDockQ2)")
         plt.ylabel(f"Interface Confidence ({y_col})")
-        plt.title("Interactome Confidence Landscape (Adenovirus HAdV-5)")
+        plt.title(title)
         
         if plddt_col:
             cbar = plt.colorbar(scatter, ticks=[25, 60, 80, 95])
@@ -2270,7 +1408,8 @@ class InteractomeAnalyzer:
             plt.show()
         plt.close()
 
-    def plot_interactive_landscape(self, output_path: Optional[Union[str, Path]] = None):
+    def plot_interactive_landscape(self, output_path: Optional[Union[str, Path]] = None,
+                                   title: str = "Interactome Confidence Landscape"):
         """
         Generates an interactive HTML scatter plot of the confidence landscape using Plotly.
         Includes hover info for PPI names and metrics.
@@ -2339,7 +1478,7 @@ class InteractomeAnalyzer:
                 "Low (50-70)": "#FFDB13",
                 "Very Low (<50)": "#FF7D45"
             },
-            title=f"Interactive Confidence Landscape (Adenovirus HAdV-5)<br><sup>Bubble size = sqrt(MSA depth)</sup>",
+            title=f"{title}<br><sup>Bubble size = sqrt(MSA depth)</sup>",
             labels={y_col: "Interface Confidence (ipSAE_dom)", pdockq2_col: "Physical Plausibility (pDockQ2)"},
             template="plotly_white"
         )
@@ -3545,346 +2684,346 @@ class InteractomeAnalyzer:
     # Foldseek structural homology search
     # -------------------------------------------------------------------------
 
-    _FOLDSEEK_API = "https://search.foldseek.com/api"
+    # _FOLDSEEK_API = "https://search.foldseek.com/api"
 
-    def _submit_foldseek_job(
-        self,
-        cif_content: str,
-        databases: List[str],
-        mode: str = "3diaa",
-    ) -> str:
-        """
-        Submits a structure search to the Foldseek web API.
+    # def _submit_foldseek_job(
+    #     self,
+    #     cif_content: str,
+    #     databases: List[str],
+    #     mode: str = "3diaa",
+    # ) -> str:
+    #     """
+    #     Submits a structure search to the Foldseek web API.
 
-        Parameters
-        ----------
-        cif_content : str
-            Raw text content of the CIF file.
-        databases : list of str
-            Foldseek database identifiers (e.g. ``["afdb-swissprot", "pdb100"]``).
-        mode : str, optional
-            Search mode. ``"3diaa"`` (default) or ``"tmalign"``.
+    #     Parameters
+    #     ----------
+    #     cif_content : str
+    #         Raw text content of the CIF file.
+    #     databases : list of str
+    #         Foldseek database identifiers (e.g. ``["afdb-swissprot", "pdb100"]``).
+    #     mode : str, optional
+    #         Search mode. ``"3diaa"`` (default) or ``"tmalign"``.
 
-        Returns
-        -------
-        str
-            Ticket ID assigned by the Foldseek server.
+    #     Returns
+    #     -------
+    #     str
+    #         Ticket ID assigned by the Foldseek server.
 
-        Raises
-        ------
-        ImportError
-            If ``requests`` is not installed.
-        RuntimeError
-            If the server returns a non-200 status code.
-        """
-        try:
-            import requests
-        except ImportError:
-            raise ImportError("requests is required for Foldseek searches. Install it with: pip install requests")
+    #     Raises
+    #     ------
+    #     ImportError
+    #         If ``requests`` is not installed.
+    #     RuntimeError
+    #         If the server returns a non-200 status code.
+    #     """
+    #     try:
+    #         import requests
+    #     except ImportError:
+    #         raise ImportError("requests is required for Foldseek searches. Install it with: pip install requests")
 
-        payload: Dict[str, Any] = {"q": cif_content, "mode": mode}
-        for db in databases:
-            payload.setdefault("database[]", [])
-            payload["database[]"].append(db)  # type: ignore[union-attr]
+    #     payload: Dict[str, Any] = {"q": cif_content, "mode": mode}
+    #     for db in databases:
+    #         payload.setdefault("database[]", [])
+    #         payload["database[]"].append(db)  # type: ignore[union-attr]
 
-        response = requests.post(f"{self._FOLDSEEK_API}/ticket", data=payload, timeout=30)
-        if response.status_code != 200:
-            raise RuntimeError(
-                f"Foldseek submission failed (HTTP {response.status_code}): {response.text}"
-            )
-        ticket_id: str = response.json()["id"]
-        return ticket_id
+    #     response = requests.post(f"{self._FOLDSEEK_API}/ticket", data=payload, timeout=30)
+    #     if response.status_code != 200:
+    #         raise RuntimeError(
+    #             f"Foldseek submission failed (HTTP {response.status_code}): {response.text}"
+    #         )
+    #     ticket_id: str = response.json()["id"]
+    #     return ticket_id
 
-    def _poll_foldseek_job(
-        self,
-        ticket_id: str,
-        poll_interval: int = 10,
-        timeout: int = 600,
-    ) -> None:
-        """
-        Polls the Foldseek API until the job completes or times out.
+    # def _poll_foldseek_job(
+    #     self,
+    #     ticket_id: str,
+    #     poll_interval: int = 10,
+    #     timeout: int = 600,
+    # ) -> None:
+    #     """
+    #     Polls the Foldseek API until the job completes or times out.
 
-        Parameters
-        ----------
-        ticket_id : str
-            Ticket ID returned by :meth:`_submit_foldseek_job`.
-        poll_interval : int, optional
-            Seconds between status checks. Defaults to 10.
-        timeout : int, optional
-            Maximum total wait time in seconds. Defaults to 600.
+    #     Parameters
+    #     ----------
+    #     ticket_id : str
+    #         Ticket ID returned by :meth:`_submit_foldseek_job`.
+    #     poll_interval : int, optional
+    #         Seconds between status checks. Defaults to 10.
+    #     timeout : int, optional
+    #         Maximum total wait time in seconds. Defaults to 600.
 
-        Raises
-        ------
-        TimeoutError
-            If the job does not complete within ``timeout`` seconds.
-        RuntimeError
-            If the server reports an ``ERROR`` status.
-        """
-        try:
-            import requests
-        except ImportError:
-            raise ImportError("requests is required for Foldseek searches. Install it with: pip install requests")
+    #     Raises
+    #     ------
+    #     TimeoutError
+    #         If the job does not complete within ``timeout`` seconds.
+    #     RuntimeError
+    #         If the server reports an ``ERROR`` status.
+    #     """
+    #     try:
+    #         import requests
+    #     except ImportError:
+    #         raise ImportError("requests is required for Foldseek searches. Install it with: pip install requests")
 
-        elapsed = 0
-        while elapsed < timeout:
-            resp = requests.get(f"{self._FOLDSEEK_API}/ticket/{ticket_id}", timeout=30)
-            resp.raise_for_status()
-            status = resp.json().get("status", "")
-            if status == "COMPLETE":
-                return
-            if status == "ERROR":
-                raise RuntimeError(f"Foldseek job {ticket_id} reported ERROR status.")
-            time.sleep(poll_interval)
-            elapsed += poll_interval
+    #     elapsed = 0
+    #     while elapsed < timeout:
+    #         resp = requests.get(f"{self._FOLDSEEK_API}/ticket/{ticket_id}", timeout=30)
+    #         resp.raise_for_status()
+    #         status = resp.json().get("status", "")
+    #         if status == "COMPLETE":
+    #             return
+    #         if status == "ERROR":
+    #             raise RuntimeError(f"Foldseek job {ticket_id} reported ERROR status.")
+    #         time.sleep(poll_interval)
+    #         elapsed += poll_interval
 
-        raise TimeoutError(
-            f"Foldseek job {ticket_id} did not complete within {timeout}s."
-        )
+    #     raise TimeoutError(
+    #         f"Foldseek job {ticket_id} did not complete within {timeout}s."
+    #     )
 
-    def _download_foldseek_results(
-        self,
-        ticket_id: str,
-        out_dir: Path,
-        protein_id: str,
-    ) -> Path:
-        """
-        Downloads and decompresses Foldseek results for one protein.
+    # def _download_foldseek_results(
+    #     self,
+    #     ticket_id: str,
+    #     out_dir: Path,
+    #     protein_id: str,
+    # ) -> Path:
+    #     """
+    #     Downloads and decompresses Foldseek results for one protein.
 
-        Parameters
-        ----------
-        ticket_id : str
-            Completed ticket ID.
-        out_dir : Path
-            Directory where the raw TSV is written.
-        protein_id : str
-            Used as the output filename stem: ``{protein_id}.tsv``.
+    #     Parameters
+    #     ----------
+    #     ticket_id : str
+    #         Completed ticket ID.
+    #     out_dir : Path
+    #         Directory where the raw TSV is written.
+    #     protein_id : str
+    #         Used as the output filename stem: ``{protein_id}.tsv``.
 
-        Returns
-        -------
-        Path
-            Path to the written TSV file.
+    #     Returns
+    #     -------
+    #     Path
+    #         Path to the written TSV file.
 
-        Raises
-        ------
-        RuntimeError
-            If the download request fails.
-        """
-        try:
-            import requests
-        except ImportError:
-            raise ImportError("requests is required for Foldseek searches. Install it with: pip install requests")
+    #     Raises
+    #     ------
+    #     RuntimeError
+    #         If the download request fails.
+    #     """
+    #     try:
+    #         import requests
+    #     except ImportError:
+    #         raise ImportError("requests is required for Foldseek searches. Install it with: pip install requests")
 
-        import io
-        import tarfile
+    #     import io
+    #     import tarfile
 
-        resp = requests.get(
-            f"{self._FOLDSEEK_API}/result/download/{ticket_id}",
-            timeout=120,
-            stream=True,
-        )
-        if resp.status_code != 200:
-            raise RuntimeError(
-                f"Failed to download Foldseek results for {protein_id} "
-                f"(HTTP {resp.status_code}): {resp.text}"
-            )
+    #     resp = requests.get(
+    #         f"{self._FOLDSEEK_API}/result/download/{ticket_id}",
+    #         timeout=120,
+    #         stream=True,
+    #     )
+    #     if resp.status_code != 200:
+    #         raise RuntimeError(
+    #             f"Failed to download Foldseek results for {protein_id} "
+    #             f"(HTTP {resp.status_code}): {resp.text}"
+    #         )
 
-        tsv_path = out_dir / f"{protein_id}.tsv"
-        raw_bytes = resp.content
+    #     tsv_path = out_dir / f"{protein_id}.tsv"
+    #     raw_bytes = resp.content
 
-        # The API returns a tar.gz archive containing one or more TSV files
-        try:
-            with tarfile.open(fileobj=io.BytesIO(raw_bytes), mode="r:gz") as tar:
-                tsv_lines: List[str] = []
-                for member in tar.getmembers():
-                    if member.name.endswith(".tsv") or member.name.endswith(".m8"):
-                        f = tar.extractfile(member)
-                        if f is not None:
-                            tsv_lines.append(f.read().decode("utf-8"))
-                content = "\n".join(tsv_lines)
-        except tarfile.TarError:
-            # Fallback: server returned plain TSV
-            content = raw_bytes.decode("utf-8")
+    #     # The API returns a tar.gz archive containing one or more TSV files
+    #     try:
+    #         with tarfile.open(fileobj=io.BytesIO(raw_bytes), mode="r:gz") as tar:
+    #             tsv_lines: List[str] = []
+    #             for member in tar.getmembers():
+    #                 if member.name.endswith(".tsv") or member.name.endswith(".m8"):
+    #                     f = tar.extractfile(member)
+    #                     if f is not None:
+    #                         tsv_lines.append(f.read().decode("utf-8"))
+    #             content = "\n".join(tsv_lines)
+    #     except tarfile.TarError:
+    #         # Fallback: server returned plain TSV
+    #         content = raw_bytes.decode("utf-8")
 
-        tsv_path.write_text(content, encoding="utf-8")
-        return tsv_path
+    #     tsv_path.write_text(content, encoding="utf-8")
+    #     return tsv_path
 
-    def run_foldseek_search(
-        self,
-        protein_ids: List[str],
-        monomer_cif_dir: Union[str, Path],
-        databases: List[str] = ("afdb-swissprot", "pdb100"),  # type: ignore[assignment]
-        top_n: int = 10,
-        evalue_cutoff: float = 1e-3,
-        output_dir: Optional[Union[str, Path]] = None,
-        best_plddt: bool = False,
-        poll_interval: int = 10,
-        timeout: int = 600,
-        mode: str = "3diaa",
-    ) -> pd.DataFrame:
-        """
-        Searches each protein's monomer structure against Foldseek databases.
+    # def run_foldseek_search(
+    #     self,
+    #     protein_ids: List[str],
+    #     monomer_cif_dir: Union[str, Path],
+    #     databases: List[str] = ("afdb-swissprot", "pdb100"),  # type: ignore[assignment]
+    #     top_n: int = 10,
+    #     evalue_cutoff: float = 1e-3,
+    #     output_dir: Optional[Union[str, Path]] = None,
+    #     best_plddt: bool = False,
+    #     poll_interval: int = 10,
+    #     timeout: int = 600,
+    #     mode: str = "3diaa",
+    # ) -> pd.DataFrame:
+    #     """
+    #     Searches each protein's monomer structure against Foldseek databases.
 
-        Operates standalone — does not require :attr:`interactome_data` to be loaded.
-        For each protein in ``protein_ids`` the method locates the corresponding
-        CIF file in ``monomer_cif_dir``, submits it to the Foldseek web API,
-        polls until completion, downloads results, and aggregates a summary.
+    #     Operates standalone — does not require :attr:`interactome_data` to be loaded.
+    #     For each protein in ``protein_ids`` the method locates the corresponding
+    #     CIF file in ``monomer_cif_dir``, submits it to the Foldseek web API,
+    #     polls until completion, downloads results, and aggregates a summary.
 
-        The folder layout expected inside ``monomer_cif_dir`` mirrors the output of
-        AF3/Boltz2/ColabFold in single-protein mode::
+    #     The folder layout expected inside ``monomer_cif_dir`` mirrors the output of
+    #     AF3/Boltz2/ColabFold in single-protein mode::
 
-            monomer_cif_dir/
-            ├── proteinA/
-            │   ├── proteinA_model_0.cif
-            │   └── proteinA_model_1.cif
-            └── proteinB/
-                └── proteinB_model_0.cif
+    #         monomer_cif_dir/
+    #         ├── proteinA/
+    #         │   ├── proteinA_model_0.cif
+    #         │   └── proteinA_model_1.cif
+    #         └── proteinB/
+    #             └── proteinB_model_0.cif
 
-        Parameters
-        ----------
-        protein_ids : list of str
-            Protein identifiers to search. Each must have a matching subdirectory
-            inside ``monomer_cif_dir``.
-        monomer_cif_dir : str or Path
-            Root directory containing one subdirectory per protein, each with
-            ``*model*.cif`` files.
-        databases : list of str, optional
-            Foldseek databases to search. Defaults to
-            ``["afdb-swissprot", "pdb100"]``.
-            Other available options: ``"afdb50"``, ``"afdb-proteome"``,
-            ``"mgnify_esm30"``, ``"gmgcl_id"``.
-        top_n : int, optional
-            Maximum number of hits to retain per protein in the summary.
-            Defaults to 10.
-        evalue_cutoff : float, optional
-            Hits with e-value above this threshold are discarded. Defaults to 1e-3.
-        output_dir : str or Path, optional
-            Root output directory. Defaults to :attr:`output_path`.
-            Raw TSVs are written to ``{output_dir}/foldseek_results/``.
-            The summary CSV is written to ``{output_dir}/foldseek_summary.csv``.
-        best_plddt : bool, optional
-            If ``False`` (default), uses the model with the lowest index
-            (``model_0`` first, by sorted filename). If ``True``, parses all
-            available models and selects the one with the highest mean pLDDT —
-            useful when multiple models per protein are present.
-        poll_interval : int, optional
-            Seconds between Foldseek status checks. Defaults to 10.
-        timeout : int, optional
-            Maximum seconds to wait for a single job. Defaults to 600.
-        mode : str, optional
-            Foldseek search mode. ``"3diaa"`` (default) or ``"tmalign"``.
+    #     Parameters
+    #     ----------
+    #     protein_ids : list of str
+    #         Protein identifiers to search. Each must have a matching subdirectory
+    #         inside ``monomer_cif_dir``.
+    #     monomer_cif_dir : str or Path
+    #         Root directory containing one subdirectory per protein, each with
+    #         ``*model*.cif`` files.
+    #     databases : list of str, optional
+    #         Foldseek databases to search. Defaults to
+    #         ``["afdb-swissprot", "pdb100"]``.
+    #         Other available options: ``"afdb50"``, ``"afdb-proteome"``,
+    #         ``"mgnify_esm30"``, ``"gmgcl_id"``.
+    #     top_n : int, optional
+    #         Maximum number of hits to retain per protein in the summary.
+    #         Defaults to 10.
+    #     evalue_cutoff : float, optional
+    #         Hits with e-value above this threshold are discarded. Defaults to 1e-3.
+    #     output_dir : str or Path, optional
+    #         Root output directory. Defaults to :attr:`output_path`.
+    #         Raw TSVs are written to ``{output_dir}/foldseek_results/``.
+    #         The summary CSV is written to ``{output_dir}/foldseek_summary.csv``.
+    #     best_plddt : bool, optional
+    #         If ``False`` (default), uses the model with the lowest index
+    #         (``model_0`` first, by sorted filename). If ``True``, parses all
+    #         available models and selects the one with the highest mean pLDDT —
+    #         useful when multiple models per protein are present.
+    #     poll_interval : int, optional
+    #         Seconds between Foldseek status checks. Defaults to 10.
+    #     timeout : int, optional
+    #         Maximum seconds to wait for a single job. Defaults to 600.
+    #     mode : str, optional
+    #         Foldseek search mode. ``"3diaa"`` (default) or ``"tmalign"``.
 
-        Returns
-        -------
-        pd.DataFrame
-            Summary DataFrame with columns:
-            ``protein_id``, ``rank``, ``target``, ``fident``, ``alnlen``,
-            ``evalue``, ``bits``, ``qstart``, ``qend``, ``tstart``, ``tend``.
-            Also written to ``{output_dir}/foldseek_summary.csv``.
+    #     Returns
+    #     -------
+    #     pd.DataFrame
+    #         Summary DataFrame with columns:
+    #         ``protein_id``, ``rank``, ``target``, ``fident``, ``alnlen``,
+    #         ``evalue``, ``bits``, ``qstart``, ``qend``, ``tstart``, ``tend``.
+    #         Also written to ``{output_dir}/foldseek_summary.csv``.
 
-        Raises
-        ------
-        FileNotFoundError
-            If no CIF file is found for a given protein ID.
-        RuntimeError
-            If the Foldseek API returns an unexpected error.
-        TimeoutError
-            If a job exceeds ``timeout`` seconds.
-        """
-        databases = list(databases)
-        base_dir = Path(output_dir) if output_dir is not None else self.output_path
-        raw_dir = base_dir / "foldseek_results"
-        raw_dir.mkdir(parents=True, exist_ok=True)
-        summary_csv = base_dir / "foldseek_summary.csv"
+    #     Raises
+    #     ------
+    #     FileNotFoundError
+    #         If no CIF file is found for a given protein ID.
+    #     RuntimeError
+    #         If the Foldseek API returns an unexpected error.
+    #     TimeoutError
+    #         If a job exceeds ``timeout`` seconds.
+    #     """
+    #     databases = list(databases)
+    #     base_dir = Path(output_dir) if output_dir is not None else self.output_path
+    #     raw_dir = base_dir / "foldseek_results"
+    #     raw_dir.mkdir(parents=True, exist_ok=True)
+    #     summary_csv = base_dir / "foldseek_summary.csv"
 
-        cif_root = Path(monomer_cif_dir)
-        summary_rows: List[Dict[str, Any]] = []
+    #     cif_root = Path(monomer_cif_dir)
+    #     summary_rows: List[Dict[str, Any]] = []
 
-        _RAW_COLS = [
-            "query", "target", "fident", "alnlen", "mismatch",
-            "gapopen", "qstart", "qend", "tstart", "tend", "evalue", "bits",
-        ]
+    #     _RAW_COLS = [
+    #         "query", "target", "fident", "alnlen", "mismatch",
+    #         "gapopen", "qstart", "qend", "tstart", "tend", "evalue", "bits",
+    #     ]
 
-        for protein_id in protein_ids:
-            protein_dir = cif_root / protein_id
-            if not protein_dir.exists():
-                logger.warning(f"No directory found for '{protein_id}' in {cif_root}. Skipping.")
-                continue
+    #     for protein_id in protein_ids:
+    #         protein_dir = cif_root / protein_id
+    #         if not protein_dir.exists():
+    #             logger.warning(f"No directory found for '{protein_id}' in {cif_root}. Skipping.")
+    #             continue
 
-            cif_candidates = sorted(protein_dir.glob("*model*.cif"))
-            if not cif_candidates:
-                logger.warning(f"No CIF files found for '{protein_id}'. Skipping.")
-                continue
+    #         cif_candidates = sorted(protein_dir.glob("*model*.cif"))
+    #         if not cif_candidates:
+    #             logger.warning(f"No CIF files found for '{protein_id}'. Skipping.")
+    #             continue
 
-            # Select which model to submit
-            if best_plddt and len(cif_candidates) > 1:
-                best_cif: Optional[Path] = None
-                best_score = -1.0
-                for candidate in cif_candidates:
-                    try:
-                        # engine unknown here — try all parsers
-                        for eng in ("af3", "boltz", "colabfold"):
-                            try:
-                                stats = InteractomeProcessor._extract_monomer_plddt(candidate, eng)
-                                score = stats.get("plddt_mean", -1.0)
-                                if not np.isnan(score) and score > best_score:
-                                    best_score = score
-                                    best_cif = candidate
-                                break
-                            except Exception:
-                                continue
-                    except Exception:
-                        continue
-                cif_path = best_cif if best_cif is not None else cif_candidates[0]
-            else:
-                cif_path = cif_candidates[0]
+    #         # Select which model to submit
+    #         if best_plddt and len(cif_candidates) > 1:
+    #             best_cif: Optional[Path] = None
+    #             best_score = -1.0
+    #             for candidate in cif_candidates:
+    #                 try:
+    #                     # engine unknown here — try all parsers
+    #                     for eng in ("af3", "boltz", "colabfold"):
+    #                         try:
+    #                             stats = InteractomeProcessor._extract_monomer_plddt(candidate, eng)
+    #                             score = stats.get("plddt_mean", -1.0)
+    #                             if not np.isnan(score) and score > best_score:
+    #                                 best_score = score
+    #                                 best_cif = candidate
+    #                             break
+    #                         except Exception:
+    #                             continue
+    #                 except Exception:
+    #                     continue
+    #             cif_path = best_cif if best_cif is not None else cif_candidates[0]
+    #         else:
+    #             cif_path = cif_candidates[0]
 
-            logger.info(f"Submitting {protein_id} ({cif_path.name}) to Foldseek...")
+    #         logger.info(f"Submitting {protein_id} ({cif_path.name}) to Foldseek...")
 
-            try:
-                cif_content = cif_path.read_text(encoding="utf-8")
-                ticket_id = self._submit_foldseek_job(cif_content, databases, mode=mode)
-                self._poll_foldseek_job(ticket_id, poll_interval=poll_interval, timeout=timeout)
-                tsv_path = self._download_foldseek_results(ticket_id, raw_dir, protein_id)
-            except (RuntimeError, TimeoutError, OSError) as exc:
-                logger.error(f"Foldseek search failed for '{protein_id}': {exc}")
-                continue
+    #         try:
+    #             cif_content = cif_path.read_text(encoding="utf-8")
+    #             ticket_id = self._submit_foldseek_job(cif_content, databases, mode=mode)
+    #             self._poll_foldseek_job(ticket_id, poll_interval=poll_interval, timeout=timeout)
+    #             tsv_path = self._download_foldseek_results(ticket_id, raw_dir, protein_id)
+    #         except (RuntimeError, TimeoutError, OSError) as exc:
+    #             logger.error(f"Foldseek search failed for '{protein_id}': {exc}")
+    #             continue
 
-            # Parse raw TSV
-            try:
-                df_raw = pd.read_csv(
-                    tsv_path,
-                    sep="\t",
-                    header=None,
-                    names=_RAW_COLS,
-                    comment="#",
-                )
-            except Exception as exc:
-                logger.warning(f"Could not parse TSV for '{protein_id}': {exc}")
-                continue
+    #         # Parse raw TSV
+    #         try:
+    #             df_raw = pd.read_csv(
+    #                 tsv_path,
+    #                 sep="\t",
+    #                 header=None,
+    #                 names=_RAW_COLS,
+    #                 comment="#",
+    #             )
+    #         except Exception as exc:
+    #             logger.warning(f"Could not parse TSV for '{protein_id}': {exc}")
+    #             continue
 
-            df_filtered = df_raw[df_raw["evalue"] <= evalue_cutoff].copy()
-            df_top = df_filtered.sort_values("evalue").head(top_n).reset_index(drop=True)
-            df_top.insert(0, "protein_id", protein_id)
-            df_top.insert(1, "rank", range(1, len(df_top) + 1))
+    #         df_filtered = df_raw[df_raw["evalue"] <= evalue_cutoff].copy()
+    #         df_top = df_filtered.sort_values("evalue").head(top_n).reset_index(drop=True)
+    #         df_top.insert(0, "protein_id", protein_id)
+    #         df_top.insert(1, "rank", range(1, len(df_top) + 1))
 
-            keep_cols = [
-                "protein_id", "rank", "target", "fident", "alnlen",
-                "evalue", "bits", "qstart", "qend", "tstart", "tend",
-            ]
-            summary_rows.append(df_top[[c for c in keep_cols if c in df_top.columns]])
-            logger.info(
-                f"  {protein_id}: {len(df_top)} hits retained "
-                f"(e-value ≤ {evalue_cutoff}, top {top_n})."
-            )
+    #         keep_cols = [
+    #             "protein_id", "rank", "target", "fident", "alnlen",
+    #             "evalue", "bits", "qstart", "qend", "tstart", "tend",
+    #         ]
+    #         summary_rows.append(df_top[[c for c in keep_cols if c in df_top.columns]])
+    #         logger.info(
+    #             f"  {protein_id}: {len(df_top)} hits retained "
+    #             f"(e-value ≤ {evalue_cutoff}, top {top_n})."
+    #         )
 
-        if summary_rows:
-            summary_df = pd.concat(summary_rows, ignore_index=True)
-        else:
-            summary_df = pd.DataFrame(columns=[
-                "protein_id", "rank", "target", "fident", "alnlen",
-                "evalue", "bits", "qstart", "qend", "tstart", "tend",
-            ])
+    #     if summary_rows:
+    #         summary_df = pd.concat(summary_rows, ignore_index=True)
+    #     else:
+    #         summary_df = pd.DataFrame(columns=[
+    #             "protein_id", "rank", "target", "fident", "alnlen",
+    #             "evalue", "bits", "qstart", "qend", "tstart", "tend",
+    #         ])
 
-        summary_df.to_csv(summary_csv, index=False)
-        logger.info(f"Foldseek summary saved to {summary_csv}")
-        return summary_df
+    #     summary_df.to_csv(summary_csv, index=False)
+    #     logger.info(f"Foldseek summary saved to {summary_csv}")
+    #     return summary_df
