@@ -1,18 +1,23 @@
-# HAdV-5 Interactome Analysis Pipeline
+# Virus Interactome Analysis Pipeline
 
-Complete description of the pipeline executed for Human Adenovirus 5 (HAdV-5), from proteome preparation to downstream structural analysis. Implemented in the `virus_interactome` package around the four core classes: `ProteomeManager`, `InteractomeWriter`, `InteractomeRunner`, and `InteractomeProcessor` / `InteractomeAnalyzer`.
+Complete description of the pipeline for viral proteome interactome analysis, from proteome preparation to downstream structural analysis. Implemented in the `virus_interactome` package around four core classes: `ProteomeManager`, `InteractomeWriter`, `InteractomeRunner`, `InteractomeProcessor`, and `InteractomeAnalyzer`.
 
 ---
 
 ## Stage 0 — Proteome Preparation (`ProteomeManager`)
 
 **Input:** FASTA file of the viral proteome.
-`HAdV5_AC_000008_1_modified.fa`
+
+```python
+from virus_interactome import ProteomeManager
+
+pm = ProteomeManager("<virus>_proteome.fa")
+```
 
 **Actions:**
 1. Load sequences from FASTA (`ProteomeManager(fasta_path)`).
-2. Validate residues — only standard amino acids are accepted; invalid sequences are quarantined in `invalid_sequences`.
-3. (Optional) Compute pairwise sequence identity matrix to detect high-similarity pairs (`high_similarity_pairs`) that may inflate the interactome with trivial/redundant predictions.
+2. Validate residues — only standard amino acids accepted; invalid sequences quarantined in `invalid_sequences`.
+3. (Optional) Compute pairwise sequence identity matrix to detect high-similarity pairs (`high_similarity_pairs`) that may inflate the interactome with redundant predictions.
 4. (Optional) Compute per-protein physicochemical properties (MW, pI, instability index) via BioPython.
 
 **Key output:** A `ProteomeManager` instance with a clean `sequences` dict `{id: aa_sequence}`.
@@ -24,9 +29,11 @@ Complete description of the pipeline executed for Human Adenovirus 5 (HAdV-5), f
 **Goal:** Generate one input file per protein pair (heterodimer) to be submitted to a folding engine.
 
 ```python
-writer = InteractomeWriter(proteome_a="HAdV5_AC_000008_1_modified.fa")
+from virus_interactome import InteractomeWriter
+
+writer = InteractomeWriter(proteome_a="<virus>_proteome.fa")
 writer.write_interactome_jobs(
-    engine="af3",           # or "boltz2"
+    engine="af3",           # or "boltz2", "colabfold"
     output_dir="2_AF/input/",
     mode="intra_pairs",     # all unique (A, B) pairs within the proteome
 )
@@ -35,31 +42,34 @@ writer.write_interactome_jobs(
 **Internal logic:**
 - `generate_intra_pairs()` — `combinations(ids, 2)`, canonical ordering (alphabetical) to avoid duplicates `(A,B)` vs `(B,A)`.
 - For each pair, builds a `seq_list = [(idA, seqA, countA), (idB, seqB, countB)]`.
-- Residue count validation: pairs exceeding the engine limit (`af3_threshold=5000 aa` or `boltz_threshold=1600 aa`) are logged with a warning. Files are still written unless `skip_over_threshold=True` (default `False`).
-- Writes one `.json` (AF3) or `.yaml` (Boltz2) per pair following the naming convention `{idA}__{idB}`.
+- Residue count validation: pairs exceeding the engine limit (`af3`: 5000 aa, `boltz2`: 1600 aa, `colabfold`: 10000 aa) are logged. Files are still written unless `skip_over_threshold=True` (default `False`).
+- Writes one `.json` (AF3) or `.yaml` (Boltz2) per pair, or one `colabfold_input.csv` for all ColabFold jobs.
+- Naming convention: `{idA}__{idB}` (double underscore).
 - Saves an `index.csv` with metadata: `engine, mode, name, idA, idB, countA, countB, total_residues, warnings, file_path`.
 
 **Also supports:**
 - `mode="homomers"` — generates `(protein, n_copies)` for n in `[nmin, nmax]`.
 - `mode="single"` — monomeric folding.
-- `mode="inter_pairs"` — all pairs between two different proteomes (virus-host).
+- `mode="inter_pairs"` — all pairs between two different proteomes (virus–host).
+
+Engine configuration is managed via `_ENGINE_CONFIG` class dict (extension, default threshold). Override per-run with `residue_threshold: Optional[int]`.
 
 ---
 
 ## Stage 1b — Monomer Input Generation (`InteractomeWriter`, `mode='single'`)
 
-Monomeric folding jobs can be generated alongside or independently of the interactome pairs:
+Monomeric folding jobs generated alongside or independently of interactome pairs:
 
 ```python
-writer = InteractomeWriter("HAdV5_AC_000008_1_modified.fa")
+writer = InteractomeWriter("<virus>_proteome.fa")
 writer.write_interactome_jobs(
     engine="boltz2",       # or "af3", "colabfold"
     output_dir="2_mono/input/",
-    mode="single",         # one file per protein
+    mode="single",
 )
 ```
 
-- Produces one `.yaml` (Boltz2) / `.json` (AF3) / `.fasta` (ColabFold) per protein.
+- Produces one `.yaml` (Boltz2) / `.json` (AF3) per protein; ColabFold writes a single `colabfold_input.csv`.
 - `index.csv` metadata: `idA` = protein ID, `idB` = `""`, `countB` = `""`.
 - For run monitoring: `InteractomeRunner.check_run(expected_models=1)` (Boltz2) or `expected_models=5` (AF3).
 
@@ -67,23 +77,29 @@ writer.write_interactome_jobs(
 
 ## Stage 2 — Structure Prediction (External)
 
-Prediction runs were submitted externally to the folding engines. The pipeline monitors and manages these runs via `InteractomeRunner`.
+Prediction runs are submitted externally to the folding engines. The pipeline monitors and manages these runs via `InteractomeRunner`.
 
 ### AF3 (AlphaFold 3)
 - Input: `.json` files generated in Stage 1.
-- Output per pair: a subdirectory `{idA}__{idB}/` containing up to **10 models** in `.cif` format (`*model_0.cif` … `*model_9.cif`).
+- Output per pair: subdirectory `{idA}__{idB}/` containing up to **10 models** in `.cif` format (`*model_0.cif` … `*model_9.cif`).
 
 ### Boltz2
 - Input: `.yaml` files.
 - Output per pair: a subdirectory with up to **5 models** in `.cif` format.
 
 ### ColabFold (AlphaFold-Multimer)
-- Input: not generated by `InteractomeWriter` (only AF3/Boltz2 are supported). ColabFold jobs must be submitted externally.
+- Input: `colabfold_input.csv` generated by `InteractomeWriter`.
 - Output: same `.cif` convention; `InteractomeProcessor` supports `engine="colabfold"` and `InteractomeRunner` has dedicated methods (`run_colabfold_fastas`, `check_colabfold_run`).
 
 ### Run monitoring (`InteractomeRunner.check_run`)
 ```python
-runner = InteractomeRunner(path_of_inputs="2_AF/input/", path_of_outputs="2_AF/output/", mode="af3")
+from virus_interactome import InteractomeRunner
+
+runner = InteractomeRunner(
+    path_of_inputs="2_AF/input/",
+    path_of_outputs="2_AF/output/",
+    mode="af3",
+)
 status_df = runner.check_run(expected_models=10)
 # Returns DataFrame: PPI | num_chain | num_aa | num_models | status
 # status ∈ {COMPLETED, RUNNING, PENDING, FAILED}
@@ -99,6 +115,8 @@ Missing/failed jobs can be re-queued with `runner.write_missing_jobs()`.
 
 ```python
 from glob import glob
+from virus_interactome import InteractomeProcessor
+
 model_files = glob("2_AF/output/**/*model*.cif", recursive=True)
 
 processor = InteractomeProcessor(model_list=model_files, engine="af3")
@@ -126,17 +144,18 @@ For each `.cif` file:
 
 4. **Interface metrics** (only for heterodimers, i.e., 2-chain models):
    - `calculate_all_metrics()` from `metrics.py` — computes:
-     - `ipSAE_AB`, `ipSAE_d0dom_AB` — interface SAE scores (TM-score-like). Note: column is `ipSAE_d0dom_AB` (no underscore between `d0` and `dom`).
-     - `ipSAE_BA`, `max_ipSAE`, `ipSAE_d0chn_AB/BA`, `ipSAE_d0dom_BA`
-     - `pDockQ2_AB`, `pDockQ2_BA` — docking quality scores.
-     - `pDockQ` — original pDockQ (non-v2).
-     - `LIS_AB`, `LIS_BA` — Local Interaction Score (Kim et al., 2024): mean of `(1 - PAE/12)` for inter-chain Cβ pairs with PAE ≤ 12 Å.
-     - `pLDDT_mean`, `pLDDT_mean_A`, `pLDDT_mean_B`, `pLDDT_median_A`, `pLDDT_median_B`.
-     - `pae_mean`, `pae_mean_A`, `pae_mean_B`, `pae_mean_AB`.
-     - `ipTM`, `pTM_chain_A`, `pTM_chain_B`.
+     - `ipSAE_AB`, `ipSAE_d0dom_AB`, `ipSAE_BA`, `max_ipSAE`, `ipSAE_d0chn_AB/BA`, `ipSAE_d0dom_BA`
+     - `pDockQ2_AB`, `pDockQ2_BA`, `pDockQ`
+     - `LIS_AB`, `LIS_BA`, `LIA_AB`, `LIA_BA` — Local Interaction Score/Area (Kim et al., 2024)
+     - `cLIS_AB/BA`, `cLIA_AB/BA` — contact-filtered LIS/LIA (Cβ–Cβ ≤ 8 Å AND PAE ≤ 12 Å)
+     - `iLIS_AB/BA`, `iLIA_AB/BA` — geometric mean of LIS×cLIS and LIA×cLIA (Kim et al., 2025)
+     - `Best_LIS`, `Best_iLIS`, `Best_LIA`, `Best_iLIA`
+     - `pLDDT_mean`, `pLDDT_mean_A/B`, `pLDDT_median_A/B`
+     - `pae_mean`, `pae_mean_A/B/AB`
+     - `ipTM`, `pTM_chain_A/B`
 
 5. **PAE interface clustering (DBSCAN):**
-   - Extracts the inter-chain PAE submatrix (A→B and B→A, then symmetrized by mean).
+   - Extracts the inter-chain PAE submatrix (A→B and B→A, symmetrized by mean).
    - Thresholds low-PAE regions (default < 15 Å) and runs DBSCAN (`eps=10.0`, `min_samples=5`).
    - `cluster_info()` computes per-cluster geometry: `x_len`, `y_len`, `center_x`, `center_y`, `cluster_ratio` (aspect ratio = max_side / min_side).
    - Cluster plot → `*_cluster.png`
@@ -144,35 +163,37 @@ For each `.cif` file:
 6. **Resume logic** — if `interactome_data.csv` already exists, already-processed folders are skipped.
 
 ### Outputs
+
 | File | Content |
 |---|---|
 | `interactome_data.csv` | One row per model — full column list below |
 | `clusters_data.csv` | One row per PAE cluster: `PPI, model_num, path, cluster_id, num_points, x_len, y_len, x_min, x_max, y_min, y_max, center_x, center_y, cluster_ratio` |
 
-**`interactome_data.csv` columns** (complete):
+**`interactome_data.csv` columns (complete):**
 
 | Column | Source |
 |---|---|
 | `PPI`, `ORF_A`, `ORF_B`, `Folder`, `Model_num` | metadata |
 | `ipTM`, `pTM`, `pTM_chain_A`, `pTM_chain_B` | engine output |
 | `msa_depth`, `msa_coverage` | engine output |
-| `pLDDT_mean`, `pLDDT_mean_A`, `pLDDT_mean_B` | metrics.py |
-| `pLDDT_median_A`, `pLDDT_median_B` | metrics.py |
-| `pae_mean`, `pae_mean_A`, `pae_mean_B`, `pae_mean_AB` | metrics.py |
-| `pDockQ`, `pDockQ2_AB`, `pDockQ2_BA` | metrics.py |
-| `LIS_AB`, `LIS_BA` | metrics.py (Kim et al. 2024) |
-| `ipSAE_AB`, `ipSAE_BA`, `max_ipSAE` | metrics.py (Dunbrack 2025) |
-| `ipSAE_d0chn_AB`, `ipSAE_d0chn_BA` | metrics.py |
-| `ipSAE_d0dom_AB`, `ipSAE_d0dom_BA` | metrics.py |
+| `pLDDT_mean`, `pLDDT_mean_A/B`, `pLDDT_median_A/B` | metrics.py |
+| `pae_mean`, `pae_mean_A/B/AB` | metrics.py |
+| `pDockQ`, `pDockQ2_AB/BA` | metrics.py |
+| `LIS_AB/BA`, `LIA_AB/BA` | metrics.py (Kim et al. 2024) |
+| `cLIS_AB/BA`, `cLIA_AB/BA` | metrics.py (contact-filtered) |
+| `iLIS_AB/BA`, `iLIA_AB/BA` | metrics.py (geometric mean) |
+| `Best_LIS`, `Best_iLIS`, `Best_LIA`, `Best_iLIA` | metrics.py |
+| `ipSAE_AB/BA`, `max_ipSAE` | metrics.py (Dunbrack 2025) |
+| `ipSAE_d0chn_AB/BA`, `ipSAE_d0dom_AB/BA` | metrics.py |
 
 ---
 
 ## Stage 3b — Monomer Processing (`InteractomeProcessor.process_monomers`)
 
-After monomer structure prediction, extract pLDDT statistics in parallel:
-
 ```python
 from glob import glob
+from virus_interactome import InteractomeProcessor
+
 mono_cifs = glob("2_mono/output/**/*model*.cif", recursive=True)
 
 processor = InteractomeProcessor(model_list=mono_cifs, engine="boltz2")
@@ -198,6 +219,8 @@ Resume-logic identical to `process_models`: already-processed CIF paths are skip
 **Goal:** Load the processed CSVs and apply biological filters to identify high-confidence interactions and candidate peptide-binding sites.
 
 ```python
+from virus_interactome import InteractomeAnalyzer
+
 analyzer = InteractomeAnalyzer(output_path="4_analysis/")
 analyzer.interactome_path = "3_results/interactome_data.csv"
 analyzer.cluster_path    = "3_results/clusters_data.csv"
@@ -213,6 +236,8 @@ tiered_df = analyzer.get_confidence_tiers(
 )
 ```
 
+**ipSAE tiers (`Tier` column):**
+
 | Tier | Criteria |
 |---|---|
 | **Tier 1 — High Confidence** | ipSAE > 0.5 AND pDockQ2 > 0.23 AND msa_depth > 20 |
@@ -220,51 +245,75 @@ tiered_df = analyzer.get_confidence_tiers(
 | **Tier 3 — Weak/Dynamic** | ipSAE > 0.5 AND pDockQ2 ≤ 0.23 |
 | **Low Confidence** | ipSAE ≤ 0.5 |
 
-### 4.2 Confidence Landscape Visualization
+**LIS-based tiers (added alongside, not replacing):**
+
+| Column | Threshold | Source |
+|---|---|---|
+| `LIS_Tier` | Best LIS ≥ 0.203 AND Best LIA ≥ 3432 | Kim 2024; Qi et al. 2026 (Atlas) |
+| `iLIS_Tier` | Best iLIS ≥ 0.223 | Kim 2025 |
+
+### 4.2 Generic Analysis Methods
 
 ```python
-analyzer.plot_confidence_landscape()      # static matplotlib scatter
-analyzer.plot_interactive_landscape()     # interactive plotly HTML
+# Multi-metric range filter
+filtered = analyzer.filter_by_metrics({"ipSAE_AB": (0.5, 1.0), "pDockQ2_AB": (0.23, 1.0)})
+
+# Top-N ranking
+top = analyzer.get_top_interactions(metric="ipSAE_AB", top_n=20)
+
+# Per-protein summary (degree, mean/max ipSAE, best partner)
+summary = analyzer.summarize_by_protein()
+
+# Export edge list for Cytoscape or Gephi
+edges = analyzer.export_to_network(output_format="cytoscape")
+
+# Compare two engine runs
+merged = analyzer.compare_engines(other_df=boltz_df)
+
+# K-Means clustering on metric space
+clustered = analyzer.cluster_interactome_by_metrics(n_clusters=4)
 ```
 
-- X-axis: pDockQ2 | Y-axis: `ipSAE_d0dom_AB` (fallback chain: `ipSAE_d0dom_AB` → `ipSAE_AB`) | Size: √msa_depth | Color: pLDDT (AF colorscale: orange < 50, yellow 50–70, cyan 70–90, blue > 90).
-- Reference lines: `x=0.23` (pDockQ2 tier threshold), `y=0.4` (visual guide; note: tier threshold is 0.5).
-- Jitter applied to prevent point overlap for identical predictions.
-
-### 4.3 Candidate Peptide-Protein Detection (`_get_candidate_clusters`)
-
-Applies geometric filtering on the PAE clusters to identify elongated interfaces characteristic of linear peptide-binding motifs:
+### 4.3 Confidence Landscape Visualization
 
 ```python
-# Called internally by run_full_pipeline / analyze_peptide_proteins_pairs
+analyzer.plot_confidence_landscape(title="<Virus> Confidence Landscape")
+analyzer.plot_interactive_landscape(title="<Virus> Confidence Landscape")
+```
+
+- X-axis: pDockQ2 | Y-axis: `ipSAE_d0dom_AB` | Size: √msa_depth | Color: pLDDT (AF colorscale).
+- Reference lines: `x=0.23`, `y=0.4`.
+
+### 4.4 Candidate Peptide-Protein Detection (`_get_candidate_clusters`)
+
+Applies geometric filtering on PAE clusters to identify elongated interfaces characteristic of linear peptide-binding motifs:
+
+```python
 candidates = analyzer._get_candidate_clusters(
-    cluster_ratio_threshold=5.0,   # method default; run_full_pipeline overrides to 7.0
-    min_peptide_len=5              # minimum cluster dimension in residues
+    cluster_ratio_threshold=5.0,
+    min_peptide_len=5
 )
 ```
 
-For each candidate, the shorter dimension → **Peptide**, the longer → **Binder** (receptor protein).
+For each candidate: shorter dimension → **Peptide**, longer → **Binder** (receptor protein).
 
-### 4.4 Peptide-Protein Structural Analysis (`analyze_peptide_proteins_pairs`)
+### 4.5 Peptide-Protein Structural Analysis (`analyze_peptide_proteins_pairs`)
 
 For each candidate binder protein:
 
-1. **Structure curation** — extract peptide + binder interface residues from the full `.cif` using `moleculekit` (`_curate_protein_peptide_models`); save trimmed `.pdb` to `prot_peptide/{binder}/filtered/`.
-2. **Reference structure selection** — pick the model with the best pLDDT as reference for alignment (`_get_reference_structure_for_binder`); saved to `prot_peptide/{binder}/reference_{binder}.pdb`.
-3. **Backbone alignment** — align all filtered models onto the reference by the binder's Cα atoms (`_create_binder_alignments`); save to `prot_peptide/{binder}/aligned/`.
-4. **Spatial clustering (DBSCAN)** on peptide centroid coordinates across aligned models (`cluster_protein_peptides`): groups poses that converge on the same binding site.
-5. **ChimeraX session generation** (`_create_chimera_session`) — writes a `.cxs` script that:
-   - Loads the reference + all aligned models.
-   - Colors models by spatial cluster.
-   - Displays peptide centroids as spheres.
-6. **Summary CSV** — `peptide_binder_info.csv` with cluster label, center coordinates, and interface residues per candidate.
+1. **Structure curation** — extract peptide + binder interface residues from `.cif` using `moleculekit`; save trimmed `.pdb` to `prot_peptide/{binder}/filtered/`.
+2. **Reference selection** — model with best pLDDT per binder → `prot_peptide/{binder}/reference_{binder}.pdb`.
+3. **Backbone alignment** — align filtered models onto reference by binder Cα atoms → `prot_peptide/{binder}/aligned/`.
+4. **Spatial clustering (DBSCAN)** on peptide centroid coordinates across aligned models.
+5. **ChimeraX session** (`_create_chimera_session`) — loads reference + aligned models, colors by cluster, displays centroids as spheres.
+6. **Summary CSV** — `peptide_binder_info.csv`.
 
-### 4.5 Full Pipeline Entry Point
+### 4.6 Full Pipeline Entry Point
 
 ```python
 analyzer.run_full_pipeline(
-    ipsae_filter=0.5,              # informational threshold (does NOT filter structural step)
-    cluster_ratio_threshold=7.0,   # overrides _get_candidate_clusters default of 5.0
+    ipsae_filter=0.5,
+    cluster_ratio_threshold=7.0,
     min_peptide_len=5
 )
 ```
@@ -273,38 +322,35 @@ analyzer.run_full_pipeline(
 
 ## Stage 4b — Structural Homology Search (`InteractomeAnalyzer.run_foldseek_search`)
 
-Searches protein monomer structures against Foldseek databases to find structural homologs.
-Operates standalone — does not require `interactome_data` to be loaded.
+Searches protein monomer structures against Foldseek databases. Operates standalone — does not require `interactome_data` to be loaded.
 
 ```python
 analyzer = InteractomeAnalyzer(output_path="4_analysis/")
 
 df = analyzer.run_foldseek_search(
-    protein_ids=["E1A", "pVII", "hexon"],   # any subset of proteins
-    monomer_cif_dir="2_mono/output/",       # root with one subdir per protein
-    databases=["afdb-swissprot", "pdb100"], # default; add "afdb50" for broader search
+    protein_ids=["protA", "protB"],      # subset of proteins to search
+    monomer_cif_dir="2_mono/output/",    # root with one subdir per protein
+    databases=["afdb-swissprot", "pdb100"],
     top_n=10,
     evalue_cutoff=1e-3,
-    best_plddt=False,    # True → selects model with highest mean pLDDT per protein
+    best_plddt=False,
 )
 ```
 
-Expected `monomer_cif_dir` layout (same as engine output for `mode='single'`):
+Expected `monomer_cif_dir` layout:
 ```
 2_mono/output/
-├── E1A/
-│   └── E1A_model_0.cif
-├── pVII/
-│   └── pVII_model_0.cif
-└── hexon/
-    └── hexon_model_0.cif
+├── protA/
+│   └── protA_model_0.cif
+└── protB/
+    └── protB_model_0.cif
 ```
 
 ### Outputs
 
 | File | Content |
 |---|---|
-| `foldseek_results/{protein_id}.tsv` | Raw Foldseek hits (all columns) per protein |
+| `foldseek_results/{protein_id}.tsv` | Raw Foldseek hits per protein |
 | `foldseek_summary.csv` | Top-N filtered hits across all proteins |
 
 **`foldseek_summary.csv` columns:** `protein_id`, `rank`, `target`, `fident`, `alnlen`, `evalue`, `bits`, `qstart`, `qend`, `tstart`, `tend`
@@ -314,7 +360,7 @@ Expected `monomer_cif_dir` layout (same as engine output for `mode='single'`):
 ## Data Flow Summary
 
 ```
-HAdV5.fa
+<virus>_proteome.fa
     │
     ▼
 [ProteomeManager]
@@ -322,7 +368,7 @@ HAdV5.fa
     ├──────────────────────────────────────────────┐
     ▼                                              ▼
 [InteractomeWriter mode=intra_pairs]    [InteractomeWriter mode=single]
-    │  {idA}__{idB}.json/.yaml                 │  {pid}.json/.yaml
+    │  {idA}__{idB}.json/.yaml/.csv           │  {pid}.json/.yaml/.csv
     ▼                                          ▼
 [AF3 / Boltz2 / ColabFold]          [AF3 / Boltz2 / ColabFold]
     │  {idA}__{idB}/*model_N.cif           │  {pid}/*model_0.cif
@@ -336,6 +382,12 @@ HAdV5.fa
     ▼                             [InteractomeAnalyzer.run_foldseek_search]
 [InteractomeAnalyzer]                      │  foldseek_results/{pid}.tsv
     ├── get_confidence_tiers()             └  foldseek_summary.csv
+    ├── filter_by_metrics()
+    ├── get_top_interactions()
+    ├── summarize_by_protein()
+    ├── export_to_network()
+    ├── compare_engines()
+    ├── cluster_interactome_by_metrics()
     ├── plot_confidence_landscape()
     └── analyze_peptide_proteins_pairs()
             ├── filtered PDBs
@@ -354,39 +406,59 @@ HAdV5.fa
 | `ipSAE_d0dom_AB` | `metrics.py` | ipSAE with domain-length-normalized d0 — preferred for ranking short interfaces |
 | `ipSAE_d0chn_AB` | `metrics.py` | ipSAE with combined-chain-length-normalized d0 |
 | `max_ipSAE` | `metrics.py` | max(ipSAE_AB, ipSAE_BA) |
-| `pDockQ2_AB` | `metrics.py` | Docking quality score v2 — proxy for physical binding plausibility |
+| `pDockQ2_AB` | `metrics.py` | Docking quality score v2 |
 | `pDockQ` | `metrics.py` | Original pDockQ (v1) |
-| `LIS_AB` | `metrics.py` | Local Interaction Score (Kim et al. 2024): mean of `(1−PAE/12)` for Cβ pairs with PAE ≤ 12 Å. Best LIS threshold ≥ 0.203 (high-confidence) |
+| `LIS_AB/BA` | `metrics.py` | Local Interaction Score: mean of `(1−PAE/12)` for Cβ pairs with PAE ≤ 12 Å |
+| `LIA_AB/BA` | `metrics.py` | Count of Cβ pairs with PAE ≤ 12 Å |
+| `cLIS_AB/BA` | `metrics.py` | Contact-filtered LIS: same + Cβ–Cβ dist ≤ 8 Å |
+| `cLIA_AB/BA` | `metrics.py` | Count of contact-filtered Cβ pairs |
+| `iLIS_AB/BA` | `metrics.py` | sqrt(LIS × cLIS) — Kim et al. 2025 |
+| `iLIA_AB/BA` | `metrics.py` | sqrt(LIA × cLIA) |
+| `Best_LIS` | `metrics.py` | max(LIS_AB, LIS_BA) |
+| `Best_iLIS` | `metrics.py` | max(iLIS_AB, iLIS_BA) |
 | `pLDDT_mean` | `metrics.py` | Mean per-residue confidence across the complex |
-| `pLDDT_mean_A/B` | `metrics.py` | Per-chain mean pLDDT |
 | `pae_mean_AB` | `metrics.py` | Mean PAE of cross-chain submatrix (symmetrized) |
-| `ipTM` | AF3/Boltz output | Inter-chain predicted TM-score |
-| `pTM`, `pTM_chain_A/B` | AF3/Boltz output | Global and per-chain predicted TM-score |
-| `msa_depth` | AF3/Boltz output | Number of effective sequences in MSA — evolutionary support |
+| `ipTM` | engine output | Inter-chain predicted TM-score |
+| `msa_depth` | engine output | Effective sequences in MSA — evolutionary support |
 | `cluster_ratio` | `InteractomeProcessor` | PAE cluster aspect ratio — high value → peptide-like linear interface |
+
+### Literature-validated thresholds
+
+| Use case | Threshold | Source |
+|---|---|---|
+| High-confidence heterodimer (dual) | Best LIS ≥ 0.203 AND Best LIA ≥ 3432 | Kim 2024; Qi et al. 2026 (Atlas) |
+| High-confidence heterodimer (single) | Best iLIS ≥ 0.223 | Kim 2025 |
+| High-quality for ML training | Best LIS ≥ 0.4 AND pLDDT ≥ 80 | Qi et al. 2026 (MPBind) |
+| ~90% precision (low recall) | Best LIS ≥ 0.6 | Qi et al. 2026 |
 
 ---
 
 ## File and Directory Conventions
 
 ```
-ppi_data/adeno/
+ppi_data/{virus}/
 ├── 0_proteomes/curated/
-│   └── HAdV5_AC_000008_1_modified.fa
-├── 2_AF/
+│   └── <virus>_proteome.fa
+├── 2_{engine}/
 │   ├── input/
 │   │   ├── index.csv
-│   │   ├── af3_{idA}__{idB}.json
-│   │   └── ...
+│   │   ├── {engine}_{idA}__{idB}.json/.yaml
+│   │   └── colabfold_input.csv       (ColabFold only)
 │   └── output/
 │       └── {idA}__{idB}/
-│           ├── *model_0.cif ... *model_9.cif
+│           ├── *model_0.cif ... *model_N.cif
 │           ├── *_plddt.png
 │           ├── *_pae.png
 │           └── *_cluster.png
+├── 2_mono/
+│   ├── input/
+│   └── output/
+│       └── {protein_id}/
+│           └── *model_0.cif
 └── 3_results/
     ├── interactome_data.csv
     ├── clusters_data.csv
+    ├── monomer_data.csv
     └── prot_peptide/
         └── {binder}/
             ├── reference_{binder}.pdb
