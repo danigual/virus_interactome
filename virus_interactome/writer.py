@@ -6,9 +6,8 @@ import yaml
 
 from itertools import combinations, product
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
-from .model import Engine
 from .proteome_manager import ProteomeManager
 from .utils import check_sequence_validity
 
