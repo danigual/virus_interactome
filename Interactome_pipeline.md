@@ -321,24 +321,29 @@ analyzer.run_full_pipeline(
 
 ---
 
-## Stage 4b — Structural Homology Search (`InteractomeAnalyzer.run_foldseek_search`)
+## Stage 4b — Structural Homology Search (`FoldseekClient`)
 
-Searches protein monomer structures against Foldseek databases. Operates standalone — does not require `interactome_data` to be loaded.
+Searches protein monomer structures against Foldseek databases using `FoldseekClient` from `virus_interactome.foldseek`.
 
 ```python
-analyzer = InteractomeAnalyzer(output_path="4_analysis/")
+from virus_interactome.foldseek import FoldseekClient
+from pathlib import Path
 
-df = analyzer.run_foldseek_search(
-    protein_ids=["protA", "protB"],      # subset of proteins to search
-    monomer_cif_dir="2_mono/output/",    # root with one subdir per protein
-    databases=["afdb-swissprot", "pdb100"],
-    top_n=10,
-    evalue_cutoff=1e-3,
-    best_plddt=False,
-)
+client = FoldseekClient(poll_interval=10, timeout=600)
+out_dir = Path("4_analysis/foldseek_results")
+
+for protein_id in ["protA", "protB"]:
+    cif_path = Path(f"2_mono/output/{protein_id}/{protein_id}_model_0.cif")
+    tsv_path = client.search(
+        cif_path=cif_path,
+        databases=["afdb-swissprot", "pdb100"],
+        out_dir=out_dir / protein_id,
+        protein_id=protein_id,
+    )
+    print(f"{protein_id}: {tsv_path}")
 ```
 
-Expected `monomer_cif_dir` layout:
+Expected `monomer_cif_dir` layout (output of `process_monomers`):
 ```
 2_mono/output/
 ├── protA/
@@ -347,14 +352,15 @@ Expected `monomer_cif_dir` layout:
     └── protB_model_0.cif
 ```
 
-### Outputs
+`FoldseekClient.search()` is idempotent: if a `.tsv` already exists in `out_dir`, the job is skipped.
+
+### Output per protein
 
 | File | Content |
 |---|---|
-| `foldseek_results/{protein_id}.tsv` | Raw Foldseek hits per protein |
-| `foldseek_summary.csv` | Top-N filtered hits across all proteins |
+| `{out_dir}/{protein_id}.tsv` | Raw Foldseek hits (tab-separated, Foldseek m8 format) |
 
-**`foldseek_summary.csv` columns:** `protein_id`, `rank`, `target`, `fident`, `alnlen`, `evalue`, `bits`, `qstart`, `qend`, `tstart`, `tend`
+**TSV columns:** `query`, `target`, `fident`, `alnlen`, `mismatch`, `gapopen`, `qstart`, `qend`, `tstart`, `tend`, `evalue`, `bits`
 
 ---
 
@@ -380,9 +386,9 @@ Expected `monomer_cif_dir` layout:
 [InteractomeProcessor.process_models]  [InteractomeProcessor.process_monomers]
     │  interactome_data.csv                │  monomer_data.csv
     │  clusters_data.csv                   ▼
-    ▼                             [InteractomeAnalyzer.run_foldseek_search]
-[InteractomeAnalyzer]                      │  foldseek_results/{pid}.tsv
-    ├── get_confidence_tiers()             └  foldseek_summary.csv
+    ▼                             [FoldseekClient.search() — per protein]
+[InteractomeAnalyzer]                      └  foldseek_results/{pid}.tsv
+    ├── get_confidence_tiers()
     ├── filter_by_metrics()
     ├── get_top_interactions()
     ├── summarize_by_protein()
