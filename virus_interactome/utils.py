@@ -1,4 +1,6 @@
 import json
+import re
+import shutil
 import yaml
 from collections import OrderedDict
 import numpy as np
@@ -6,12 +8,15 @@ from typing import Union, Dict, List, Any
 from glob import glob
 import numpy as np
 import os
+import logging
 from moleculekit.molecule import Molecule
 from pathlib import Path
 from .metrics import ptm_func_vec, calc_d0
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 def check_sequence_validity(seq: str) -> bool:
     """Return True if *seq* is non-empty and contains only standard amino acid letters."""
@@ -649,3 +654,81 @@ def df_to_pdf(
         pdf.savefig(fig, bbox_inches="tight")
 
     plt.close(fig)
+
+
+def reorganize_colabfold_outputs(output_dir: Union[str, Path], dry_run: bool = False) -> int:
+    """
+    Reorganize flat ColabFold batch outputs into one subdirectory per job.
+
+    ColabFold batch (CSV strategy) dumps all files flat in the output directory.
+    This function groups them by job ID ({idA}__{idB}) into per-job subdirectories.
+
+    Files ending in ``.done.txt`` are left at the top level — ColabFold reads
+    these to skip already-completed jobs on re-runs.
+
+    Idempotent: safe to call on an already-organized directory.
+
+    Parameters
+    ----------
+    output_dir : str or Path
+        Flat ColabFold output directory to reorganize.
+    dry_run : bool, optional
+        If True, log planned moves without executing them. Defaults to False.
+
+    Returns
+    -------
+    int
+        Number of new subdirectories created (0 if already fully organized).
+    """
+    out_path = Path(output_dir)
+    if not out_path.is_dir():
+        raise ValueError(f"Not a directory: {out_path}")
+
+    # Match job IDs: {anything}__{anything} followed immediately by _ or .
+    # Bare directory names like "ORF52__3" (no trailing _ or .) are naturally excluded.
+    id_pattern = re.compile(r"^(.+?__.+?)(?=[_.])")
+
+    # Single pass: group top-level items by job ID
+    job_map: Dict[str, List[Path]] = {}
+    for item in out_path.iterdir():
+        if item.name.endswith(".done.txt"):
+            continue
+        m = id_pattern.match(item.name)
+        if m:
+            job_map.setdefault(m.group(1), []).append(item)
+
+    if not job_map:
+        logger.info("reorganize_colabfold_outputs: nothing to reorganize.")
+        return 0
+
+    n_items = sum(len(v) for v in job_map.values())
+    logger.info(
+        f"reorganize_colabfold_outputs: {len(job_map)} job IDs, {n_items} items to move."
+    )
+
+    dirs_created = 0
+    for job_id, items in sorted(job_map.items()):
+        job_dir = out_path / job_id
+        if not job_dir.exists():
+            dirs_created += 1
+        if not dry_run:
+            job_dir.mkdir(exist_ok=True)
+
+        for item in items:
+            dest = job_dir / item.name
+            if dry_run:
+                logger.debug(f"[DRY RUN] {item.name} → {job_id}/")
+                continue
+            try:
+                if item.is_dir() and dest.is_dir():
+                    # Merge _env dirs: move contents, remove empty source
+                    for sub in item.iterdir():
+                        shutil.move(str(sub), str(dest / sub.name))
+                    item.rmdir()
+                else:
+                    shutil.move(str(item), str(dest))
+            except Exception as e:
+                logger.warning(f"Could not move {item.name}: {e}")
+
+    logger.info(f"reorganize_colabfold_outputs: done. {dirs_created} new directories created.")
+    return dirs_created

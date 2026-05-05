@@ -8,6 +8,7 @@ from virus_interactome.utils import (
     parse_msa_metrics,
     load_json,
     check_sequence_validity,
+    reorganize_colabfold_outputs,
 )
 
 
@@ -293,3 +294,105 @@ def test_process_full_data_colabfold_confidences(dummy_cif_af3, colabfold_scores
     assert data["iptm"] == pytest.approx(0.72)
     assert data["ca_plddts"].shape == (454,)
     assert data["pae"].shape == (454, 454)
+
+
+# ---------------------------------------------------------------------------
+# reorganize_colabfold_outputs
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def flat_colabfold_dir(tmp_path):
+    """Flat ColabFold batch output with two jobs, global files, and edge cases."""
+    files = [
+        # Job A__B: pdb, json, png, a3m
+        "ORF1__ORF2_unrelaxed_rank_001_model_1_seed_000.pdb",
+        "ORF1__ORF2_scores_rank_001_model_1_seed_000.json",
+        "ORF1__ORF2_plddt.png",
+        "ORF1__ORF2.a3m",
+        # Job A__B: done marker — must stay at top level
+        "ORF1__ORF2.done.txt",
+        # Job C__D: pdb, json
+        "ORF3__ORF4_unrelaxed_rank_001_model_1_seed_000.pdb",
+        "ORF3__ORF4_scores_rank_001_model_1_seed_000.json",
+        "ORF3__ORF4.done.txt",
+        # Global ColabFold cache — no __ pattern, must stay
+        "bfd.mgnify30.metaeuk30.smag30.a3m",
+    ]
+    for name in files:
+        (tmp_path / name).write_text("")
+    # _env directory for job A__B
+    env_dir = tmp_path / "ORF1__ORF2_env"
+    env_dir.mkdir()
+    (env_dir / "uniref.a3m").write_text("")
+    return tmp_path
+
+
+def test_reorganize_creates_subdirectories(flat_colabfold_dir):
+    n = reorganize_colabfold_outputs(flat_colabfold_dir)
+    assert n == 2
+    assert (flat_colabfold_dir / "ORF1__ORF2").is_dir()
+    assert (flat_colabfold_dir / "ORF3__ORF4").is_dir()
+
+
+def test_reorganize_moves_pdb_json_png_a3m(flat_colabfold_dir):
+    reorganize_colabfold_outputs(flat_colabfold_dir)
+    job = flat_colabfold_dir / "ORF1__ORF2"
+    assert (job / "ORF1__ORF2_unrelaxed_rank_001_model_1_seed_000.pdb").exists()
+    assert (job / "ORF1__ORF2_scores_rank_001_model_1_seed_000.json").exists()
+    assert (job / "ORF1__ORF2_plddt.png").exists()
+    assert (job / "ORF1__ORF2.a3m").exists()
+
+
+def test_reorganize_moves_env_dir(flat_colabfold_dir):
+    reorganize_colabfold_outputs(flat_colabfold_dir)
+    assert (flat_colabfold_dir / "ORF1__ORF2" / "ORF1__ORF2_env").is_dir()
+    assert (flat_colabfold_dir / "ORF1__ORF2" / "ORF1__ORF2_env" / "uniref.a3m").exists()
+    assert not (flat_colabfold_dir / "ORF1__ORF2_env").exists()
+
+
+def test_reorganize_leaves_done_txt_at_top_level(flat_colabfold_dir):
+    reorganize_colabfold_outputs(flat_colabfold_dir)
+    assert (flat_colabfold_dir / "ORF1__ORF2.done.txt").exists()
+    assert (flat_colabfold_dir / "ORF3__ORF4.done.txt").exists()
+    assert not (flat_colabfold_dir / "ORF1__ORF2" / "ORF1__ORF2.done.txt").exists()
+
+
+def test_reorganize_leaves_global_files_at_top_level(flat_colabfold_dir):
+    reorganize_colabfold_outputs(flat_colabfold_dir)
+    assert (flat_colabfold_dir / "bfd.mgnify30.metaeuk30.smag30.a3m").exists()
+
+
+def test_reorganize_is_idempotent(flat_colabfold_dir):
+    reorganize_colabfold_outputs(flat_colabfold_dir)
+    n = reorganize_colabfold_outputs(flat_colabfold_dir)
+    assert n == 0
+
+
+def test_reorganize_dry_run_moves_nothing(flat_colabfold_dir):
+    n = reorganize_colabfold_outputs(flat_colabfold_dir, dry_run=True)
+    assert n == 2
+    assert not (flat_colabfold_dir / "ORF1__ORF2").is_dir()
+    assert (flat_colabfold_dir / "ORF1__ORF2_plddt.png").exists()
+
+
+def test_reorganize_invalid_dir_raises():
+    with pytest.raises(ValueError, match="Not a directory"):
+        reorganize_colabfold_outputs("/nonexistent/path/xyz")
+
+
+def test_reorganize_empty_dir_returns_zero(tmp_path):
+    assert reorganize_colabfold_outputs(tmp_path) == 0
+
+
+def test_reorganize_mixed_state(tmp_path):
+    """Already-organized job dirs coexist with flat files for a new job."""
+    existing = tmp_path / "ORF1__ORF2"
+    existing.mkdir()
+    (existing / "ORF1__ORF2_unrelaxed_rank_001_model_1_seed_000.pdb").write_text("")
+    (tmp_path / "ORF3__ORF4_unrelaxed_rank_001_model_1_seed_000.pdb").write_text("")
+    (tmp_path / "ORF3__ORF4_scores_rank_001_model_1_seed_000.json").write_text("")
+
+    n = reorganize_colabfold_outputs(tmp_path)
+    assert n == 1
+    assert (tmp_path / "ORF3__ORF4").is_dir()
+    assert not (tmp_path / "ORF3__ORF4_unrelaxed_rank_001_model_1_seed_000.pdb").exists()

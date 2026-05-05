@@ -13,7 +13,7 @@ from typing import Dict, List, Tuple, Optional, Any, Callable, Union
 from pathlib import Path
 from moleculekit.molecule import Molecule
 
-from .utils import load_json, load_boltz_input, parse_msa_metrics
+from .utils import load_json, load_boltz_input, parse_msa_metrics, reorganize_colabfold_outputs
 from .model import Engine, Model
 from .metrics import calculate_all_metrics
 from .plotting import plot_pae_clusters, plot_paes, plot_plddt
@@ -570,6 +570,9 @@ class InteractomeRunner:
                 logger.info(f"✓ Batch completed in {elapsed}s")
             else:
                 logger.error(f"✗ Batch failed (rc={proc.returncode}). Log: {log_path}")
+
+            logger.info("Reorganizing ColabFold outputs...")
+            reorganize_colabfold_outputs(out_path)
 
             return {"status": status, "returncode": proc.returncode,
                     "elapsed_s": elapsed, "log_path": str(log_path)}
