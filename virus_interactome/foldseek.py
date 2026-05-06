@@ -149,6 +149,9 @@ class FoldseekClient:
 
         print(f"[Foldseek] Submitting job for '{protein_id}' …")
         ticket_id = self._submit(cif_content, databases, mode)
+        if ticket_id is None:
+            warnings.warn("Failed to submit Foldseek job: no ticket ID returned.")
+            return None
         print(f"[Foldseek] Ticket: {ticket_id}. Waiting for completion …")
 
         self._poll(ticket_id)
@@ -193,7 +196,15 @@ class FoldseekClient:
                 f"Foldseek submission failed "
                 f"(HTTP {response.status_code}): {response.text}"
             )
-        return response.json()["id"]
+        print(response.json())
+        try:
+            return response.json()["id"]
+        except (KeyError, ValueError):
+            warnings.warn(
+                f"Foldseek submission failed "
+                f"(HTTP {response.status_code}): {response.text}"
+            )
+            return None
 
     def _poll(self, ticket_id: str) -> None:
         """Block until the job is COMPLETE, or raise on ERROR / timeout."""
