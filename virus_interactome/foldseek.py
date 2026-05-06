@@ -192,7 +192,7 @@ class FoldseekClient:
             timeout=30,
         )
         if response.status_code != 200:
-            warnings.warn(
+            raise RuntimeError(
                 f"Foldseek submission failed "
                 f"(HTTP {response.status_code}): {response.text}"
             )
@@ -206,10 +206,12 @@ class FoldseekClient:
             )
             return None
 
-    def _poll(self, ticket_id: str) -> None:
+    def _poll(self, ticket_id: str, poll_interval: Optional[int] = None, timeout: Optional[int] = None) -> None:
         """Block until the job is COMPLETE, or raise on ERROR / timeout."""
+        interval = poll_interval if poll_interval is not None else self.poll_interval
+        limit = timeout if timeout is not None else self.timeout
         elapsed = 0
-        while elapsed < self.timeout:
+        while elapsed < limit:
             resp = self._requests.get(
                 f"{self.API_BASE}/ticket/{ticket_id}",
                 timeout=30,
@@ -224,11 +226,11 @@ class FoldseekClient:
                     f"Foldseek job {ticket_id} reported an ERROR status."
                 )
 
-            time.sleep(self.poll_interval)
-            elapsed += self.poll_interval
+            time.sleep(interval)
+            elapsed += interval
 
         raise TimeoutError(
-            f"Foldseek job {ticket_id} did not complete within {self.timeout}s."
+            f"Foldseek job {ticket_id} did not complete within {limit}s."
         )
 
     def _download(

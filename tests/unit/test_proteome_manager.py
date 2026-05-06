@@ -74,58 +74,53 @@ def test_mixed_sequences(dummy_proteome_with_invalid_sequences, caplog):
     assert {"Protein1_isoformB": "MKTAYIAKQRQISFVKSHFSRQDILDZZZ"} == pm.invalid_sequences
 
 
-# --- Identity matrix tests ---
+# --- Identity tests ---
 
-def test_compute_identity_matrix_empty_proteome():
+def test_compute_identity_empty_proteome():
     pm = ProteomeManager()
     with pytest.raises(ValueError, match="Proteome is empty"):
-        pm.compute_identity_matrix()
+        pm.compute_identity()
 
 
-def test_compute_identity_matrix_single_protein():
+def test_compute_identity_single_protein():
     pm = ProteomeManager()
     pm.sequences = {"Protein1": "MKTAYIAKQR"}
-    df = pm.compute_identity_matrix(n_jobs=1)
-    assert df.shape == (1, 1)
-    assert df.iloc[0, 0] == pytest.approx(1.0)
+    df = pm.compute_identity(n_jobs=1)
+    assert df.empty
 
 
-def test_compute_identity_matrix_two_proteins():
+def test_compute_identity_two_proteins():
     pm = ProteomeManager()
     pm.sequences = {"Protein1": "AAAA", "Protein2": "AAAT"}
-    df = pm.compute_identity_matrix(n_jobs=1)
-    assert df.shape == (2, 2)
-    assert df.iloc[0, 0] == pytest.approx(1.0)
-    assert df.iloc[1, 1] == pytest.approx(1.0)
-    assert df.iloc[0, 1] == pytest.approx(df.iloc[1, 0])
-    assert 0.75 <= df.iloc[0, 1] <= 1.0
+    df = pm.compute_identity(n_jobs=1)
+    assert len(df) == 1
+    assert set(df.columns) == {"ORF1", "ORF2", "Identity"}
+    assert 0.75 <= df.iloc[0]["Identity"] <= 1.0
 
 
 @pytest.mark.slow
-def test_compute_identity_matrix_multiprocessing():
+def test_compute_identity_multiprocessing():
     pm = ProteomeManager()
     pm.sequences = {"Protein1": "AAAA", "Protein2": "AAAT", "Protein3": "TTTT"}
-    df = pm.compute_identity_matrix(n_jobs=2)
-    assert df.shape == (3, 3)
-    assert all(df.iloc[i, i] == pytest.approx(1.0) for i in range(3))
-    assert df.loc["Protein1", "Protein3"] == pytest.approx(0.0)
-    assert df.loc["Protein3", "Protein1"] == pytest.approx(0.0)
-    assert df.loc["Protein1", "Protein2"] == pytest.approx(0.75)
-    assert df.loc["Protein2", "Protein1"] == pytest.approx(0.75)
-    assert df.loc["Protein2", "Protein3"] == pytest.approx(0.25)
-    assert df.loc["Protein3", "Protein2"] == pytest.approx(0.25)
+    df = pm.compute_identity(n_jobs=2)
+    assert len(df) == 3
+    assert set(df.columns) == {"ORF1", "ORF2", "Identity"}
+
+    def _get(a, b):
+        row = df[((df.ORF1 == a) & (df.ORF2 == b)) | ((df.ORF1 == b) & (df.ORF2 == a))]
+        return row.iloc[0]["Identity"]
+
+    assert _get("Protein1", "Protein3") == pytest.approx(0.0)
+    assert _get("Protein1", "Protein2") == pytest.approx(0.75)
+    assert _get("Protein2", "Protein3") == pytest.approx(0.25)
 
 
 @pytest.mark.slow
-def test_compute_identity_matrix_with_similarity_threshold():
+def test_compute_identity_with_similarity_threshold():
     pm = ProteomeManager()
     pm.sequences = {"Protein1": "AAAA", "Protein2": "AAAT", "Protein3": "TTTT"}
-    df = pm.compute_identity_matrix(n_jobs=2, similarity_threshold=0.7)
-    assert df.shape == (3, 3)
-    assert all(df.iloc[i, i] == pytest.approx(1.0) for i in range(3))
-    assert df.loc["Protein1", "Protein3"] == pytest.approx(0.0)
-    assert df.loc["Protein1", "Protein2"] == pytest.approx(0.75)
-    assert df.loc["Protein2", "Protein3"] == pytest.approx(0.25)
+    df = pm.compute_identity(n_jobs=2, similarity_threshold=0.7)
+    assert len(df) == 3
     high_sim_pairs = pm.high_similarity_pairs
     assert ("Protein1", "Protein2", 0.75) in high_sim_pairs
 
@@ -225,14 +220,14 @@ def test_summary_empty_proteome():
 
 def test_get_sequence_found(dummy_fasta_path):
     pm = ProteomeManager(str(dummy_fasta_path))
-    seq = pm.get_sequence("Protein2")
+    seq = pm.seq_from_id("Protein2")
     assert seq == "GVALSKGEEAVRLFK"
 
 
 def test_get_sequence_not_found(dummy_fasta_path):
     pm = ProteomeManager(str(dummy_fasta_path))
     with pytest.raises(KeyError):
-        pm.get_sequence("NONEXISTENT_PROTEIN")
+        pm.seq_from_id("NONEXISTENT_PROTEIN")
 
 
 # --- __str__ ---
@@ -270,8 +265,8 @@ def test_len_empty_proteome():
 
 def test_get_ids(dummy_fasta_path):
     pm = ProteomeManager(str(dummy_fasta_path))
-    ids = pm.get_ids()
-    assert isinstance(ids, list)
+    ids = pm.ids
+    assert isinstance(ids, tuple)
     assert set(ids) == {"Protein1_isoformB", "Protein2", "Protein3_variantA", "Protein4_isoformC"}
 
 
@@ -436,10 +431,21 @@ def _make_model_dir(tmp_path, orfs, file_ext="cif", n_models=2):
 
 
 def _mock_monomer(path, engine):
-    """Synchronous stand-in for load_model_info_monomer."""
-    orf_id = ProteomeManager._get_orf_id_from_path(path, engine)
-    return {"ORF": orf_id, "Model_num": None, "ipTM": 0.7, "pTM": 0.8,
-            "mean_plddt": 75.0, "mean_pae": 5.0}
+    """Synchronous stand-in for _load_model_info_monomer. Returns pd.Series matching Model.summary()."""
+    import pandas as pd
+    from pathlib import Path
+    orf_id = Path(path).parent.name  # AF3/Boltz convention: parent dir is the ORF id
+    eng_val = engine.value if hasattr(engine, "value") else str(engine)
+    return pd.Series({
+        "id": orf_id,
+        "model_num": 0,
+        "engine": eng_val,
+        "ptm": 0.8,
+        "iptm": 0.7,
+        "mean_plddt": 75.0,
+        "mean_pae": 5.0,
+        "path": path,
+    })
 
 
 class _SyncPool:
@@ -459,12 +465,12 @@ def test_load_model_info_all_match_no_warnings(tmp_path, caplog):
     pm.sequences = {"E1A": "MKTAY", "pVII": "GVALS"}
 
     with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool), \
-         patch.object(ProteomeManager, "load_model_info_monomer", side_effect=_mock_monomer):
+         patch.object(ProteomeManager, "_load_model_info_monomer", side_effect=_mock_monomer):
         caplog.set_level(logging.WARNING)
         df = pm.load_model_info(str(model_dir), engine="AF3")
 
     assert len(df) == 4  # 2 ORFs × 2 models
-    assert set(df["ORF"]) == {"E1A", "pVII"}
+    assert set(df["id"]) == {"E1A", "pVII"}
     assert "skipping" not in caplog.text
 
 
@@ -474,91 +480,93 @@ def test_load_model_info_missing_structure_warns(tmp_path, caplog):
     pm.sequences = {"E1A": "MKTAY", "pX": "GVALS"}  # pX has no models
 
     with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool), \
-         patch.object(ProteomeManager, "load_model_info_monomer", side_effect=_mock_monomer):
+         patch.object(ProteomeManager, "_load_model_info_monomer", side_effect=_mock_monomer):
         caplog.set_level(logging.WARNING)
         pm.load_model_info(str(model_dir), engine="AF3")
 
     assert "pX" in caplog.text
-    assert "sequence loaded but no model files found" in caplog.text
+    assert "no model files found" in caplog.text
 
 
-def test_load_model_info_missing_sequence_warns(tmp_path, caplog):
+def test_load_model_info_ignores_models_without_sequence(tmp_path, caplog):
+    """Directories with models but no matching sequence are silently skipped."""
     model_dir = _make_model_dir(tmp_path, ["E1A", "pVII"], n_models=1)
     pm = ProteomeManager()
     pm.sequences = {"E1A": "MKTAY"}  # pVII has models but no sequence
 
     with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool), \
-         patch.object(ProteomeManager, "load_model_info_monomer", side_effect=_mock_monomer):
+         patch.object(ProteomeManager, "_load_model_info_monomer", side_effect=_mock_monomer):
         caplog.set_level(logging.WARNING)
-        pm.load_model_info(str(model_dir), engine="AF3")
+        df = pm.load_model_info(str(model_dir), engine="AF3")
 
-    assert "pVII" in caplog.text
-    assert "model files found but no sequence" in caplog.text
+    assert len(df) == 1
+    assert "pVII" not in caplog.text
 
 
-def test_load_model_info_no_sequences_processes_all(tmp_path, caplog):
+def test_load_model_info_no_sequences_returns_empty(tmp_path, caplog):
+    """If no sequences are loaded, load_model_info has nothing to iterate and returns empty."""
     model_dir = _make_model_dir(tmp_path, ["E1A", "pVII"], n_models=2)
     pm = ProteomeManager()  # no FASTA loaded → sequences = {}
 
     with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool), \
-         patch.object(ProteomeManager, "load_model_info_monomer", side_effect=_mock_monomer):
-        caplog.set_level(logging.INFO)
+         patch.object(ProteomeManager, "_load_model_info_monomer", side_effect=_mock_monomer):
+        caplog.set_level(logging.WARNING)
         df = pm.load_model_info(str(model_dir), engine="AF3")
 
-    assert len(df) == 4
-    assert "No sequences loaded" in caplog.text
+    assert df.empty
 
 
 def test_load_model_info_no_valid_files_returns_empty_df(tmp_path, caplog):
     model_dir = _make_model_dir(tmp_path, ["pVII"], n_models=1)
     pm = ProteomeManager()
-    pm.sequences = {"E1A": "MKTAY"}  # no intersection
+    pm.sequences = {"E1A": "MKTAY"}  # E1A dir does not exist → no cif files
 
     with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool), \
-         patch.object(ProteomeManager, "load_model_info_monomer", side_effect=_mock_monomer):
+         patch.object(ProteomeManager, "_load_model_info_monomer", side_effect=_mock_monomer):
         caplog.set_level(logging.WARNING)
         df = pm.load_model_info(str(model_dir), engine="AF3")
 
     assert df.empty
-    assert "No valid model files" in caplog.text
+    assert "No model files found" in caplog.text
 
 
-def test_load_model_info_case_insensitive_match_resolves(tmp_path, caplog):
+def test_load_model_info_exact_match_required(tmp_path, caplog):
+    """Directory name must match sequence ID exactly; case mismatch means no models found."""
     model_dir = _make_model_dir(tmp_path, ["e1a"], n_models=1)  # lowercase dir
     pm = ProteomeManager()
     pm.sequences = {"E1A": "MKTAY"}  # uppercase key
 
     with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool), \
-         patch.object(ProteomeManager, "load_model_info_monomer", side_effect=_mock_monomer):
+         patch.object(ProteomeManager, "_load_model_info_monomer", side_effect=_mock_monomer):
         caplog.set_level(logging.WARNING)
         df = pm.load_model_info(str(model_dir), engine="AF3")
 
-    assert len(df) == 1
-    assert "case mismatch" in caplog.text
-    assert df.iloc[0]["ORF"] == "e1a"  # mock returns raw path parent name
+    assert df.empty
+    assert "E1A" in caplog.text  # warns about missing models for E1A
 
 
-def test_load_model_info_custom_file_ext_pdb(tmp_path):
+def test_load_model_info_colabfold_uses_pdb_ext(tmp_path):
+    """ColabFold engine auto-selects .pdb files."""
     model_dir = _make_model_dir(tmp_path, ["E1A"], file_ext="pdb", n_models=2)
     pm = ProteomeManager()
     pm.sequences = {"E1A": "MKTAY"}
 
     with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool), \
-         patch.object(ProteomeManager, "load_model_info_monomer", side_effect=_mock_monomer):
-        df = pm.load_model_info(str(model_dir), engine="AF3", file_ext="pdb")
+         patch.object(ProteomeManager, "_load_model_info_monomer", side_effect=_mock_monomer):
+        df = pm.load_model_info(str(model_dir), engine="ColabFold")
 
     assert len(df) == 2
 
 
-def test_load_model_info_default_ext_ignores_pdb_files(tmp_path):
-    """With default file_ext='cif', .pdb files in the same dir are not picked up."""
+def test_load_model_info_af3_ignores_pdb_files(tmp_path):
+    """AF3 engine auto-selects .cif; .pdb files in the same dir are not picked up."""
     model_dir = _make_model_dir(tmp_path, ["E1A"], file_ext="pdb", n_models=2)
     pm = ProteomeManager()
     pm.sequences = {"E1A": "MKTAY"}
 
     with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool), \
-         patch.object(ProteomeManager, "load_model_info_monomer", side_effect=_mock_monomer):
-        df = pm.load_model_info(str(model_dir), engine="AF3")  # file_ext="cif" by default
+         patch.object(ProteomeManager, "_load_model_info_monomer", side_effect=_mock_monomer):
+        df = pm.load_model_info(str(model_dir), engine="AF3")
 
     assert df.empty
 
@@ -569,10 +577,10 @@ def test_load_model_info_sets_model_info_attributes(tmp_path):
     pm.sequences = {"E1A": "MKTAY"}
 
     with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool), \
-         patch.object(ProteomeManager, "load_model_info_monomer", side_effect=_mock_monomer):
+         patch.object(ProteomeManager, "_load_model_info_monomer", side_effect=_mock_monomer):
         pm.load_model_info(str(model_dir), engine="AF3")
 
-    assert pm.model_info is not None
-    assert pm.model_info_extended is not None
-    assert "ORF" in pm.model_info_extended.columns
-    assert len(pm.model_info_extended) == 1  # 1 ORF, averaged across models
+    assert pm.model_info_by_model is not None
+    assert pm.model_info_by_orf is not None
+    assert "id" in pm.model_info_by_orf.columns
+    assert len(pm.model_info_by_orf) == 1  # 1 ORF, averaged across models

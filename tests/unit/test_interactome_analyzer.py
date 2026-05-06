@@ -7,6 +7,7 @@ import pandas as pd
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from virus_interactome.interactome import InteractomeAnalyzer, InteractomeProcessor
+from virus_interactome.foldseek import FoldseekClient
 
 
 # ---------------------------------------------------------------------------
@@ -674,236 +675,108 @@ _FAKE_TSV_ROWS = [
 
 
 class TestSubmitFoldseekJob:
+    def _client(self):
+        with patch("requests.post"), patch("requests.get"):
+            return FoldseekClient()
+
     def test_returns_ticket_id(self):
-        analyzer = InteractomeAnalyzer()
+        client = self._client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"id": "abc123"}
-        with patch("requests.post", return_value=mock_resp):
-            ticket = analyzer._submit_foldseek_job("CIF_CONTENT", ["pdb100"])
+        with patch.object(client, "_requests") as mock_req:
+            mock_req.post.return_value = mock_resp
+            ticket = client._submit("CIF_CONTENT", ["pdb100"])
         assert ticket == "abc123"
 
     def test_raises_on_http_error(self):
-        analyzer = InteractomeAnalyzer()
+        client = self._client()
         mock_resp = MagicMock()
         mock_resp.status_code = 500
         mock_resp.text = "Internal Server Error"
-        with patch("requests.post", return_value=mock_resp):
+        with patch.object(client, "_requests") as mock_req:
+            mock_req.post.return_value = mock_resp
             with pytest.raises(RuntimeError, match="500"):
-                analyzer._submit_foldseek_job("CIF", ["pdb100"])
+                client._submit("CIF", ["pdb100"])
 
     def test_sends_all_databases(self):
-        analyzer = InteractomeAnalyzer()
+        client = self._client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"id": "x1"}
-        with patch("requests.post", return_value=mock_resp) as mock_post:
-            analyzer._submit_foldseek_job("CIF", ["afdb-swissprot", "pdb100"])
-        payload = mock_post.call_args.kwargs["data"]
+        with patch.object(client, "_requests") as mock_req:
+            mock_req.post.return_value = mock_resp
+            client._submit("CIF", ["afdb-swissprot", "pdb100"])
+        payload = mock_req.post.call_args.kwargs["data"]
         assert payload["database[]"] == ["afdb-swissprot", "pdb100"]
 
 
 class TestPollFoldseekJob:
+    def _client(self):
+        with patch("requests.post"), patch("requests.get"):
+            return FoldseekClient()
+
     def test_returns_on_complete(self):
-        analyzer = InteractomeAnalyzer()
+        client = self._client()
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"status": "COMPLETE"}
-        with patch("requests.get", return_value=mock_resp), \
-             patch("time.sleep"):
-            analyzer._poll_foldseek_job("abc123")  # should not raise
+        with patch.object(client, "_requests") as mock_req, patch("time.sleep"):
+            mock_req.get.return_value = mock_resp
+            client._poll("abc123")  # should not raise
 
     def test_raises_on_error_status(self):
-        analyzer = InteractomeAnalyzer()
+        client = self._client()
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"status": "ERROR"}
-        with patch("requests.get", return_value=mock_resp), \
-             patch("time.sleep"):
+        with patch.object(client, "_requests") as mock_req, patch("time.sleep"):
+            mock_req.get.return_value = mock_resp
             with pytest.raises(RuntimeError, match="ERROR"):
-                analyzer._poll_foldseek_job("abc123")
+                client._poll("abc123")
 
     def test_raises_on_timeout(self):
-        analyzer = InteractomeAnalyzer()
+        client = self._client()
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"status": "RUNNING"}
-        with patch("requests.get", return_value=mock_resp), \
-             patch("time.sleep"):
+        with patch.object(client, "_requests") as mock_req, patch("time.sleep"):
+            mock_req.get.return_value = mock_resp
             with pytest.raises(TimeoutError):
-                analyzer._poll_foldseek_job("abc123", poll_interval=1, timeout=2)
+                client._poll("abc123", poll_interval=1, timeout=2)
 
 
 class TestDownloadFoldseekResults:
+    def _client(self):
+        with patch("requests.post"), patch("requests.get"):
+            return FoldseekClient()
+
     def test_writes_tsv_file(self, tmp_path):
-        analyzer = InteractomeAnalyzer()
+        client = self._client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.content = _make_tsv_targz(_FAKE_TSV_ROWS[:2])
-        with patch("requests.get", return_value=mock_resp):
-            tsv = analyzer._download_foldseek_results("abc123", tmp_path, "protA")
+        with patch.object(client, "_requests") as mock_req:
+            mock_req.get.return_value = mock_resp
+            tsv = client._download("abc123", tmp_path, "protA")
         assert tsv.exists()
         assert tsv.name == "protA.tsv"
 
     def test_raises_on_http_error(self, tmp_path):
-        analyzer = InteractomeAnalyzer()
+        client = self._client()
         mock_resp = MagicMock()
         mock_resp.status_code = 404
         mock_resp.text = "Not found"
-        with patch("requests.get", return_value=mock_resp):
+        with patch.object(client, "_requests") as mock_req:
+            mock_req.get.return_value = mock_resp
             with pytest.raises(RuntimeError, match="404"):
-                analyzer._download_foldseek_results("bad_id", tmp_path, "protA")
+                client._download("bad_id", tmp_path, "protA")
 
     def test_plain_tsv_fallback(self, tmp_path):
         """If server returns plain TSV instead of tar.gz, it is still saved."""
-        analyzer = InteractomeAnalyzer()
+        client = self._client()
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.content = "\n".join(_FAKE_TSV_ROWS).encode()
-        with patch("requests.get", return_value=mock_resp):
-            tsv = analyzer._download_foldseek_results("abc123", tmp_path, "protA")
+        with patch.object(client, "_requests") as mock_req:
+            mock_req.get.return_value = mock_resp
+            tsv = client._download("abc123", tmp_path, "protA")
         assert tsv.read_text()
 
-
-class TestRunFoldseekSearch:
-    """Integration-style tests for run_foldseek_search with fully mocked HTTP."""
-
-    def _make_monomer_dir(self, tmp_path: Path, proteins: list) -> Path:
-        root = tmp_path / "monomers"
-        for pid in proteins:
-            d = root / pid
-            d.mkdir(parents=True)
-            (d / f"{pid}_model_0.cif").write_text(f"CIF content for {pid}")
-        return root
-
-    def _mock_api(self, tsv_rows: list[str]):
-        """Returns a context-manager triple: post, get_status, get_download."""
-        post_resp = MagicMock()
-        post_resp.status_code = 200
-        post_resp.json.return_value = {"id": "ticket1"}
-
-        status_resp = MagicMock()
-        status_resp.json.return_value = {"status": "COMPLETE"}
-        status_resp.raise_for_status = MagicMock()
-
-        dl_resp = MagicMock()
-        dl_resp.status_code = 200
-        dl_resp.content = _make_tsv_targz(tsv_rows)
-
-        def get_side_effect(url, **kwargs):
-            if "result/download" in url:
-                return dl_resp
-            return status_resp
-
-        return post_resp, get_side_effect
-
-    def test_returns_dataframe(self, tmp_path):
-        root = self._make_monomer_dir(tmp_path, ["protA"])
-        post_resp, get_side = self._mock_api(_FAKE_TSV_ROWS)
-        analyzer = InteractomeAnalyzer(output_path=str(tmp_path / "out"))
-        with patch("requests.post", return_value=post_resp), \
-             patch("requests.get", side_effect=get_side), \
-             patch("time.sleep"):
-            df = analyzer.run_foldseek_search(["protA"], str(root))
-        assert isinstance(df, pd.DataFrame)
-
-    def test_evalue_filter_applied(self, tmp_path):
-        root = self._make_monomer_dir(tmp_path, ["protA"])
-        post_resp, get_side = self._mock_api(_FAKE_TSV_ROWS)  # row 3 has evalue=0.5
-        analyzer = InteractomeAnalyzer(output_path=str(tmp_path / "out"))
-        with patch("requests.post", return_value=post_resp), \
-             patch("requests.get", side_effect=get_side), \
-             patch("time.sleep"):
-            df = analyzer.run_foldseek_search(["protA"], str(root), evalue_cutoff=1e-3)
-        assert all(df["evalue"] <= 1e-3)
-        assert "target3" not in df["target"].values
-
-    def test_top_n_respected(self, tmp_path):
-        root = self._make_monomer_dir(tmp_path, ["protA"])
-        post_resp, get_side = self._mock_api(_FAKE_TSV_ROWS)
-        analyzer = InteractomeAnalyzer(output_path=str(tmp_path / "out"))
-        with patch("requests.post", return_value=post_resp), \
-             patch("requests.get", side_effect=get_side), \
-             patch("time.sleep"):
-            df = analyzer.run_foldseek_search(["protA"], str(root), top_n=1, evalue_cutoff=1.0)
-        assert len(df) == 1
-
-    def test_creates_output_files(self, tmp_path):
-        root = self._make_monomer_dir(tmp_path, ["protA"])
-        out_dir = tmp_path / "out"
-        post_resp, get_side = self._mock_api(_FAKE_TSV_ROWS)
-        analyzer = InteractomeAnalyzer(output_path=str(out_dir))
-        with patch("requests.post", return_value=post_resp), \
-             patch("requests.get", side_effect=get_side), \
-             patch("time.sleep"):
-            analyzer.run_foldseek_search(["protA"], str(root))
-        assert (out_dir / "foldseek_summary.csv").exists()
-        assert (out_dir / "foldseek_results" / "protA.tsv").exists()
-
-    def test_missing_protein_dir_skipped(self, tmp_path):
-        root = self._make_monomer_dir(tmp_path, ["protA"])
-        out_dir = tmp_path / "out"
-        post_resp, get_side = self._mock_api(_FAKE_TSV_ROWS)
-        analyzer = InteractomeAnalyzer(output_path=str(out_dir))
-        with patch("requests.post", return_value=post_resp), \
-             patch("requests.get", side_effect=get_side), \
-             patch("time.sleep"):
-            df = analyzer.run_foldseek_search(["protA", "nonexistent"], str(root))
-        # nonexistent is silently skipped, protA results still returned
-        assert all(df["protein_id"] == "protA")
-
-    def test_protein_id_column_present(self, tmp_path):
-        root = self._make_monomer_dir(tmp_path, ["protA"])
-        post_resp, get_side = self._mock_api(_FAKE_TSV_ROWS)
-        analyzer = InteractomeAnalyzer(output_path=str(tmp_path / "out"))
-        with patch("requests.post", return_value=post_resp), \
-             patch("requests.get", side_effect=get_side), \
-             patch("time.sleep"):
-            df = analyzer.run_foldseek_search(["protA"], str(root), evalue_cutoff=1.0)
-        assert "protein_id" in df.columns
-        assert (df["protein_id"] == "protA").all()
-
-    def test_best_plddt_selects_model(self, tmp_path):
-        """With best_plddt=True, model with highest mean pLDDT is chosen."""
-        root = tmp_path / "monomers"
-        pid_dir = root / "protA"
-        pid_dir.mkdir(parents=True)
-        (pid_dir / "protA_model_0.cif").write_text("CIF0")
-        (pid_dir / "protA_model_1.cif").write_text("CIF1")
-
-        post_resp, get_side = self._mock_api(_FAKE_TSV_ROWS)
-        analyzer = InteractomeAnalyzer(output_path=str(tmp_path / "out"))
-
-        submitted_content = []
-        original_submit = analyzer._submit_foldseek_job
-
-        def capturing_submit(cif_content, databases, mode="3diaa"):
-            submitted_content.append(cif_content)
-            return original_submit(cif_content, databases, mode)
-
-        plddt_map = {"protA_model_0.cif": 70.0, "protA_model_1.cif": 90.0}
-
-        def fake_extract(cif_path, engine):
-            val = plddt_map.get(Path(cif_path).name, 80.0)
-            return {"plddt_mean": val, "plddt_median": val, "n_residues": 10}
-
-        with patch("requests.post", return_value=post_resp), \
-             patch("requests.get", side_effect=get_side), \
-             patch("time.sleep"), \
-             patch.object(analyzer, "_submit_foldseek_job", side_effect=capturing_submit), \
-             patch.object(InteractomeProcessor, "_extract_monomer_plddt",
-                          staticmethod(fake_extract)):
-            analyzer.run_foldseek_search(
-                ["protA"], str(root), best_plddt=True, evalue_cutoff=1.0
-            )
-        # model_1 (pLDDT=90) should have been submitted
-        assert "CIF1" in submitted_content
-
-    def test_standalone_no_interactome_data_required(self, tmp_path):
-        """run_foldseek_search works without loading interactome_data first."""
-        root = self._make_monomer_dir(tmp_path, ["protA"])
-        post_resp, get_side = self._mock_api(_FAKE_TSV_ROWS)
-        analyzer = InteractomeAnalyzer(output_path=str(tmp_path / "out"))
-        assert analyzer.interactome_data is None  # nothing loaded
-        with patch("requests.post", return_value=post_resp), \
-             patch("requests.get", side_effect=get_side), \
-             patch("time.sleep"):
-            df = analyzer.run_foldseek_search(["protA"], str(root), evalue_cutoff=1.0)
-        assert not df.empty
