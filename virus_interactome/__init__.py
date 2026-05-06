@@ -4,6 +4,7 @@ from .utils import load_json, process_full_data_af3, process_full_data_boltz, pr
 from .metrics import calculate_pdockq, calculate_pdockq2, calculate_LIS, calculate_LIS_family
 from .interactome import InteractomeRunner, InteractomeWriter, InteractomeProcessor, InteractomeAnalyzer
 from .foldseek import FoldseekClient
+from .model import Model, ModelMetrics, Engine
 
 __all__ = [
     'ProteomeManager',
@@ -26,4 +27,7 @@ __all__ = [
     'InteractomeProcessor',
     'InteractomeAnalyzer',
     'FoldseekClient',
+    'Model',
+    'ModelMetrics',
+    'Engine',
 ]
