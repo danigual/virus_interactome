@@ -690,18 +690,12 @@ class InteractomeProcessor:
         Raises:
             ValueError: If the provided engine is not supported.
         """
-        # Normalize and Validate Engine
-        self._engine = Engine(engine.lower()) if isinstance(engine, str) else engine
+        try:
+            self._engine = Engine(engine.lower()) if isinstance(engine, str) else engine
+        except ValueError:
+            valid = ", ".join(e.value for e in Engine)
+            raise ValueError(f"Engine should be one of: {valid}")
         self._mode = InteractomeMode(mode.lower()) if isinstance(mode, str) else mode
-
-        ## TODO: maybe this can be guessed from the model files instead of being a required argument?
-
-        # self.engine = engine.lower()
-        
-        # if self.engine not in self._SUPPORTED_ENGINES:
-        #     valid_modes = ", ".join(self._SUPPORTED_ENGINES)
-        #     logger.error(f"Invalid engine provided: '{engine}'. Expected: {valid_modes}")
-        #     raise ValueError(f"Engine should be one of: {valid_modes}")
 
         # Sanitize Paths (Convert all to Path objects)
         self.model_paths = [Path(p) for p in model_list]
@@ -715,7 +709,11 @@ class InteractomeProcessor:
         self.df_het: Optional[pd.DataFrame] = None
         self.df_hom: Optional[pd.DataFrame] = None
         self.cluster_data: Optional[pd.DataFrame] = None
-    
+
+    @property
+    def engine(self) -> str:
+        return self._engine.value
+
     @staticmethod
     def cluster_pae(pae_submatrix: np.ndarray, threshold:float = 15.0, eps:float = 10.0, min_samples: int = 5)-> Tuple[np.ndarray, np.ndarray]:
         """
@@ -835,135 +833,93 @@ class InteractomeProcessor:
 
         return pd.DataFrame(cluster_info_list, columns=columns)
     
-    # @staticmethod
-    def process_ppi(self,model_file: Union[str, Path], 
-                    # model_type: str = "AF3", 
-                    # mode: str = "heteromers", 
-                    prefix: str = "")-> Tuple[Dict[str, Any], pd.DataFrame]:
+    def process_ppi(self, model_file: Union[str, Path],
+                    prefix: str = "") -> Tuple[Dict[str, Any], pd.DataFrame]:
         """
-        Processes an AlphaFold3/Boltz CIF model file STRICTLY.
-
-        Parses metadata, loads structural data, plots QA metrics, and analyzes interfaces.
-        
-        WARNING: This method has NO error handling. 
-        - File names MUST follow conventions (e.g., "GeneA__GeneB").
-        - Model names MUST contain "model_X".
-        - Plotting libraries MUST work correctly.
-        Any deviation will cause a crash.
+        Processes a single CIF model file using the engine set at construction.
 
         Args:
-            model_file (Union[str, Path]): Path to the model file (.cif).
-            model_type (str): Engine used ('AF3' or 'Boltz'). Defaults to "AF3".
-            mode (str): Processing mode. Defaults to "heteromers".
-            prefix (str): Optional prefix to strip from folder names.
+            model_file: Path to the model .cif file.
+            prefix: Substring to strip from the parent directory name when parsing PPI IDs.
 
         Returns:
-            Tuple[Dict, pd.DataFrame]: Summary metrics and Cluster details.
+            Tuple of (summary_dict, cluster_data_df).
         """
-        
         path_obj = Path(model_file)
-        # logger.info(f"Processing model: {path_obj.name}")
-        
-        # Parse metadata using pathlib
+
         dir_name = path_obj.parent.name
         ppi_id = dir_name.replace(prefix, "")
-        
-        # Handle naming: idA__idB (pairs), idA__copies (homomers), or idA (monomers)
         parts = ppi_id.split("__")
         orf_a = parts[0]
         orf_b = parts[1] if len(parts) > 1 else ""
+        model_number = int(path_obj.stem.split("model_")[-1].split("_")[0])
 
-        # Assumes "...model_1..." format.
-        base_name = path_obj.stem # removes .cif or .pdb
-        
-        model_number = int(base_name.split("model_")[-1].split("_")[0])
+        model = Model(path_obj, self._engine)
+        m = model.metrics
+        md = model.model_data
+        chain_ids = md.token_chain_ids
 
-        # Load Full Data
-        if self._engine == Engine.AF3:
-            full_data = process_full_data_af3(str(path_obj))
-        elif self._engine == Engine.BOLTZ:
-            full_data = process_full_data_boltz(str(path_obj))
-        elif self._engine == Engine.COLABFOLD:
-            full_data = process_full_data_colabfold(str(path_obj))
-        # else:
-        #     raise ValueError(f"Model type '{model_type}' not supported. Use 'AF3', 'Boltz' or 'ColabFold'.")
-
-        ## Plotting pLDDT
         plddt_path = path_obj.with_name(f"{path_obj.stem}_plddt.png")
         plot_plddt(m.ca_plddts, md.chain_boundaries_by_res, chain_ids, str(plddt_path))
 
-        # Plotting PAE
         pae_path = path_obj.with_name(f"{path_obj.stem}_pae.png")
         plot_paes(m.pae, md.chain_boundaries_by_res, set(chain_ids),
                   f"{m.iptm} ipTM - {m.ptm} pTM", str(pae_path))
 
-
-        # if self._mode in [InteractomeMode.INTER_PAIRS, InteractomeMode.INTRA_PAIRS] and len(unique_chains) >= 2:
-        #     # We explicitly identify chains
-               
-        # Return summary metrics and cluster details
         if self._mode in [InteractomeMode.HOMOMERS, InteractomeMode.MONOMER]:
-            summary_dict = {"PPI": ppi_id,
+            return {
+                "PPI": ppi_id,
                 "ORF": orf_a,
                 "Num_copies": orf_b,
                 "Model_num": model_number,
-                "mean_plddt": full_data["ca_plddts"].mean(),
-                "mean_pae": full_data["pae"].mean(),
-                "ipTM": full_data["iptm"], 
-                "pTM": full_data["ptm"],
-                # "pTM_chain_A": full_data["iptm_chain_pair"][0][0], 
-                # "pTM_chain_B": full_data["iptm_chain_pair"][1][1], 
-                "Path": str(path_obj), 
-                }
-            
-            ##TODO: Add iptm-vs ptm plots. Color by kmer
-            ##TODO: scatter pLDDT vs PAE. Highlight models with iptm>0.5 and ptm>0.5
-            return summary_dict, pd.DataFrame() # Empty DataFrame for homomers/monomers (no interface clusters)
-        elif self._mode in [InteractomeMode.INTER_PAIRS, InteractomeMode.INTRA_PAIRS]:
-            # Interface Analysis (Only for Pairs). Not for homomers
-            all_metrics = {}
-            cluster_data = pd.DataFrame()
+                "mean_plddt": float(m.ca_plddts.mean()),
+                "mean_pae": float(m.pae.mean()),
+                "ipTM": m.iptm,
+                "pTM": m.ptm,
+                "Path": str(path_obj),
+            }, pd.DataFrame()
 
-            chain_ids = full_data.get("token_chain_ids")
-            unique_chains = sorted(list(set(chain_ids))) if chain_ids is not None else []
-            chain_a, chain_b = unique_chains[0], unique_chains[1]
+        # INTER_PAIRS / INTRA_PAIRS — interface analysis
+        unique_chains = sorted(set(chain_ids))
+        chain_a, chain_b = unique_chains[0], unique_chains[1]
 
-            metrics_input = {
-                "pae":            m.pae,
-                "cb_plddts":      m.cb_plddts,
-                "token_chain_ids": chain_ids,
-            }
-            all_metrics = calculate_all_metrics(str(path_obj), metrics_input)
+        metrics_input = {
+            "pae": m.pae,
+            "cb_plddts": m.cb_plddts,
+            "token_chain_ids": chain_ids,
+        }
+        all_metrics = calculate_all_metrics(str(path_obj), metrics_input)
 
-            pae_submatrix_1 = m.pae[chain_ids == chain_a][:, chain_ids == chain_b]
-            pae_submatrix_2 = m.pae[chain_ids == chain_b][:, chain_ids == chain_a].T
-            submatrix = np.mean([pae_submatrix_1, pae_submatrix_2], axis=0)
+        pae_submatrix_1 = m.pae[chain_ids == chain_a][:, chain_ids == chain_b]
+        pae_submatrix_2 = m.pae[chain_ids == chain_b][:, chain_ids == chain_a].T
+        submatrix = np.mean([pae_submatrix_1, pae_submatrix_2], axis=0)
 
-            low_coords, cluster_labels = InteractomeProcessor.cluster_pae(submatrix)
+        low_coords, cluster_labels = InteractomeProcessor.cluster_pae(submatrix)
 
-            cluster_plot_path = path_obj.with_name(f"{path_obj.stem}_cluster.png")
-            plot_pae_clusters(submatrix, low_coords, cluster_labels, save_name=str(cluster_plot_path))
+        cluster_plot_path = path_obj.with_name(f"{path_obj.stem}_cluster.png")
+        plot_pae_clusters(submatrix, low_coords, cluster_labels, save_name=str(cluster_plot_path))
 
-            cluster_data = InteractomeProcessor.cluster_info(low_coords=low_coords, cluster_labels=cluster_labels)
-            if not cluster_data.empty:
-                cluster_data["PPI"] = ppi_id 
-                cluster_data["model_num"] = model_number 
-                cluster_data["path"] = str (path_obj) 
-                summary_dict = {"PPI": ppi_id,
-                        "ORF_A": orf_a,
-                        "ORF_B": orf_b,
-                        "Path": str(path_obj), 
-                        "Model_num": model_number, 
-                        "ipTM": full_data["iptm"], 
-                        "pTM": full_data["ptm"],
-                        "pTM_chain_A": full_data["iptm_chain_pair"][0][0], 
-                        "pTM_chain_B": full_data["iptm_chain_pair"][1][1], 
-                        # "msa_depth": full_data.get("msa_depth", np.nan),
-                        # "msa_coverage": full_data.get("msa_coverage", np.nan),
-                        **all_metrics
-                        }
-            
-            return summary_dict, cluster_data
+        cluster_data = InteractomeProcessor.cluster_info(low_coords=low_coords, cluster_labels=cluster_labels)
+        if not cluster_data.empty:
+            cluster_data["PPI"] = ppi_id
+            cluster_data["model_num"] = model_number
+            cluster_data["path"] = str(path_obj)
+
+        summary_dict = {
+            "PPI": ppi_id,
+            "ORF_A": orf_a,
+            "ORF_B": orf_b,
+            "Folder": str(path_obj.parent),
+            "Path": str(path_obj),
+            "Model_num": model_number,
+            "ipTM": m.iptm,
+            "pTM": m.ptm,
+            "pTM_chain_A": float(m.iptm_chain_pair[0][0]),
+            "pTM_chain_B": float(m.iptm_chain_pair[1][1]),
+            **all_metrics,
+        }
+
+        return summary_dict, cluster_data
     
     def process_models(self,
                        output_path: Union[str, Path] = ".",

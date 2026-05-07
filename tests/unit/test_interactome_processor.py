@@ -32,6 +32,11 @@ class TestProcessorInit:
         with pytest.raises(ValueError, match="Engine should be one of"):
             InteractomeProcessor([], engine="rosettafold")
 
+    def test_engine_enum_input(self):
+        from virus_interactome.model import Engine
+        proc = InteractomeProcessor([], engine=Engine.AF3)
+        assert proc.engine == "af3"
+
     def test_empty_model_list(self):
         proc = InteractomeProcessor([], engine="af3")
         assert proc.model_paths == []
@@ -205,56 +210,54 @@ def af3_model_in_ppi_dir(tmp_path, data_dir):
     return cif
 
 
+@pytest.fixture
+def af3_proc(af3_model_in_ppi_dir):
+    return InteractomeProcessor([str(af3_model_in_ppi_dir)], engine="af3")
+
+
 @pytest.mark.slow
 class TestProcessPpi:
-    def test_returns_tuple(self, af3_model_in_ppi_dir):
-        result = InteractomeProcessor.process_ppi(str(af3_model_in_ppi_dir), model_type="AF3")
+    def test_returns_tuple(self, af3_model_in_ppi_dir, af3_proc):
+        result = af3_proc.process_ppi(str(af3_model_in_ppi_dir))
         assert isinstance(result, tuple)
         assert len(result) == 2
 
-    def test_summary_dict_keys(self, af3_model_in_ppi_dir):
-        summary, _ = InteractomeProcessor.process_ppi(str(af3_model_in_ppi_dir), model_type="AF3")
+    def test_summary_dict_keys(self, af3_model_in_ppi_dir, af3_proc):
+        summary, _ = af3_proc.process_ppi(str(af3_model_in_ppi_dir))
         required = {"PPI", "ORF_A", "ORF_B", "Folder", "Model_num", "ipTM", "pTM"}
         assert required.issubset(set(summary.keys()))
 
-    def test_ppi_parsed_from_dir_name(self, af3_model_in_ppi_dir):
-        summary, _ = InteractomeProcessor.process_ppi(str(af3_model_in_ppi_dir), model_type="AF3")
+    def test_ppi_parsed_from_dir_name(self, af3_model_in_ppi_dir, af3_proc):
+        summary, _ = af3_proc.process_ppi(str(af3_model_in_ppi_dir))
         assert summary["PPI"] == "ProtA__ProtB"
         assert summary["ORF_A"] == "ProtA"
         assert summary["ORF_B"] == "ProtB"
 
-    def test_extracts_idx_zero(self, af3_model_in_ppi_dir):
-        # NOTE: test name must NOT contain '_model_' — process_full_data_af3 uses
-        # str.replace("_model_", ...) on the full path, which would corrupt
-        # pytest's tmp_path if it contains that substring.
-        summary, _ = InteractomeProcessor.process_ppi(str(af3_model_in_ppi_dir), model_type="AF3")
+    def test_extracts_idx_zero(self, af3_model_in_ppi_dir, af3_proc):
+        summary, _ = af3_proc.process_ppi(str(af3_model_in_ppi_dir))
         assert summary["Model_num"] == 0
 
-    def test_cluster_data_non_empty_for_heteromer(self, af3_model_in_ppi_dir):
-        _, clusters = InteractomeProcessor.process_ppi(str(af3_model_in_ppi_dir), model_type="AF3")
-        # Heteromer (2 chains) → should produce cluster data
+    def test_cluster_data_non_empty_for_heteromer(self, af3_model_in_ppi_dir, af3_proc):
+        _, clusters = af3_proc.process_ppi(str(af3_model_in_ppi_dir))
         assert not clusters.empty
         assert "cluster_id" in clusters.columns
         assert "PPI" in clusters.columns
         assert "cluster_ratio" in clusters.columns
 
-    def test_plots_created(self, af3_model_in_ppi_dir):
-        InteractomeProcessor.process_ppi(str(af3_model_in_ppi_dir), model_type="AF3")
+    def test_plots_created(self, af3_model_in_ppi_dir, af3_proc):
+        af3_proc.process_ppi(str(af3_model_in_ppi_dir))
         parent = af3_model_in_ppi_dir.parent
         stem = af3_model_in_ppi_dir.stem
         assert (parent / f"{stem}_plddt.png").exists()
         assert (parent / f"{stem}_pae.png").exists()
         assert (parent / f"{stem}_cluster.png").exists()
 
-    def test_invalid_model_type_raises(self, af3_model_in_ppi_dir):
-        with pytest.raises(ValueError, match="not a valid Engine"):
-            InteractomeProcessor.process_ppi(str(af3_model_in_ppi_dir), model_type="InvalidEngine")
+    def test_invalid_engine_raises(self, af3_model_in_ppi_dir):
+        with pytest.raises(ValueError, match="Engine should be one of"):
+            InteractomeProcessor([str(af3_model_in_ppi_dir)], engine="InvalidEngine")
 
-    def test_prefix_stripping(self, af3_model_in_ppi_dir):
-        summary, _ = InteractomeProcessor.process_ppi(
-            str(af3_model_in_ppi_dir), model_type="AF3", prefix="Prot"
-        )
-        # prefix="Prot" replaces "Prot" in dir name "ProtA__ProtB" → "A__B"
+    def test_prefix_stripping(self, af3_model_in_ppi_dir, af3_proc):
+        summary, _ = af3_proc.process_ppi(str(af3_model_in_ppi_dir), prefix="Prot")
         assert summary["PPI"] == "A__B"
 
 
@@ -279,20 +282,24 @@ def boltz_model_in_ppi_dir(tmp_path, data_dir):
     return ppi_dir / "pvi__protease_model_0.cif"
 
 
+@pytest.fixture
+def boltz_proc(boltz_model_in_ppi_dir):
+    return InteractomeProcessor([str(boltz_model_in_ppi_dir)], engine="boltz")
+
+
 @pytest.mark.slow
 class TestProcessPpiBoltz:
-    def test_boltz_returns_tuple(self, boltz_model_in_ppi_dir):
-        """L1726: process_ppi dispatches to process_full_data_boltz."""
-        result = InteractomeProcessor.process_ppi(str(boltz_model_in_ppi_dir), model_type="boltz")
+    def test_boltz_returns_tuple(self, boltz_model_in_ppi_dir, boltz_proc):
+        result = boltz_proc.process_ppi(str(boltz_model_in_ppi_dir))
         assert isinstance(result, tuple)
         assert len(result) == 2
 
-    def test_boltz_summary_keys(self, boltz_model_in_ppi_dir):
-        summary, _ = InteractomeProcessor.process_ppi(str(boltz_model_in_ppi_dir), model_type="boltz")
+    def test_boltz_summary_keys(self, boltz_model_in_ppi_dir, boltz_proc):
+        summary, _ = boltz_proc.process_ppi(str(boltz_model_in_ppi_dir))
         assert {"PPI", "ORF_A", "ORF_B", "Model_num", "ipTM", "pTM"}.issubset(summary.keys())
 
-    def test_boltz_ppi_parsed_from_dir_name(self, boltz_model_in_ppi_dir):
-        summary, _ = InteractomeProcessor.process_ppi(str(boltz_model_in_ppi_dir), model_type="boltz")
+    def test_boltz_ppi_parsed_from_dir_name(self, boltz_model_in_ppi_dir, boltz_proc):
+        summary, _ = boltz_proc.process_ppi(str(boltz_model_in_ppi_dir))
         assert summary["PPI"] == "pvi__protease"
         assert summary["ORF_A"] == "pvi"
         assert summary["ORF_B"] == "protease"
@@ -329,7 +336,7 @@ class TestProcessModels:
         assert "PPI" in df.columns
 
     def test_resume_skips_already_processed(self, af3_model_in_ppi_dir, tmp_path):
-        """L1850-1869: second call skips models already in existing CSV."""
+        """Second call skips models already in existing CSV."""
         from unittest.mock import patch
         proc = InteractomeProcessor([str(af3_model_in_ppi_dir)], engine="af3")
         out_dir = tmp_path / "output"
@@ -338,13 +345,13 @@ class TestProcessModels:
         # Second call: all models already processed → early return, no re-processing
         call_count = {"n": 0}
         original_ppi = InteractomeProcessor.process_ppi
-        def counting_ppi(*args, **kwargs):
+        def counting_ppi(self_inst, *args, **kwargs):
             call_count["n"] += 1
-            return original_ppi(*args, **kwargs)
+            return original_ppi(self_inst, *args, **kwargs)
         with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool):
-            with patch.object(InteractomeProcessor, "process_ppi", staticmethod(counting_ppi)):
+            with patch.object(InteractomeProcessor, "process_ppi", counting_ppi):
                 proc.process_models(str(out_dir))
-        assert call_count["n"] == 0  # no model was reprocessed
+        assert call_count["n"] == 0
 
 
 # ---------------------------------------------------------------------------
