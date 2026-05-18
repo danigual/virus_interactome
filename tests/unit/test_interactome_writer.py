@@ -1,5 +1,7 @@
+import csv
 import pytest
-from virus_interactome.writer import InteractomeWriter
+from virus_interactome.writer import InteractomeWriter, PoolDesigner
+from virus_interactome import ProteomeManager
 import json, yaml
 import warnings
 
@@ -500,3 +502,159 @@ class TestWriteColabfoldCsv:
         w = InteractomeWriter(str(dummy_fasta_path))
         metas = w.write_interactome_jobs("colabfold", str(tmp_path), mode="single")
         assert len(metas) == 4
+
+
+# ── PoolDesigner ──────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def small_proteome(dummy_fasta_path):
+    """4 proteins, 10–26 aa each (total ~63 aa)."""
+    return ProteomeManager(str(dummy_fasta_path))
+
+
+class TestPoolDesigner:
+
+    def test_covers_all_pairs(self, small_proteome):
+        # token_limit >> total proteome → all 6 pairs covered in 1 pool
+        designer = PoolDesigner(small_proteome, token_limit=1000, seed=42)
+        pools = designer.design_pools()
+        report = designer.coverage_report(pools)
+        assert report["n_pairs_covered"] == report["n_pairs_coverable"]
+        assert report["n_pairs_covered"] == 6
+
+    def test_each_pool_respects_token_limit(self, small_proteome):
+        sequences = small_proteome.sequences
+        designer = PoolDesigner(small_proteome, token_limit=30, seed=42)
+        pools = designer.design_pools()
+        for pool in pools:
+            total = sum(len(sequences[p]) for p in pool)
+            assert total <= 30
+
+    def test_deterministic_with_same_seed(self, small_proteome):
+        d1 = PoolDesigner(small_proteome, token_limit=1000, seed=7)
+        d2 = PoolDesigner(small_proteome, token_limit=1000, seed=7)
+        assert d1.design_pools() == d2.design_pools()
+
+    def test_different_seeds_same_coverage(self, small_proteome):
+        d1 = PoolDesigner(small_proteome, token_limit=30, seed=0)
+        d2 = PoolDesigner(small_proteome, token_limit=30, seed=99)
+        r1 = d1.coverage_report(d1.design_pools())
+        r2 = d2.coverage_report(d2.design_pools())
+        # Coverage must be identical regardless of seed
+        assert r1["n_pairs_covered"] == r2["n_pairs_covered"]
+
+    def test_uncoverable_pair_excluded_from_coverage(self, small_proteome):
+        # token_limit so small that some pairs cannot fit together
+        sequences = small_proteome.sequences
+        min_pair = min(
+            len(sequences[a]) + len(sequences[b])
+            for i, a in enumerate(sequences)
+            for b in list(sequences)[i + 1:]
+        )
+        # set limit just below the smallest pair → all pairs uncoverable
+        designer = PoolDesigner(small_proteome, token_limit=min_pair - 1, seed=42)
+        pools = designer.design_pools()
+        report = designer.coverage_report(pools)
+        assert report["n_pairs_uncoverable"] == 6
+        assert report["n_pairs_covered"] == 0
+        assert pools == []
+
+    def test_uncoverable_pair_logs_warning(self, small_proteome, caplog):
+        import logging
+        sequences = small_proteome.sequences
+        min_pair = min(
+            len(sequences[a]) + len(sequences[b])
+            for i, a in enumerate(sequences)
+            for b in list(sequences)[i + 1:]
+        )
+        designer = PoolDesigner(small_proteome, token_limit=min_pair - 1, seed=42)
+        with caplog.at_level(logging.WARNING, logger="virus_interactome.writer"):
+            designer.design_pools()
+        assert any("exceed" in r.message.lower() for r in caplog.records)
+
+    def test_coverage_report_fields(self, small_proteome):
+        designer = PoolDesigner(small_proteome, token_limit=1000, seed=42)
+        report = designer.coverage_report(designer.design_pools())
+        required = {
+            "n_pools", "n_pairs_total", "n_pairs_coverable",
+            "n_pairs_covered", "n_pairs_uncoverable",
+            "avg_pool_size", "max_pool_size", "min_pool_size", "avg_pool_aa",
+        }
+        assert required <= set(report.keys())
+
+    def test_pool_order_determines_chains(self, small_proteome):
+        # Proteins in each pool must appear in a stable, reproducible order
+        designer = PoolDesigner(small_proteome, token_limit=1000, seed=42)
+        pools1 = designer.design_pools()
+        pools2 = PoolDesigner(small_proteome, token_limit=1000, seed=42).design_pools()
+        assert pools1 == pools2
+
+
+# ── InteractomeWriter.write_pooled_jobs ───────────────────────────────────────
+
+class TestWritePooledJobs:
+
+    def test_rejects_non_colabfold_engine(self, dummy_fasta_path, tmp_path):
+        w = InteractomeWriter(str(dummy_fasta_path))
+        with pytest.raises(ValueError, match="colabfold"):
+            w.write_pooled_jobs("af3", str(tmp_path), token_limit=1000)
+
+    def test_creates_colabfold_csv(self, dummy_fasta_path, tmp_path):
+        w = InteractomeWriter(str(dummy_fasta_path))
+        w.write_pooled_jobs("colabfold", str(tmp_path), token_limit=1000)
+        assert (tmp_path / "colabfold_pooled_input.csv").exists()
+
+    def test_creates_pool_manifest(self, dummy_fasta_path, tmp_path):
+        w = InteractomeWriter(str(dummy_fasta_path))
+        w.write_pooled_jobs("colabfold", str(tmp_path), token_limit=1000)
+        assert (tmp_path / "pool_manifest.csv").exists()
+
+    def test_colabfold_csv_header(self, dummy_fasta_path, tmp_path):
+        w = InteractomeWriter(str(dummy_fasta_path))
+        w.write_pooled_jobs("colabfold", str(tmp_path), token_limit=1000)
+        with open(tmp_path / "colabfold_pooled_input.csv", newline="") as fh:
+            reader = csv.DictReader(fh)
+            assert reader.fieldnames == ["id", "sequence"]
+
+    def test_manifest_columns(self, dummy_fasta_path, tmp_path):
+        w = InteractomeWriter(str(dummy_fasta_path))
+        w.write_pooled_jobs("colabfold", str(tmp_path), token_limit=1000)
+        with open(tmp_path / "pool_manifest.csv", newline="") as fh:
+            reader = csv.DictReader(fh)
+            required = {"pool_id", "proteins", "n_proteins", "total_aa", "n_pairs"}
+            assert required <= set(reader.fieldnames)
+
+    def test_sequence_strings_colon_separated(self, dummy_fasta_path, tmp_path):
+        pm = ProteomeManager(str(dummy_fasta_path))
+        w = InteractomeWriter(pm)
+        w.write_pooled_jobs("colabfold", str(tmp_path), token_limit=1000, seed=42)
+        with open(tmp_path / "colabfold_pooled_input.csv", newline="") as fh:
+            rows = list(csv.DictReader(fh))
+        for row in rows:
+            parts = row["sequence"].split(":")
+            # Each part must be a known sequence
+            assert all(p in pm.sequences.values() for p in parts)
+
+    def test_returns_metadata_list(self, dummy_fasta_path, tmp_path):
+        w = InteractomeWriter(str(dummy_fasta_path))
+        metas = w.write_pooled_jobs("colabfold", str(tmp_path), token_limit=1000)
+        assert isinstance(metas, list)
+        assert len(metas) >= 1
+        assert all("pool_id" in m and "n_proteins" in m and "n_pairs" in m for m in metas)
+
+    def test_custom_filenames(self, dummy_fasta_path, tmp_path):
+        w = InteractomeWriter(str(dummy_fasta_path))
+        w.write_pooled_jobs(
+            "colabfold", str(tmp_path), token_limit=1000,
+            pool_manifest_name="my_manifest.csv",
+            csv_name="my_input.csv",
+        )
+        assert (tmp_path / "my_input.csv").exists()
+        assert (tmp_path / "my_manifest.csv").exists()
+
+    def test_pool_ids_sequential(self, dummy_fasta_path, tmp_path):
+        w = InteractomeWriter(str(dummy_fasta_path))
+        metas = w.write_pooled_jobs("colabfold", str(tmp_path), token_limit=30, seed=42)
+        ids = [m["pool_id"] for m in metas]
+        expected = [f"pool_{i:04d}" for i in range(len(metas))]
+        assert ids == expected

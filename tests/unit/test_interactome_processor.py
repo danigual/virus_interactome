@@ -495,3 +495,368 @@ class TestProcessMonomers:
         with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool):
             df = proc.process_monomers(str(out_dir))
         assert df.empty
+
+
+# ── InteractomeProcessor._size_correct_iptm ───────────────────────────────────
+
+class TestSizeCorrectIptm:
+
+    def test_known_value(self):
+        import numpy as np
+        from virus_interactome.interactome import InteractomeProcessor
+        iptm = 0.5
+        len_a, len_b = 100, 200
+        expected_correction = -0.036255571 + 0.004470512 * np.sqrt(300)
+        result = InteractomeProcessor._size_correct_iptm(iptm, len_a, len_b)
+        assert abs(result - (iptm - expected_correction)) < 1e-9
+
+    def test_larger_proteins_get_more_correction(self):
+        from virus_interactome.interactome import InteractomeProcessor
+        sc_small = InteractomeProcessor._size_correct_iptm(0.5, 50, 50)
+        sc_large = InteractomeProcessor._size_correct_iptm(0.5, 500, 500)
+        # Larger proteins → larger expected_iptm → smaller corrected value
+        assert sc_large < sc_small
+
+    def test_returns_float(self):
+        from virus_interactome.interactome import InteractomeProcessor
+        result = InteractomeProcessor._size_correct_iptm(0.3, 100, 100)
+        assert isinstance(result, float)
+
+    def test_high_iptm_stays_positive_for_typical_proteins(self):
+        from virus_interactome.interactome import InteractomeProcessor
+        # For typical viral proteins (~200-500 aa), a confident ipTM of 0.8
+        # should remain positive after correction
+        result = InteractomeProcessor._size_correct_iptm(0.8, 200, 300)
+        assert result > 0
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared by pooled tests
+# ---------------------------------------------------------------------------
+
+_CHAINS = ["A", "B", "C"]
+_N = {"A": 3, "B": 2, "C": 2}  # residues per chain
+_CHAIN_TO_PROTEIN = {"A": "prot_A", "B": "prot_B", "C": "prot_C"}
+
+# iptm_chain_pair[i, j] for chains sorted alphabetically (A=0, B=1, C=2)
+_IPTM_MATRIX = np.array([
+    [0.90, 0.70, 0.30],
+    [0.70, 0.80, 0.40],
+    [0.30, 0.40, 0.85],
+])
+
+_N_RES = sum(_N.values())  # 7
+
+
+def _make_chain_ids():
+    return np.array(["A"] * _N["A"] + ["B"] * _N["B"] + ["C"] * _N["C"])
+
+
+def _make_mock_model():
+    """Return a mock Model whose .metrics and .model_data mimic a 3-chain ColabFold output."""
+    chain_ids = _make_chain_ids()
+
+    mock_metrics = MagicMock()
+    mock_metrics.pae = np.zeros((_N_RES, _N_RES))
+    mock_metrics.cb_plddts = np.array(
+        [80.0] * _N["A"] + [70.0] * _N["B"] + [60.0] * _N["C"]
+    )
+    mock_metrics.iptm_chain_pair = _IPTM_MATRIX.copy()
+
+    mock_data = MagicMock()
+    mock_data.token_chain_ids = chain_ids
+
+    mock_model = MagicMock()
+    mock_model.metrics = mock_metrics
+    mock_model.model_data = mock_data
+    return mock_model
+
+
+def _make_ipsae_df(chains=_CHAINS):
+    from itertools import permutations
+    return pd.DataFrame([
+        {"chain1": c1, "chain2": c2,
+         "ipSAE": 0.5, "ipSAE_d0chn": 0.4, "ipSAE_d0dom": 0.6}
+        for c1, c2 in permutations(chains, 2)
+    ])
+
+
+def _make_lis_df(chains=_CHAINS):
+    from itertools import permutations
+    return pd.DataFrame([
+        {"chain1": c1, "chain2": c2,
+         "LIS": 0.3, "LIA": 10.0, "cLIS": 0.2, "cLIA": 5.0,
+         "iLIS": 0.245, "iLIA": 7.07, "LIR": "0,1", "cLIR": "0"}
+        for c1, c2 in permutations(chains, 2)
+    ])
+
+
+def _make_pdockq2_df(chains=_CHAINS):
+    from itertools import permutations
+    return pd.DataFrame([
+        {"chain1": c1, "chain2": c2, "pDockQ2": 0.15}
+        for c1, c2 in permutations(chains, 2)
+    ])
+
+
+# ---------------------------------------------------------------------------
+# _process_pool_model
+# ---------------------------------------------------------------------------
+
+REQUIRED_COLS = {
+    "PPI", "ORF_A", "ORF_B", "Path", "ipTM", "size_corrected_ipTM",
+    "pTM_chain_A", "pTM_chain_B",
+    "pLDDT_mean", "pLDDT_mean_A", "pLDDT_mean_B",
+    "pae_mean", "pae_mean_AB",
+    "pDockQ2_AB", "pDockQ2_BA",
+    "LIS_AB", "LIS_BA", "LIA_AB", "LIA_BA",
+    "iLIS_AB", "iLIS_BA", "Best_LIS", "Best_iLIS",
+    "ipSAE_AB", "ipSAE_BA", "max_ipSAE",
+    "ipSAE_d0dom_AB", "ipSAE_d0dom_BA",
+}
+
+
+@pytest.fixture
+def pool_model_patches():
+    """Patch Model + metric functions so _process_pool_model runs without CIF files."""
+    with patch("virus_interactome.interactome.Model", return_value=_make_mock_model()), \
+         patch("virus_interactome.interactome.calculate_ipsae", return_value=_make_ipsae_df()), \
+         patch("virus_interactome.interactome.calculate_LIS_family", return_value=_make_lis_df()), \
+         patch("virus_interactome.interactome.calculate_pdockq2", return_value=_make_pdockq2_df()):
+        yield
+
+
+class TestProcessPoolModel:
+
+    def test_returns_n_choose_2_pairs(self, pool_model_patches, tmp_path):
+        fake_cif = tmp_path / "pool_0000_rank_001.cif"
+        from virus_interactome.model import Engine
+        results = InteractomeProcessor._process_pool_model(
+            fake_cif, _CHAIN_TO_PROTEIN, Engine.COLABFOLD
+        )
+        assert len(results) == 3  # C(3,2)
+
+    def test_ppi_names_use_separator(self, pool_model_patches, tmp_path):
+        fake_cif = tmp_path / "pool_0000_rank_001.cif"
+        from virus_interactome.model import Engine
+        results = InteractomeProcessor._process_pool_model(
+            fake_cif, _CHAIN_TO_PROTEIN, Engine.COLABFOLD, ppi_separator="__"
+        )
+        ppis = {r["PPI"] for r in results}
+        assert ppis == {"prot_A__prot_B", "prot_A__prot_C", "prot_B__prot_C"}
+
+    def test_iptm_from_chain_pair_matrix(self, pool_model_patches, tmp_path):
+        fake_cif = tmp_path / "pool_0000_rank_001.cif"
+        from virus_interactome.model import Engine
+        results = InteractomeProcessor._process_pool_model(
+            fake_cif, _CHAIN_TO_PROTEIN, Engine.COLABFOLD
+        )
+        ab = next(r for r in results if r["PPI"] == "prot_A__prot_B")
+        ac = next(r for r in results if r["PPI"] == "prot_A__prot_C")
+        bc = next(r for r in results if r["PPI"] == "prot_B__prot_C")
+        assert ab["ipTM"] == pytest.approx(_IPTM_MATRIX[0, 1])
+        assert ac["ipTM"] == pytest.approx(_IPTM_MATRIX[0, 2])
+        assert bc["ipTM"] == pytest.approx(_IPTM_MATRIX[1, 2])
+
+    def test_ptm_chain_a_and_b_from_diagonal(self, pool_model_patches, tmp_path):
+        fake_cif = tmp_path / "pool_0000_rank_001.cif"
+        from virus_interactome.model import Engine
+        results = InteractomeProcessor._process_pool_model(
+            fake_cif, _CHAIN_TO_PROTEIN, Engine.COLABFOLD
+        )
+        ab = next(r for r in results if r["PPI"] == "prot_A__prot_B")
+        assert ab["pTM_chain_A"] == pytest.approx(_IPTM_MATRIX[0, 0])  # A diagonal
+        assert ab["pTM_chain_B"] == pytest.approx(_IPTM_MATRIX[1, 1])  # B diagonal
+
+    def test_size_correction_differs_from_raw(self, pool_model_patches, tmp_path):
+        fake_cif = tmp_path / "pool_0000_rank_001.cif"
+        from virus_interactome.model import Engine
+        results = InteractomeProcessor._process_pool_model(
+            fake_cif, _CHAIN_TO_PROTEIN, Engine.COLABFOLD
+        )
+        for r in results:
+            assert r["size_corrected_ipTM"] != pytest.approx(r["ipTM"])
+
+    def test_plddt_mean_a_from_chain_a_residues_only(self, pool_model_patches, tmp_path):
+        fake_cif = tmp_path / "pool_0000_rank_001.cif"
+        from virus_interactome.model import Engine
+        results = InteractomeProcessor._process_pool_model(
+            fake_cif, _CHAIN_TO_PROTEIN, Engine.COLABFOLD
+        )
+        # Chain A has 3 residues all with pLDDT=80.0
+        ab = next(r for r in results if r["PPI"] == "prot_A__prot_B")
+        assert ab["pLDDT_mean_A"] == pytest.approx(80.0)
+        assert ab["pLDDT_mean_B"] == pytest.approx(70.0)
+
+    def test_required_columns_present(self, pool_model_patches, tmp_path):
+        fake_cif = tmp_path / "pool_0000_rank_001.cif"
+        from virus_interactome.model import Engine
+        results = InteractomeProcessor._process_pool_model(
+            fake_cif, _CHAIN_TO_PROTEIN, Engine.COLABFOLD
+        )
+        for r in results:
+            assert REQUIRED_COLS <= set(r.keys()), f"Missing: {REQUIRED_COLS - set(r.keys())}"
+
+    def test_orf_a_b_match_proteins(self, pool_model_patches, tmp_path):
+        fake_cif = tmp_path / "pool_0000_rank_001.cif"
+        from virus_interactome.model import Engine
+        results = InteractomeProcessor._process_pool_model(
+            fake_cif, _CHAIN_TO_PROTEIN, Engine.COLABFOLD
+        )
+        ab = next(r for r in results if r["PPI"] == "prot_A__prot_B")
+        assert ab["ORF_A"] == "prot_A"
+        assert ab["ORF_B"] == "prot_B"
+
+
+# ---------------------------------------------------------------------------
+# process_pooled
+# ---------------------------------------------------------------------------
+
+def _make_pool_record(ppi, orf_a, orf_b, iptm, pool_id):
+    """Minimal per-model record returned by _process_pool_model."""
+    return {
+        "PPI": ppi, "ORF_A": orf_a, "ORF_B": orf_b,
+        "pool_id": pool_id, "Path": f"/fake/{pool_id}/rank_001.cif",
+        "ipTM": iptm, "size_corrected_ipTM": iptm - 0.05,
+        "pLDDT_mean": 75.0, "pLDDT_mean_A": 80.0, "pLDDT_mean_B": 70.0,
+        "pLDDT_median_A": 80.0, "pLDDT_median_B": 70.0,
+        "pae_mean": 10.0, "pae_mean_A": 5.0, "pae_mean_B": 8.0, "pae_mean_AB": 12.0,
+        "pDockQ2_AB": 0.15, "pDockQ2_BA": 0.12,
+        "LIS_AB": 0.3, "LIS_BA": 0.25, "LIA_AB": 10.0, "LIA_BA": 8.0,
+        "cLIS_AB": 0.2, "cLIS_BA": 0.18, "cLIA_AB": 5.0, "cLIA_BA": 4.0,
+        "iLIS_AB": 0.245, "iLIS_BA": 0.21, "iLIA_AB": 7.0, "iLIA_BA": 5.7,
+        "Best_LIS": 0.3, "Best_LIA": 10.0, "Best_iLIS": 0.245, "Best_iLIA": 7.0,
+        "LIR_AB": "0,1", "cLIR_AB": "0",
+        "ipSAE_AB": 0.5, "ipSAE_BA": 0.45, "max_ipSAE": 0.5,
+        "ipSAE_d0chn_AB": 0.4, "ipSAE_d0chn_BA": 0.38,
+        "ipSAE_d0dom_AB": 0.6, "ipSAE_d0dom_BA": 0.55,
+        "pTM_chain_A": 0.9, "pTM_chain_B": 0.8,
+    }
+
+
+@pytest.fixture
+def pooled_env(tmp_path):
+    """
+    Filesystem + manifest for two pools:
+      pool_0000: prot_A, prot_B, prot_C  → pairs A__B (ipTM=0.6), A__C (0.4), B__C (0.3)
+      pool_0001: prot_A, prot_B, prot_D  → pairs A__B (ipTM=0.8), A__D (0.5), B__D (0.2)
+    prot_A__prot_B appears in both pools → n_pools=2, mean ipTM=0.7
+    """
+    import csv
+
+    manifest_rows = [
+        {"pool_id": "pool_0000", "proteins": "prot_A,prot_B,prot_C", "n_proteins": 3, "total_aa": 90, "n_pairs": 3},
+        {"pool_id": "pool_0001", "proteins": "prot_A,prot_B,prot_D", "n_proteins": 3, "total_aa": 85, "n_pairs": 3},
+    ]
+    manifest_path = tmp_path / "pool_manifest.csv"
+    with open(manifest_path, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=list(manifest_rows[0].keys()))
+        w.writeheader()
+        w.writerows(manifest_rows)
+
+    # Create pool directories with a dummy .cif file each
+    for pid in ("pool_0000", "pool_0001"):
+        d = tmp_path / "cf_output" / pid
+        d.mkdir(parents=True)
+        (d / f"{pid}_rank_001.cif").touch()
+
+    # Side-effect function for _process_pool_model
+    pool_data = {
+        "pool_0000": [
+            _make_pool_record("prot_A__prot_B", "prot_A", "prot_B", 0.6, "pool_0000"),
+            _make_pool_record("prot_A__prot_C", "prot_A", "prot_C", 0.4, "pool_0000"),
+            _make_pool_record("prot_B__prot_C", "prot_B", "prot_C", 0.3, "pool_0000"),
+        ],
+        "pool_0001": [
+            _make_pool_record("prot_A__prot_B", "prot_A", "prot_B", 0.8, "pool_0001"),
+            _make_pool_record("prot_A__prot_D", "prot_A", "prot_D", 0.5, "pool_0001"),
+            _make_pool_record("prot_B__prot_D", "prot_B", "prot_D", 0.2, "pool_0001"),
+        ],
+    }
+
+    def _fake_process(cif_path, chain_to_protein, engine, ppi_separator="__"):
+        pool_id = cif_path.parent.name
+        return pool_data[pool_id]
+
+    return {
+        "manifest": manifest_path,
+        "cf_dir": tmp_path / "cf_output",
+        "out_dir": tmp_path / "results",
+        "fake_process": _fake_process,
+    }
+
+
+class TestProcessPooled:
+
+    def test_creates_output_csv(self, pooled_env):
+        with patch.object(InteractomeProcessor, "_process_pool_model",
+                          side_effect=pooled_env["fake_process"]):
+            InteractomeProcessor.process_pooled(
+                pooled_env["manifest"], pooled_env["cf_dir"], pooled_env["out_dir"]
+            )
+        assert (pooled_env["out_dir"] / "interactome_data.csv").exists()
+
+    def test_one_row_per_unique_ppi(self, pooled_env):
+        with patch.object(InteractomeProcessor, "_process_pool_model",
+                          side_effect=pooled_env["fake_process"]):
+            df = InteractomeProcessor.process_pooled(
+                pooled_env["manifest"], pooled_env["cf_dir"], pooled_env["out_dir"]
+            )
+        assert len(df) == 5  # A__B, A__C, B__C, A__D, B__D
+
+    def test_n_pools_counted_correctly(self, pooled_env):
+        with patch.object(InteractomeProcessor, "_process_pool_model",
+                          side_effect=pooled_env["fake_process"]):
+            df = InteractomeProcessor.process_pooled(
+                pooled_env["manifest"], pooled_env["cf_dir"], pooled_env["out_dir"]
+            )
+        ab = df.loc[df["PPI"] == "prot_A__prot_B", "n_pools"].values[0]
+        assert ab == 2
+        ac = df.loc[df["PPI"] == "prot_A__prot_C", "n_pools"].values[0]
+        assert ac == 1
+
+    def test_iptm_averaged_across_pools(self, pooled_env):
+        with patch.object(InteractomeProcessor, "_process_pool_model",
+                          side_effect=pooled_env["fake_process"]):
+            df = InteractomeProcessor.process_pooled(
+                pooled_env["manifest"], pooled_env["cf_dir"], pooled_env["out_dir"]
+            )
+        ab_iptm = df.loc[df["PPI"] == "prot_A__prot_B", "ipTM"].values[0]
+        assert ab_iptm == pytest.approx((0.6 + 0.8) / 2, abs=1e-4)
+
+    def test_single_pool_iptm_unchanged(self, pooled_env):
+        with patch.object(InteractomeProcessor, "_process_pool_model",
+                          side_effect=pooled_env["fake_process"]):
+            df = InteractomeProcessor.process_pooled(
+                pooled_env["manifest"], pooled_env["cf_dir"], pooled_env["out_dir"]
+            )
+        ac_iptm = df.loc[df["PPI"] == "prot_A__prot_C", "ipTM"].values[0]
+        assert ac_iptm == pytest.approx(0.4, abs=1e-4)
+
+    def test_missing_pool_dir_skipped(self, pooled_env, caplog):
+        import logging
+        import shutil
+        shutil.rmtree(pooled_env["cf_dir"] / "pool_0001")
+        with patch.object(InteractomeProcessor, "_process_pool_model",
+                          side_effect=pooled_env["fake_process"]):
+            with caplog.at_level(logging.WARNING, logger="virus_interactome.interactome"):
+                df = InteractomeProcessor.process_pooled(
+                    pooled_env["manifest"], pooled_env["cf_dir"], pooled_env["out_dir"]
+                )
+        # Only pool_0000 processed → 3 PPIs
+        assert len(df) == 3
+        assert any("not found" in r.message.lower() for r in caplog.records)
+
+    def test_empty_pool_dir_skipped(self, pooled_env, caplog):
+        import logging
+        # Remove the CIF from pool_0001 so glob returns nothing
+        for f in (pooled_env["cf_dir"] / "pool_0001").glob("*.cif"):
+            f.unlink()
+        with patch.object(InteractomeProcessor, "_process_pool_model",
+                          side_effect=pooled_env["fake_process"]):
+            with caplog.at_level(logging.WARNING, logger="virus_interactome.interactome"):
+                df = InteractomeProcessor.process_pooled(
+                    pooled_env["manifest"], pooled_env["cf_dir"], pooled_env["out_dir"]
+                )
+        assert len(df) == 3
+        assert any("no cif" in r.message.lower() for r in caplog.records)

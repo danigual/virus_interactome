@@ -16,7 +16,13 @@ from moleculekit.molecule import Molecule
 
 from .utils import load_json, load_boltz_input, parse_msa_metrics, reorganize_colabfold_outputs
 from .model import Engine, Model
-from .metrics import calculate_all_metrics
+from .metrics import (
+    calculate_all_metrics,
+    calculate_ipsae,
+    calculate_LIS_family,
+    calculate_pdockq,
+    calculate_pdockq2,
+)
 from .plotting import plot_boxplots, plot_iptm_vs_ptm, plot_pae_clusters, plot_paes, plot_plddt
 from .model import Engine
 
@@ -1051,6 +1057,285 @@ class InteractomeProcessor:
             final_clusters_df.to_csv(clusters_csv, index=False)
         
         logger.info(f"Done. Data saved to {out_dir}")
+
+    # ── Pooled ColabFold processing ───────────────────────────────────────────
+
+    _IPTM_SIZE_CORRECTION_INTERCEPT: float = -0.036255571
+    _IPTM_SIZE_CORRECTION_SLOPE: float = 0.004470512
+
+    @staticmethod
+    def _size_correct_iptm(iptm: float, len_a: int, len_b: int) -> float:
+        """Apply size correction to a pairwise ipTM score (Todor et al. 2026).
+
+        Corrects for the systematic positive bias of ipTM with larger protein
+        pairs.  Coefficients derived for ~200–500 aa bacterial proteins; the
+        direction of the correction is valid for viral proteins as well.
+
+        Returns ``iptm - expected_iptm`` where
+        ``expected_iptm = intercept + slope * sqrt(len_a + len_b)``.
+        """
+        expected = (
+            InteractomeProcessor._IPTM_SIZE_CORRECTION_INTERCEPT
+            + InteractomeProcessor._IPTM_SIZE_CORRECTION_SLOPE * np.sqrt(len_a + len_b)
+        )
+        return float(iptm - expected)
+
+    @staticmethod
+    def _process_pool_model(
+        cif_path: Path,
+        chain_to_protein: Dict[str, str],
+        engine: Engine,
+        ppi_separator: str = "__",
+    ) -> List[Dict[str, Any]]:
+        """Extract pairwise metrics for every protein pair in one pool model.
+
+        Computes structural metrics (ipSAE, LIS family, pDockQ2, pLDDT, PAE)
+        for all unique unordered chain pairs in a pooled multimer CIF.
+        Metric DataFrames are computed once per file and sliced per pair.
+
+        Parameters
+        ----------
+        cif_path : Path
+            Path to the ColabFold multimer CIF file.
+        chain_to_protein : Dict[str, str]
+            Mapping of chain letter → protein ID in pool order
+            (e.g. ``{'A': 'E1A', 'B': 'pVII', 'C': 'fiber'}``).
+        engine : Engine
+            Folding engine (must be :attr:`Engine.COLABFOLD`).
+        ppi_separator : str
+            Separator used to build PPI identifiers. Defaults to ``'__'``.
+
+        Returns
+        -------
+        List[dict]
+            One dict per unique protein pair with all metric columns plus
+            ``PPI``, ``ORF_A``, ``ORF_B``, ``Path``, ``ipTM``,
+            ``size_corrected_ipTM``.
+        """
+        model = Model(cif_path, engine)
+        m = model.metrics
+        md = model.model_data
+        chain_ids = np.array(md.token_chain_ids)
+        model_chains = np.unique(chain_ids)
+        chain_to_idx: Dict[str, int] = {c: i for i, c in enumerate(model_chains)}
+
+        cif_str = str(cif_path)
+        ipsae_df  = calculate_ipsae(cif_str, m.pae)
+        lis_df    = calculate_LIS_family(cif_str, m.pae)
+        pdockq2_df = calculate_pdockq2(cif_str, plddt_by_res=m.cb_plddts, pae_matrix=m.pae)
+
+        def _ipsae_val(c1: str, c2: str, col: str) -> float:
+            row = ipsae_df.loc[(ipsae_df.chain1 == c1) & (ipsae_df.chain2 == c2), col]
+            return float(row.values[0]) if len(row) > 0 else 0.0
+
+        def _lis_val(c1: str, c2: str, col: str):
+            row = lis_df.loc[(lis_df.chain1 == c1) & (lis_df.chain2 == c2), col]
+            return row.values[0] if len(row) > 0 else (0.0 if col not in ("LIR", "cLIR") else "")
+
+        def _pdq2_val(c1: str, c2: str) -> float:
+            row = pdockq2_df.loc[(pdockq2_df.chain1 == c1) & (pdockq2_df.chain2 == c2), "pDockQ2"]
+            return float(row.values[0]) if len(row) > 0 else 0.0
+
+        pool_chains = sorted(chain_to_protein.keys())
+        results: List[Dict[str, Any]] = []
+
+        for i, chain_a in enumerate(pool_chains):
+            for chain_b in pool_chains[i + 1:]:
+                protein_a = chain_to_protein[chain_a]
+                protein_b = chain_to_protein[chain_b]
+                ppi_id = f"{protein_a}{ppi_separator}{protein_b}"
+
+                mask_a = chain_ids == chain_a
+                mask_b = chain_ids == chain_b
+
+                idx_a = chain_to_idx[chain_a]
+                idx_b = chain_to_idx[chain_b]
+                iptm_pair = float(m.iptm_chain_pair[idx_a, idx_b])
+
+                len_a = int(mask_a.sum())
+                len_b = int(mask_b.sum())
+                sc_iptm = InteractomeProcessor._size_correct_iptm(iptm_pair, len_a, len_b)
+
+                pae_ab = m.pae[np.ix_(mask_a, mask_b)]
+                pae_ba = m.pae[np.ix_(mask_b, mask_a)]
+
+                lis_ab   = float(_lis_val(chain_a, chain_b, "LIS"))
+                lis_ba   = float(_lis_val(chain_b, chain_a, "LIS"))
+                lia_ab   = float(_lis_val(chain_a, chain_b, "LIA"))
+                lia_ba   = float(_lis_val(chain_b, chain_a, "LIA"))
+                clis_ab  = float(_lis_val(chain_a, chain_b, "cLIS"))
+                clis_ba  = float(_lis_val(chain_b, chain_a, "cLIS"))
+                clia_ab  = float(_lis_val(chain_a, chain_b, "cLIA"))
+                clia_ba  = float(_lis_val(chain_b, chain_a, "cLIA"))
+                ilis_ab  = float(_lis_val(chain_a, chain_b, "iLIS"))
+                ilis_ba  = float(_lis_val(chain_b, chain_a, "iLIS"))
+                ilia_ab  = float(_lis_val(chain_a, chain_b, "iLIA"))
+                ilia_ba  = float(_lis_val(chain_b, chain_a, "iLIA"))
+                ipsae_ab = _ipsae_val(chain_a, chain_b, "ipSAE")
+                ipsae_ba = _ipsae_val(chain_b, chain_a, "ipSAE")
+
+                results.append({
+                    "PPI":        ppi_id,
+                    "ORF_A":      protein_a,
+                    "ORF_B":      protein_b,
+                    "Path":       cif_str,
+                    "ipTM":       iptm_pair,
+                    "size_corrected_ipTM": sc_iptm,
+                    "pTM_chain_A": float(m.iptm_chain_pair[idx_a][idx_a]),
+                    "pTM_chain_B": float(m.iptm_chain_pair[idx_b][idx_b]),
+                    "pLDDT_mean":     float(np.mean(m.cb_plddts)),
+                    "pLDDT_mean_A":   float(np.mean(m.cb_plddts[mask_a])),
+                    "pLDDT_mean_B":   float(np.mean(m.cb_plddts[mask_b])),
+                    "pLDDT_median_A": float(np.median(m.cb_plddts[mask_a])),
+                    "pLDDT_median_B": float(np.median(m.cb_plddts[mask_b])),
+                    "pae_mean":    float(np.mean(m.pae)),
+                    "pae_mean_A":  float(np.mean(m.pae[np.ix_(mask_a, mask_a)])),
+                    "pae_mean_B":  float(np.mean(m.pae[np.ix_(mask_b, mask_b)])),
+                    "pae_mean_AB": float(np.mean([np.mean(pae_ab), np.mean(pae_ba)])),
+                    "pDockQ2_AB":  _pdq2_val(chain_a, chain_b),
+                    "pDockQ2_BA":  _pdq2_val(chain_b, chain_a),
+                    "LIS_AB":  lis_ab,  "LIS_BA":  lis_ba,
+                    "LIA_AB":  lia_ab,  "LIA_BA":  lia_ba,
+                    "cLIS_AB": clis_ab, "cLIS_BA": clis_ba,
+                    "cLIA_AB": clia_ab, "cLIA_BA": clia_ba,
+                    "iLIS_AB": ilis_ab, "iLIS_BA": ilis_ba,
+                    "iLIA_AB": ilia_ab, "iLIA_BA": ilia_ba,
+                    "Best_LIS":  float(max(lis_ab,  lis_ba)),
+                    "Best_LIA":  float(max(lia_ab,  lia_ba)),
+                    "Best_iLIS": float(max(ilis_ab, ilis_ba)),
+                    "Best_iLIA": float(max(ilia_ab, ilia_ba)),
+                    "LIR_AB":   _lis_val(chain_a, chain_b, "LIR"),
+                    "cLIR_AB":  _lis_val(chain_a, chain_b, "cLIR"),
+                    "ipSAE_AB":      ipsae_ab,
+                    "ipSAE_BA":      ipsae_ba,
+                    "max_ipSAE":     float(max(ipsae_ab, ipsae_ba)),
+                    "ipSAE_d0chn_AB": _ipsae_val(chain_a, chain_b, "ipSAE_d0chn"),
+                    "ipSAE_d0chn_BA": _ipsae_val(chain_b, chain_a, "ipSAE_d0chn"),
+                    "ipSAE_d0dom_AB": _ipsae_val(chain_a, chain_b, "ipSAE_d0dom"),
+                    "ipSAE_d0dom_BA": _ipsae_val(chain_b, chain_a, "ipSAE_d0dom"),
+                })
+
+        return results
+
+    @classmethod
+    def process_pooled(
+        cls,
+        pool_manifest_path: Union[str, Path],
+        colabfold_output_dir: Union[str, Path],
+        output_path: Union[str, Path],
+        *,
+        ppi_separator: str = "__",
+    ) -> pd.DataFrame:
+        """Process pooled ColabFold outputs into a single aggregated CSV.
+
+        Reads ``pool_manifest.csv`` (written by
+        :meth:`InteractomeWriter.write_pooled_jobs`), finds CIF files for
+        each pool under ``colabfold_output_dir/{pool_id}/``, extracts
+        pairwise metrics for every protein pair in each pool, and aggregates:
+
+        - **Within a pool**: numeric columns are averaged over all CIF ranks.
+        - **Across pools**: pairs appearing in multiple pools are averaged again;
+          a ``n_pools`` column records how many pools contributed.
+
+        The output schema matches ``interactome_data.csv`` produced by
+        :meth:`process_models`, so :class:`InteractomeAnalyzer` can load it
+        without changes.
+
+        Parameters
+        ----------
+        pool_manifest_path : str or Path
+            Path to ``pool_manifest.csv`` from :meth:`~InteractomeWriter.write_pooled_jobs`.
+        colabfold_output_dir : str or Path
+            Root directory of ColabFold outputs.  Expected structure after
+            :func:`~virus_interactome.utils.reorganize_colabfold_outputs`::
+
+                colabfold_output_dir/
+                    pool_0000/
+                        pool_0000_unrelaxed_rank_001_*.cif
+                        ...
+                    pool_0001/
+                        ...
+
+        output_path : str or Path
+            Directory where ``interactome_data.csv`` is written.
+        ppi_separator : str
+            Separator used to build PPI identifiers. Defaults to ``'__'``.
+
+        Returns
+        -------
+        pd.DataFrame
+            Aggregated metrics, one row per unique protein pair.
+        """
+        manifest = pd.read_csv(pool_manifest_path)
+        cf_dir = Path(colabfold_output_dir)
+        out_dir = Path(output_path)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        all_records: List[Dict[str, Any]] = []
+
+        for _, row in manifest.iterrows():
+            pool_id: str = str(row["pool_id"])
+            proteins: List[str] = str(row["proteins"]).split(",")
+            chain_letters = [chr(ord("A") + i) for i in range(len(proteins))]
+            chain_to_protein: Dict[str, str] = dict(zip(chain_letters, proteins))
+
+            pool_dir = cf_dir / pool_id
+            if not pool_dir.exists():
+                logger.warning(f"Pool directory not found, skipping: {pool_dir}")
+                continue
+
+            cif_files = sorted(pool_dir.glob("*.cif"))
+            if not cif_files:
+                logger.warning(f"No CIF files found in {pool_dir}, skipping.")
+                continue
+
+            # Collect per-model records for this pool
+            pool_records: List[Dict[str, Any]] = []
+            for cif_path in cif_files:
+                try:
+                    records = cls._process_pool_model(
+                        cif_path, chain_to_protein, Engine.COLABFOLD, ppi_separator
+                    )
+                    for rec in records:
+                        rec["pool_id"] = pool_id
+                    pool_records.extend(records)
+                except Exception as exc:
+                    logger.error(f"Failed to process {cif_path}: {exc}")
+
+            if not pool_records:
+                continue
+
+            # Average numeric columns over CIF ranks within this pool
+            pool_df = pd.DataFrame(pool_records)
+            str_cols = {"PPI", "ORF_A", "ORF_B", "Path", "pool_id", "LIR_AB", "cLIR_AB"}
+            num_cols = [c for c in pool_df.columns if c not in str_cols]
+
+            agg = pool_df.groupby("PPI")[num_cols].mean().reset_index()
+            meta = pool_df.groupby("PPI")[["ORF_A", "ORF_B", "pool_id"]].first().reset_index()
+            pool_avg = meta.merge(agg, on="PPI")
+            all_records.append(pool_avg)
+
+        if not all_records:
+            logger.warning("process_pooled: no records produced.")
+            return pd.DataFrame()
+
+        combined = pd.concat(all_records, ignore_index=True)
+
+        str_cols = {"PPI", "ORF_A", "ORF_B", "pool_id", "LIR_AB", "cLIR_AB"}
+        num_cols = [c for c in combined.columns if c not in str_cols]
+
+        agg_final = combined.groupby("PPI")[num_cols].mean().reset_index()
+        n_pools = combined.groupby("PPI")["pool_id"].nunique().reset_index(name="n_pools")
+        meta_final = combined.groupby("PPI")[["ORF_A", "ORF_B"]].first().reset_index()
+
+        result = meta_final.merge(n_pools, on="PPI").merge(agg_final, on="PPI")
+        result = result.round(4)
+
+        out_csv = out_dir / "interactome_data.csv"
+        result.to_csv(out_csv, index=False)
+        logger.info(f"process_pooled: {len(result)} PPIs → {out_csv}")
+
+        return result
 
     @staticmethod
     def _extract_monomer_plddt(

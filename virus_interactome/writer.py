@@ -6,12 +6,213 @@ import yaml
 
 from itertools import combinations, product
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple, Union
+
+import numpy as np
 
 from .proteome_manager import ProteomeManager
 from .utils import check_sequence_validity
 
 logger = logging.getLogger(__name__)
+
+
+class PoolDesigner:
+    """
+    Designs protein pools for pooled-PPI prediction (Todor et al. 2026).
+
+    Given a proteome, constructs pools where every unique protein pair appears
+    in at least one pool, the total amino acids per pool stay within
+    ``token_limit``, and the number of pools is minimised (greedy algorithm).
+
+    ``token_limit`` is *not* a fixed architectural constant — it reflects the
+    available GPU VRAM when running ColabFold locally.  A conservative starting
+    point for a ~50 GB GPU is 4000 aa.
+
+    Parameters
+    ----------
+    proteome : ProteomeManager
+        Source proteome; all sequences must be validated.
+    token_limit : int
+        Maximum total amino acids per pool (no default — set based on VRAM).
+    seed : int
+        Random seed for reproducible pool construction. Defaults to 42.
+    """
+
+    def __init__(self, proteome: ProteomeManager, token_limit: int, seed: int = 42) -> None:
+        self._proteome = proteome
+        self._token_limit = token_limit
+        self._seed = seed
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def design_pools(self) -> List[List[str]]:
+        """Greedy pool construction that covers all coverable protein pairs.
+
+        Returns
+        -------
+        List[List[str]]
+            Ordered list of pools; each pool is an ordered list of protein IDs.
+            The position within a pool determines the ColabFold chain letter
+            (index 0 → chain A, index 1 → chain B, …).
+        """
+        rng = np.random.default_rng(self._seed)
+        sequences: Dict[str, str] = self._proteome.sequences
+        proteins: List[str] = list(sequences.keys())
+
+        uncovered, uncoverable = self._partition_pairs(proteins, sequences)
+
+        if uncoverable:
+            logger.warning(
+                f"PoolDesigner: {len(uncoverable)} pairs exceed token_limit "
+                f"({self._token_limit} aa) and cannot be pooled."
+            )
+
+        pools: List[List[str]] = []
+
+        while uncovered:
+            pool, pool_aa = self._init_pool(proteins, sequences, uncovered, rng)
+            if not pool:
+                break
+
+            pool, pool_aa = self._grow_pool(pool, pool_aa, proteins, sequences, uncovered, rng)
+
+            # Mark pairs covered by this pool
+            for i, p1 in enumerate(pool):
+                for p2 in pool[i + 1:]:
+                    uncovered.discard(frozenset([p1, p2]))
+
+            pools.append(pool)
+
+        return pools
+
+    def coverage_report(self, pools: List[List[str]]) -> Dict[str, Any]:
+        """Statistics for a designed pool set.
+
+        Parameters
+        ----------
+        pools : List[List[str]]
+            Output of :meth:`design_pools`.
+
+        Returns
+        -------
+        dict
+            Keys: ``n_pools``, ``n_pairs_total``, ``n_pairs_coverable``,
+            ``n_pairs_covered``, ``n_pairs_uncoverable``, ``avg_pool_size``,
+            ``max_pool_size``, ``min_pool_size``, ``avg_pool_aa``.
+        """
+        sequences = self._proteome.sequences
+        proteins = list(sequences.keys())
+
+        _, uncoverable = self._partition_pairs(proteins, sequences)
+        n_total = len(proteins) * (len(proteins) - 1) // 2
+        n_uncoverable = len(uncoverable)
+
+        covered: Set[FrozenSet] = set()
+        for pool in pools:
+            for i, p1 in enumerate(pool):
+                for p2 in pool[i + 1:]:
+                    covered.add(frozenset([p1, p2]))
+
+        pool_sizes = [len(p) for p in pools]
+        pool_aas = [sum(len(sequences[pid]) for pid in p) for p in pools]
+
+        return {
+            "n_pools": len(pools),
+            "n_pairs_total": n_total,
+            "n_pairs_coverable": n_total - n_uncoverable,
+            "n_pairs_covered": len(covered),
+            "n_pairs_uncoverable": n_uncoverable,
+            "avg_pool_size": float(np.mean(pool_sizes)) if pool_sizes else 0.0,
+            "max_pool_size": max(pool_sizes) if pool_sizes else 0,
+            "min_pool_size": min(pool_sizes) if pool_sizes else 0,
+            "avg_pool_aa": float(np.mean(pool_aas)) if pool_aas else 0.0,
+        }
+
+    # ── Private helpers ───────────────────────────────────────────────────────
+
+    def _partition_pairs(
+        self,
+        proteins: List[str],
+        sequences: Dict[str, str],
+    ) -> Tuple[Set[FrozenSet], Set[FrozenSet]]:
+        """Split all unique pairs into coverable and uncoverable sets."""
+        uncovered: Set[FrozenSet] = set()
+        uncoverable: Set[FrozenSet] = set()
+        for i, p1 in enumerate(proteins):
+            for p2 in proteins[i + 1:]:
+                pair: FrozenSet = frozenset([p1, p2])
+                if len(sequences[p1]) + len(sequences[p2]) > self._token_limit:
+                    uncoverable.add(pair)
+                else:
+                    uncovered.add(pair)
+        return uncovered, uncoverable
+
+    @staticmethod
+    def _uncovered_count(
+        protein: str,
+        candidates: List[str],
+        uncovered: Set[FrozenSet],
+    ) -> int:
+        return sum(1 for q in candidates if frozenset([protein, q]) in uncovered)
+
+    def _init_pool(
+        self,
+        proteins: List[str],
+        sequences: Dict[str, str],
+        uncovered: Set[FrozenSet],
+        rng: np.random.Generator,
+    ) -> Tuple[List[str], int]:
+        """Pick the starting protein for a new pool."""
+        shuffled = proteins.copy()
+        rng.shuffle(shuffled)
+
+        # Sort by number of uncovered pairs (descending) — stable relative to shuffle
+        shuffled.sort(
+            key=lambda p: self._uncovered_count(p, proteins, uncovered),
+            reverse=True,
+        )
+
+        for p in shuffled:
+            if len(sequences[p]) <= self._token_limit and self._uncovered_count(p, proteins, uncovered) > 0:
+                return [p], len(sequences[p])
+
+        return [], 0
+
+    def _grow_pool(
+        self,
+        pool: List[str],
+        pool_aa: int,
+        proteins: List[str],
+        sequences: Dict[str, str],
+        uncovered: Set[FrozenSet],
+        rng: np.random.Generator,
+    ) -> Tuple[List[str], int]:
+        """Iteratively add the best protein to the pool until no more fit."""
+        pool_set = set(pool)
+
+        while True:
+            best_p: Optional[str] = None
+            best_gain: int = 0
+
+            candidates = [p for p in proteins if p not in pool_set]
+            rng.shuffle(candidates)
+
+            for p in candidates:
+                if pool_aa + len(sequences[p]) > self._token_limit:
+                    continue
+                gain = self._uncovered_count(p, pool, uncovered)
+                if gain > best_gain:
+                    best_gain = gain
+                    best_p = p
+
+            if best_p is None or best_gain == 0:
+                break
+
+            pool.append(best_p)
+            pool_set.add(best_p)
+            pool_aa += len(sequences[best_p])
+
+        return pool, pool_aa
 
 
 class InteractomeWriter:
@@ -456,6 +657,110 @@ class InteractomeWriter:
             with open(save_path, "w", encoding="utf-8") as f:
                 f.write(yaml.dump(data, default_flow_style=None, sort_keys=False))
         return data
+
+    def write_pooled_jobs(
+        self,
+        engine: str,
+        output_dir: str,
+        token_limit: int,
+        *,
+        seed: int = 42,
+        pool_manifest_name: str = "pool_manifest.csv",
+        csv_name: str = "colabfold_pooled_input.csv",
+    ) -> List[Dict[str, Any]]:
+        """Design protein pools and write the ColabFold input CSV + manifest.
+
+        Uses :class:`PoolDesigner` to build pools that cover every protein pair
+        at least once while keeping each pool within ``token_limit`` amino acids.
+
+        ``token_limit`` must match the GPU VRAM available on the machine running
+        ColabFold (e.g. 4000 aa for ~50 GB VRAM).
+
+        Parameters
+        ----------
+        engine : str
+            Must be ``'colabfold'`` (only supported engine for pooling).
+        output_dir : str
+            Directory where ``colabfold_pooled_input.csv`` and
+            ``pool_manifest.csv`` are written.
+        token_limit : int
+            Maximum total amino acids per pool.
+        seed : int
+            Random seed forwarded to :class:`PoolDesigner`. Defaults to 42.
+        pool_manifest_name : str
+            Filename for the pool manifest. Defaults to ``'pool_manifest.csv'``.
+        csv_name : str
+            Filename for the ColabFold input CSV.
+            Defaults to ``'colabfold_pooled_input.csv'``.
+
+        Returns
+        -------
+        List[dict]
+            One dict per pool with keys ``pool_id``, ``proteins``,
+            ``n_proteins``, ``total_aa``, ``n_pairs``.
+        """
+        engine_lower = engine.lower()
+        if engine_lower != "colabfold":
+            raise ValueError(
+                f"write_pooled_jobs currently supports only 'colabfold', got '{engine}'."
+            )
+
+        out_path = Path(output_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+
+        proteome = self.proteome_a
+        sequences = proteome.sequences
+
+        designer = PoolDesigner(proteome, token_limit=token_limit, seed=seed)
+        pools = designer.design_pools()
+
+        report = designer.coverage_report(pools)
+        logger.info(
+            f"PoolDesigner: {report['n_pools']} pools cover "
+            f"{report['n_pairs_covered']}/{report['n_pairs_coverable']} pairs "
+            f"(avg pool size {report['avg_pool_size']:.1f} proteins, "
+            f"{report['avg_pool_aa']:.0f} aa)."
+        )
+        if report["n_pairs_uncoverable"] > 0:
+            logger.warning(
+                f"{report['n_pairs_uncoverable']} pairs exceed token_limit and are omitted."
+            )
+
+        cf_csv_path = out_path / csv_name
+        manifest_path = out_path / pool_manifest_name
+        metas: List[Dict[str, Any]] = []
+
+        with open(cf_csv_path, "w", newline="", encoding="utf-8") as cf_fh, \
+             open(manifest_path, "w", newline="", encoding="utf-8") as mf_fh:
+
+            cf_writer = csv.writer(cf_fh)
+            cf_writer.writerow(["id", "sequence"])
+
+            mf_writer = csv.DictWriter(
+                mf_fh,
+                fieldnames=["pool_id", "proteins", "n_proteins", "total_aa", "n_pairs"],
+            )
+            mf_writer.writeheader()
+
+            for idx, pool in enumerate(pools):
+                pool_id = f"pool_{idx:04d}"
+                seq_str = ":".join(sequences[pid] for pid in pool)
+                cf_writer.writerow([pool_id, seq_str])
+
+                total_aa = sum(len(sequences[pid]) for pid in pool)
+                n_pairs = len(pool) * (len(pool) - 1) // 2
+                meta = {
+                    "pool_id": pool_id,
+                    "proteins": ",".join(pool),
+                    "n_proteins": len(pool),
+                    "total_aa": total_aa,
+                    "n_pairs": n_pairs,
+                }
+                mf_writer.writerow(meta)
+                metas.append(meta)
+
+        logger.info(f"[Pooled ColabFold] {len(pools)} pools → {cf_csv_path}")
+        return metas
 
     @staticmethod
     def get_colabfold_input(
