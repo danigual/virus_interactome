@@ -124,6 +124,7 @@ def dummy_interactome_df():
         "msa_depth": np.random.randint(1, 100, n),
         "ipTM": np.round(np.random.uniform(0.1, 0.9, n), 3),
         "pTM": np.round(np.random.uniform(0.3, 0.9, n), 3),
+        "Best_iLIS": np.round(np.random.uniform(0.05, 0.65, n), 3),
     })
 
 

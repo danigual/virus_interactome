@@ -2962,6 +2962,340 @@ class InteractomeAnalyzer:
         return result.reset_index(drop=True)
 
     # -------------------------------------------------------------------------
+    # Network topology analysis
+    # -------------------------------------------------------------------------
+
+    def _build_ppi_graph(
+        self,
+        weight_col: str,
+        min_weight: float,
+        ppi_separator: str,
+        model_agg: str,
+    ) -> Any:
+        """Build a weighted undirected NetworkX graph from _interactome_data.
+
+        Aggregates multiple model-rank rows per PPI, then adds one edge per pair
+        whose aggregated weight exceeds min_weight.
+        """
+        try:
+            import networkx as nx
+        except ImportError:
+            raise ImportError("networkx is required. Install with: pip install networkx")
+
+        df = self._interactome_data.copy()
+
+        if weight_col not in df.columns:
+            raise ValueError(f"Column '{weight_col}' not found in interactome data.")
+
+        _META = {"PPI", "ORF_A", "ORF_B", "Folder", "Path",
+                 "LIR_AB", "cLIR_AB", "pool_id", "Tier", "LIS_Tier", "iLIS_Tier"}
+        num_cols = [
+            c for c in df.columns
+            if c not in _META and pd.api.types.is_numeric_dtype(df[c])
+        ]
+
+        if model_agg == "mean":
+            meta = df.groupby("PPI")[["ORF_A", "ORF_B"]].first().reset_index() \
+                if {"ORF_A", "ORF_B"}.issubset(df.columns) \
+                else df.groupby("PPI")[[]].first().reset_index()
+            agg = df.groupby("PPI")[num_cols].mean().reset_index()
+            ppi_df = meta.merge(agg, on="PPI")
+        elif model_agg == "max":
+            meta = df.groupby("PPI")[["ORF_A", "ORF_B"]].first().reset_index() \
+                if {"ORF_A", "ORF_B"}.issubset(df.columns) \
+                else df.groupby("PPI")[[]].first().reset_index()
+            agg = df.groupby("PPI")[num_cols].max().reset_index()
+            ppi_df = meta.merge(agg, on="PPI")
+        elif model_agg == "best":
+            ppi_df = df.loc[df.groupby("PPI")[weight_col].idxmax()].reset_index(drop=True)
+        else:
+            raise ValueError(f"model_agg must be 'mean', 'max', or 'best'. Got: '{model_agg}'")
+
+        G = nx.Graph()
+        for _, row in ppi_df.iterrows():
+            parts = str(row["PPI"]).split(ppi_separator, 1)
+            if len(parts) != 2:
+                logger.warning(f"Cannot parse PPI '{row['PPI']}' with separator '{ppi_separator}'. Skipping.")
+                continue
+            source, target = parts
+            w = float(row[weight_col]) if not pd.isna(row[weight_col]) else 0.0
+            if w > min_weight:
+                G.add_edge(source, target, weight=w)
+
+        return G
+
+    def compute_network_properties(
+        self,
+        weight_col: str = "Best_iLIS",
+        min_weight: float = 0.0,
+        ppi_separator: str = "__",
+        model_agg: str = "mean",
+    ) -> pd.DataFrame:
+        """Compute graph-theory metrics for every protein in the interactome.
+
+        Aggregates multiple model-rank rows per PPI using ``model_agg``, builds a
+        weighted undirected NetworkX graph, and returns per-protein centrality metrics.
+        Hubs and bottlenecks are identified using adaptive thresholds (mean + 1σ of
+        degree and betweenness distributions respectively), making the classification
+        valid for any proteome size.
+
+        Parameters
+        ----------
+        weight_col : str
+            Numeric column to use as edge weight. Defaults to ``"Best_iLIS"``.
+        min_weight : float
+            Edges with weight ≤ min_weight are excluded. Defaults to ``0.0``
+            (keeps all pairs with any detectable interaction signal).
+        ppi_separator : str
+            Separator used in the PPI column. Defaults to ``"__"``.
+        model_agg : str
+            Strategy to collapse multiple model-rank rows per PPI:
+            ``"mean"`` (average across ranks), ``"max"`` (take maximum),
+            or ``"best"`` (keep the rank with the highest weight_col value).
+            Defaults to ``"mean"``.
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per protein with columns: ``protein``, ``degree``,
+            ``weighted_degree``, ``betweenness_centrality``,
+            ``closeness_centrality``, ``eigenvector_centrality``,
+            ``clustering_coefficient``, ``is_hub``, ``is_bottleneck``.
+            Sorted descending by ``degree``.
+
+        Raises
+        ------
+        RuntimeError
+            If interactome data is not loaded.
+        ValueError
+            If ``weight_col`` is absent or ``model_agg`` is invalid.
+        ImportError
+            If ``networkx`` is not installed.
+        """
+        if self._interactome_data is None:
+            raise RuntimeError("Interactome data not loaded. Set interactome_path first.")
+
+        G = self._build_ppi_graph(weight_col, min_weight, ppi_separator, model_agg)
+
+        if G.number_of_nodes() == 0:
+            logger.warning("compute_network_properties: graph has no nodes after filtering.")
+            return pd.DataFrame(columns=[
+                "protein", "degree", "weighted_degree",
+                "betweenness_centrality", "closeness_centrality",
+                "eigenvector_centrality", "clustering_coefficient",
+                "is_hub", "is_bottleneck",
+            ])
+
+        import networkx as nx
+
+        degrees = dict(G.degree())
+        weighted_degrees = dict(G.degree(weight="weight"))
+        betweenness = nx.betweenness_centrality(G, weight="weight", normalized=True)
+        closeness = nx.closeness_centrality(G)
+
+        try:
+            eigenvector = nx.eigenvector_centrality(G, weight="weight", max_iter=1000)
+        except nx.PowerIterationFailedConvergence:
+            logger.warning("Eigenvector centrality failed to converge; values set to NaN.")
+            eigenvector = {n: np.nan for n in G.nodes()}
+
+        clustering = nx.clustering(G, weight="weight")
+
+        deg_vals = np.array(list(degrees.values()), dtype=float)
+        bet_vals = np.array(list(betweenness.values()), dtype=float)
+        hub_threshold = float(deg_vals.mean() + deg_vals.std())
+        bottleneck_threshold = float(bet_vals.mean() + bet_vals.std())
+
+        rows = [
+            {
+                "protein": node,
+                "degree": degrees[node],
+                "weighted_degree": round(weighted_degrees[node], 4),
+                "betweenness_centrality": round(betweenness[node], 4),
+                "closeness_centrality": round(closeness[node], 4),
+                "eigenvector_centrality": round(eigenvector[node], 4)
+                    if not np.isnan(eigenvector[node]) else np.nan,
+                "clustering_coefficient": round(clustering[node], 4),
+                "is_hub": bool(degrees[node] > hub_threshold),
+                "is_bottleneck": bool(betweenness[node] > bottleneck_threshold),
+            }
+            for node in G.nodes()
+        ]
+
+        result = (
+            pd.DataFrame(rows)
+            .sort_values("degree", ascending=False)
+            .reset_index(drop=True)
+        )
+        logger.info(
+            f"compute_network_properties: {G.number_of_nodes()} nodes, "
+            f"{G.number_of_edges()} edges. "
+            f"Hubs: {result['is_hub'].sum()}, Bottlenecks: {result['is_bottleneck'].sum()}."
+        )
+        return result
+
+    def plot_network(
+        self,
+        network_df: Optional[pd.DataFrame] = None,
+        color_by: str = "betweenness_centrality",
+        size_by: str = "degree",
+        weight_col: str = "Best_iLIS",
+        min_weight: float = 0.0,
+        ppi_separator: str = "__",
+        model_agg: str = "mean",
+        label_top_n: int = 5,
+        output_path: Optional[Union[str, Path]] = None,
+        title: str = "Interactome Network",
+    ) -> None:
+        """Visualise the PPI network using a force-directed spring layout.
+
+        Node size encodes ``size_by``, node colour encodes ``color_by`` (viridis
+        colormap). Edge width scales with interaction weight. Only the top
+        ``label_top_n`` nodes by ``size_by`` are labelled to avoid clutter.
+        Hub and bottleneck nodes are outlined in red and blue respectively.
+
+        Parameters
+        ----------
+        network_df : pd.DataFrame, optional
+            Pre-computed output of :meth:`compute_network_properties`. If ``None``,
+            it is computed using ``weight_col``, ``min_weight``, ``ppi_separator``,
+            and ``model_agg``.
+        color_by : str
+            Node attribute column for colour mapping. Defaults to
+            ``"betweenness_centrality"``.
+        size_by : str
+            Node attribute column for size scaling. Defaults to ``"degree"``.
+        weight_col : str
+            Edge weight column (used when rebuilding the graph). Defaults to
+            ``"Best_iLIS"``.
+        min_weight : float
+            Edge weight threshold (used when rebuilding the graph).
+        ppi_separator : str
+            PPI column separator.
+        model_agg : str
+            Model-rank aggregation strategy.
+        label_top_n : int
+            Number of highest-``size_by`` nodes to label. Defaults to ``5``.
+        output_path : str or Path, optional
+            If provided, saves the figure to this path (300 dpi). Otherwise
+            calls ``plt.show()``.
+        title : str
+            Figure title.
+
+        Raises
+        ------
+        RuntimeError
+            If interactome data is not loaded.
+        ImportError
+            If ``networkx`` or ``matplotlib`` is not installed.
+        """
+        import matplotlib.pyplot as plt
+        import matplotlib.cm as cm
+        import matplotlib.colors as mcolors
+
+        if self._interactome_data is None:
+            raise RuntimeError("Interactome data not loaded. Set interactome_path first.")
+
+        if network_df is None:
+            network_df = self.compute_network_properties(
+                weight_col=weight_col,
+                min_weight=min_weight,
+                ppi_separator=ppi_separator,
+                model_agg=model_agg,
+            )
+
+        if network_df.empty:
+            logger.warning("plot_network: no nodes to plot.")
+            return
+
+        G = self._build_ppi_graph(weight_col, min_weight, ppi_separator, model_agg)
+        import networkx as nx
+        pos = nx.spring_layout(G, weight="weight", seed=42)
+
+        node_lookup = network_df.set_index("protein")
+
+        # Node sizes — min-max scale to [300, 2500]
+        size_vals = network_df.set_index("protein")[size_by].reindex(G.nodes()).fillna(0)
+        s_min, s_max = size_vals.min(), size_vals.max()
+        if s_max > s_min:
+            node_sizes = 300 + 2200 * (size_vals - s_min) / (s_max - s_min)
+        else:
+            node_sizes = pd.Series(1000, index=size_vals.index)
+
+        # Node colours — viridis on color_by
+        color_vals = network_df.set_index("protein")[color_by].reindex(G.nodes()).fillna(0)
+        norm = mcolors.Normalize(vmin=color_vals.min(), vmax=color_vals.max())
+        cmap = cm.viridis
+        node_colors = [cmap(norm(color_vals[n])) for n in G.nodes()]
+
+        # Edge widths — scale to [0.5, 3.0]
+        edge_weights = np.array([G[u][v]["weight"] for u, v in G.edges()])
+        if edge_weights.max() > edge_weights.min():
+            edge_widths = 0.5 + 2.5 * (edge_weights - edge_weights.min()) / (
+                edge_weights.max() - edge_weights.min()
+            )
+        else:
+            edge_widths = np.full(len(edge_weights), 1.5)
+
+        # Node edge colours: red for hubs, blue for bottlenecks, grey otherwise
+        def _node_edge_color(node: str) -> str:
+            if node not in node_lookup.index:
+                return "grey"
+            if node_lookup.at[node, "is_hub"]:
+                return "red"
+            if node_lookup.at[node, "is_bottleneck"]:
+                return "blue"
+            return "grey"
+
+        node_edge_colors = [_node_edge_color(n) for n in G.nodes()]
+
+        fig, ax = plt.subplots(figsize=(12, 9))
+
+        nx.draw_networkx_edges(
+            G, pos, ax=ax,
+            width=edge_widths, alpha=0.4, edge_color="grey",
+        )
+        nx.draw_networkx_nodes(
+            G, pos, ax=ax,
+            node_size=[node_sizes[n] for n in G.nodes()],
+            node_color=node_colors,
+            edgecolors=node_edge_colors,
+            linewidths=2.0,
+            alpha=0.9,
+        )
+
+        # Labels for top-N nodes
+        top_nodes = set(
+            network_df.nlargest(label_top_n, size_by)["protein"].tolist()
+        )
+        labels = {n: n for n in G.nodes() if n in top_nodes}
+        nx.draw_networkx_labels(G, pos, labels=labels, ax=ax, font_size=8, font_weight="bold")
+
+        # Colorbar
+        sm = cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        plt.colorbar(sm, ax=ax, label=color_by.replace("_", " ").title(), shrink=0.7)
+
+        # Legend
+        from matplotlib.lines import Line2D
+        legend_elements = [
+            Line2D([0], [0], marker="o", color="w", markerfacecolor="grey",
+                   markeredgecolor="red", markersize=10, label="Hub"),
+            Line2D([0], [0], marker="o", color="w", markerfacecolor="grey",
+                   markeredgecolor="blue", markersize=10, label="Bottleneck"),
+        ]
+        ax.legend(handles=legend_elements, loc="upper left", fontsize=9)
+        ax.set_title(title)
+        ax.axis("off")
+
+        if output_path:
+            plt.savefig(output_path, dpi=300, bbox_inches="tight")
+            logger.info(f"Network plot saved to {output_path}")
+        else:
+            plt.show()
+        plt.close()
+
+    # -------------------------------------------------------------------------
     # Foldseek structural homology search
     # -------------------------------------------------------------------------
 

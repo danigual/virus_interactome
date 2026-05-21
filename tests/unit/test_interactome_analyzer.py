@@ -780,3 +780,182 @@ class TestDownloadFoldseekResults:
             tsv = client._download("abc123", tmp_path, "protA")
         assert tsv.read_text()
 
+
+# ---------------------------------------------------------------------------
+# Network topology — compute_network_properties + plot_network
+# ---------------------------------------------------------------------------
+
+def _make_analyzer(tmp_path, ppis, weights, weight_col="Best_iLIS"):
+    """Helper: build an InteractomeAnalyzer from explicit PPI/weight lists."""
+    df = pd.DataFrame({
+        "PPI": ppis,
+        "Folder": ["/fake"] * len(ppis),
+        weight_col: weights,
+    })
+    csv = tmp_path / "interactome_data.csv"
+    df.to_csv(csv, index=False)
+    a = InteractomeAnalyzer()
+    a.interactome_path = str(csv)
+    return a
+
+
+class TestComputeNetworkProperties:
+
+    _EXPECTED_COLS = {
+        "protein", "degree", "weighted_degree",
+        "betweenness_centrality", "closeness_centrality",
+        "eigenvector_centrality", "clustering_coefficient",
+        "is_hub", "is_bottleneck",
+    }
+
+    def test_no_data_raises(self):
+        with pytest.raises(RuntimeError, match="not loaded"):
+            InteractomeAnalyzer().compute_network_properties()
+
+    def test_missing_weight_col_raises(self, analyzer_with_data):
+        with pytest.raises(ValueError, match="not found"):
+            analyzer_with_data.compute_network_properties(weight_col="nonexistent_col")
+
+    def test_invalid_model_agg_raises(self, analyzer_with_data):
+        with pytest.raises(ValueError, match="model_agg"):
+            analyzer_with_data.compute_network_properties(model_agg="bad_agg")
+
+    def test_expected_columns_present(self, analyzer_with_data):
+        result = analyzer_with_data.compute_network_properties()
+        assert self._EXPECTED_COLS.issubset(result.columns)
+
+    def test_one_row_per_protein(self, analyzer_with_data):
+        # fixture has 6 proteins: A B C D E F
+        result = analyzer_with_data.compute_network_properties()
+        assert len(result) == 6
+        assert result["protein"].nunique() == 6
+
+    def test_degree_matches_expected(self, tmp_path):
+        # Star: A connected to B, C, D, E → A degree=4, leaves degree=1
+        ppis = ["A__B", "A__C", "A__D", "A__E"]
+        a = _make_analyzer(tmp_path, ppis, [0.5] * 4)
+        result = a.compute_network_properties().set_index("protein")
+        assert result.at["A", "degree"] == 4
+        for leaf in ("B", "C", "D", "E"):
+            assert result.at[leaf, "degree"] == 1
+
+    def test_hub_detected_in_star(self, tmp_path):
+        ppis = ["A__B", "A__C", "A__D", "A__E"]
+        a = _make_analyzer(tmp_path, ppis, [0.5] * 4)
+        result = a.compute_network_properties().set_index("protein")
+        assert result.at["A", "is_hub"]
+        for leaf in ("B", "C", "D", "E"):
+            assert not result.at[leaf, "is_hub"]
+
+    def test_bottleneck_detected_in_star(self, tmp_path):
+        # In a star all shortest paths between leaves pass through centre
+        ppis = ["A__B", "A__C", "A__D", "A__E"]
+        a = _make_analyzer(tmp_path, ppis, [0.5] * 4)
+        result = a.compute_network_properties().set_index("protein")
+        assert result.at["A", "is_bottleneck"]
+        for leaf in ("B", "C", "D", "E"):
+            assert not result.at[leaf, "is_bottleneck"]
+
+    def test_hub_bottleneck_are_bool(self, analyzer_with_data):
+        result = analyzer_with_data.compute_network_properties()
+        assert result["is_hub"].dtype == bool
+        assert result["is_bottleneck"].dtype == bool
+
+    def test_triangle_clustering_coefficient(self, tmp_path):
+        # Complete triangle → every node's neighbours are also connected → cc=1
+        ppis = ["A__B", "B__C", "A__C"]
+        a = _make_analyzer(tmp_path, ppis, [0.5] * 3)
+        result = a.compute_network_properties().set_index("protein")
+        for node in ("A", "B", "C"):
+            assert result.at[node, "clustering_coefficient"] == pytest.approx(1.0)
+
+    def test_min_weight_excludes_weak_edges(self, tmp_path):
+        ppis = ["A__B", "B__C"]
+        a = _make_analyzer(tmp_path, ppis, [0.3, 0.3])
+        result = a.compute_network_properties(min_weight=0.5)
+        assert result.empty
+
+    def test_min_weight_keeps_strong_edges(self, tmp_path):
+        ppis = ["A__B", "B__C", "A__C"]
+        a = _make_analyzer(tmp_path, ppis, [0.8, 0.2, 0.8])
+        result = a.compute_network_properties(min_weight=0.5)
+        # only A__B and A__C survive; B__C is excluded
+        assert set(result["protein"]) == {"A", "B", "C"}
+        assert result.set_index("protein").at["B", "degree"] == 1
+
+    def test_model_agg_mean_averages_ranks(self, tmp_path):
+        # Two rows for same PPI with different weights
+        df = pd.DataFrame({
+            "PPI": ["X__Y", "X__Y"],
+            "Folder": ["/f", "/f"],
+            "Best_iLIS": [0.2, 0.8],
+        })
+        csv = tmp_path / "interactome_data.csv"
+        df.to_csv(csv, index=False)
+        a = InteractomeAnalyzer()
+        a.interactome_path = str(csv)
+        result = a.compute_network_properties(model_agg="mean")
+        assert result.set_index("protein").at["X", "weighted_degree"] == pytest.approx(0.5, abs=1e-3)
+
+    def test_model_agg_best_picks_max_rank(self, tmp_path):
+        df = pd.DataFrame({
+            "PPI": ["X__Y", "X__Y"],
+            "Folder": ["/f", "/f"],
+            "Best_iLIS": [0.2, 0.8],
+        })
+        csv = tmp_path / "interactome_data.csv"
+        df.to_csv(csv, index=False)
+        a = InteractomeAnalyzer()
+        a.interactome_path = str(csv)
+        result = a.compute_network_properties(model_agg="best")
+        assert result.set_index("protein").at["X", "weighted_degree"] == pytest.approx(0.8, abs=1e-3)
+
+    def test_sorted_by_degree_descending(self, analyzer_with_data):
+        result = analyzer_with_data.compute_network_properties()
+        degrees = result["degree"].tolist()
+        assert degrees == sorted(degrees, reverse=True)
+
+    def test_custom_weight_col(self, tmp_path):
+        df = pd.DataFrame({
+            "PPI": ["A__B", "A__C"],
+            "Folder": ["/f", "/f"],
+            "ipSAE_AB": [0.6, 0.7],
+        })
+        csv = tmp_path / "interactome_data.csv"
+        df.to_csv(csv, index=False)
+        a = InteractomeAnalyzer()
+        a.interactome_path = str(csv)
+        result = a.compute_network_properties(weight_col="ipSAE_AB")
+        assert len(result) == 3
+
+
+class TestPlotNetwork:
+
+    def test_no_data_raises(self):
+        with pytest.raises(RuntimeError, match="not loaded"):
+            InteractomeAnalyzer().plot_network()
+
+    def test_saves_file(self, tmp_path):
+        ppis = ["A__B", "A__C", "B__C"]
+        a = _make_analyzer(tmp_path, ppis, [0.5, 0.6, 0.4])
+        out = tmp_path / "network.png"
+        a.plot_network(output_path=out)
+        assert out.exists()
+
+    def test_accepts_precomputed_network_df(self, tmp_path):
+        ppis = ["A__B", "A__C", "B__C"]
+        a = _make_analyzer(tmp_path, ppis, [0.5, 0.6, 0.4])
+        net_df = a.compute_network_properties()
+        out = tmp_path / "network2.png"
+        a.plot_network(network_df=net_df, output_path=out)
+        assert out.exists()
+
+    def test_empty_graph_does_not_raise(self, tmp_path, caplog):
+        import logging
+        ppis = ["A__B"]
+        a = _make_analyzer(tmp_path, ppis, [0.1])
+        # min_weight above all weights → empty graph
+        with caplog.at_level(logging.WARNING):
+            a.plot_network(min_weight=0.9, output_path=tmp_path / "net.png")
+        assert "no nodes" in caplog.text
+
