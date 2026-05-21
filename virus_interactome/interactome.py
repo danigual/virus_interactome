@@ -2965,6 +2965,65 @@ class InteractomeAnalyzer:
     # Network topology analysis
     # -------------------------------------------------------------------------
 
+    # Non-numeric columns excluded from rank aggregation
+    _META_COLS: frozenset = frozenset({
+        "PPI", "ORF_A", "ORF_B", "Folder", "Path",
+        "LIR_AB", "cLIR_AB", "pool_id", "Tier", "LIS_Tier", "iLIS_Tier",
+    })
+
+    def _aggregate_per_ppi(
+        self,
+        model_agg: str = "mean",
+        weight_col: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """Collapse multiple model-rank rows into one row per PPI.
+
+        Parameters
+        ----------
+        model_agg : str
+            ``"mean"`` — average all numeric columns across ranks.
+            ``"max"``  — take the per-column maximum across ranks.
+            ``"best"`` — keep the single rank row with the highest ``weight_col``.
+        weight_col : str, optional
+            Required only for ``model_agg="best"``. The column used to pick the
+            best rank.
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per unique PPI with string meta columns preserved and
+            numeric columns aggregated.
+
+        Raises
+        ------
+        ValueError
+            If ``model_agg`` is invalid, or ``weight_col`` is missing when
+            ``model_agg="best"``.
+        """
+        df = self._interactome_data.copy()
+
+        if model_agg not in ("mean", "max", "best"):
+            raise ValueError(f"model_agg must be 'mean', 'max', or 'best'. Got: '{model_agg}'")
+        if model_agg == "best" and (weight_col is None or weight_col not in df.columns):
+            raise ValueError(
+                f"model_agg='best' requires a valid weight_col. Got: '{weight_col}'"
+            )
+
+        num_cols = [
+            c for c in df.columns
+            if c not in self._META_COLS and pd.api.types.is_numeric_dtype(df[c])
+        ]
+        meta_present = [c for c in ("ORF_A", "ORF_B") if c in df.columns]
+
+        if model_agg == "best":
+            return df.loc[df.groupby("PPI")[weight_col].idxmax()].reset_index(drop=True)
+
+        meta = df.groupby("PPI")[meta_present].first().reset_index() if meta_present \
+            else df.groupby("PPI")[[]].first().reset_index()
+        agg_fn = df.groupby("PPI")[num_cols].mean() if model_agg == "mean" \
+            else df.groupby("PPI")[num_cols].max()
+        return meta.merge(agg_fn.reset_index(), on="PPI")
+
     def _build_ppi_graph(
         self,
         weight_col: str,
@@ -2972,44 +3031,16 @@ class InteractomeAnalyzer:
         ppi_separator: str,
         model_agg: str,
     ) -> Any:
-        """Build a weighted undirected NetworkX graph from _interactome_data.
-
-        Aggregates multiple model-rank rows per PPI, then adds one edge per pair
-        whose aggregated weight exceeds min_weight.
-        """
+        """Build a weighted undirected NetworkX graph from _interactome_data."""
         try:
             import networkx as nx
         except ImportError:
             raise ImportError("networkx is required. Install with: pip install networkx")
 
-        df = self._interactome_data.copy()
-
-        if weight_col not in df.columns:
+        if weight_col not in self._interactome_data.columns:
             raise ValueError(f"Column '{weight_col}' not found in interactome data.")
 
-        _META = {"PPI", "ORF_A", "ORF_B", "Folder", "Path",
-                 "LIR_AB", "cLIR_AB", "pool_id", "Tier", "LIS_Tier", "iLIS_Tier"}
-        num_cols = [
-            c for c in df.columns
-            if c not in _META and pd.api.types.is_numeric_dtype(df[c])
-        ]
-
-        if model_agg == "mean":
-            meta = df.groupby("PPI")[["ORF_A", "ORF_B"]].first().reset_index() \
-                if {"ORF_A", "ORF_B"}.issubset(df.columns) \
-                else df.groupby("PPI")[[]].first().reset_index()
-            agg = df.groupby("PPI")[num_cols].mean().reset_index()
-            ppi_df = meta.merge(agg, on="PPI")
-        elif model_agg == "max":
-            meta = df.groupby("PPI")[["ORF_A", "ORF_B"]].first().reset_index() \
-                if {"ORF_A", "ORF_B"}.issubset(df.columns) \
-                else df.groupby("PPI")[[]].first().reset_index()
-            agg = df.groupby("PPI")[num_cols].max().reset_index()
-            ppi_df = meta.merge(agg, on="PPI")
-        elif model_agg == "best":
-            ppi_df = df.loc[df.groupby("PPI")[weight_col].idxmax()].reset_index(drop=True)
-        else:
-            raise ValueError(f"model_agg must be 'mean', 'max', or 'best'. Got: '{model_agg}'")
+        ppi_df = self._aggregate_per_ppi(model_agg=model_agg, weight_col=weight_col)
 
         G = nx.Graph()
         for _, row in ppi_df.iterrows():
