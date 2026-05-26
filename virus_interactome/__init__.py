@@ -3,6 +3,7 @@ from .proteome_manager import ProteomeManager
 from .foldseek import FoldseekClient
 from .writer import InteractomeWriter, PoolDesigner
 from .interactome import InteractomeRunner, InteractomeProcessor, InteractomeAnalyzer
+from .databases import DatabaseClient
 
 __all__ = [
     "Model",
@@ -15,4 +16,5 @@ __all__ = [
     "InteractomeRunner",
     "InteractomeProcessor",
     "InteractomeAnalyzer",
+    "DatabaseClient",
 ]

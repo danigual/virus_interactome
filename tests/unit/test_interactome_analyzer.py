@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 from virus_interactome.interactome import InteractomeAnalyzer, InteractomeProcessor
 from virus_interactome.foldseek import FoldseekClient
+from virus_interactome.databases import DatabaseClient
 
 
 # ---------------------------------------------------------------------------
@@ -959,3 +960,195 @@ class TestPlotNetwork:
             a.plot_network(min_weight=0.9, output_path=tmp_path / "net.png")
         assert "no nodes" in caplog.text
 
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared by database cross-validation tests
+# ---------------------------------------------------------------------------
+
+def _make_validated_analyzer(tmp_path, ppis, tiers, ipsae_vals=None):
+    """InteractomeAnalyzer loaded from CSV with Tier column."""
+    df = pd.DataFrame({
+        "PPI": ppis,
+        "Folder": ["/fake"] * len(ppis),
+        "ipSAE_AB": ipsae_vals if ipsae_vals is not None else [0.5] * len(ppis),
+        "Tier": tiers,
+    })
+    csv = tmp_path / "interactome_data.csv"
+    df.to_csv(csv, index=False)
+    a = InteractomeAnalyzer()
+    a.interactome_path = str(csv)
+    return a
+
+
+def _make_db_client(tmp_path, pairs, name="db.csv"):
+    """DatabaseClient from an in-memory pair list."""
+    rows = "protein_A,protein_B\n" + "".join(f"{a},{b}\n" for a, b in pairs)
+    p = tmp_path / name
+    p.write_text(rows)
+    return DatabaseClient.from_file(p)
+
+
+# ---------------------------------------------------------------------------
+# TestValidateAgainstDatabase
+# ---------------------------------------------------------------------------
+
+class TestValidateAgainstDatabase:
+
+    def test_no_data_raises(self, tmp_path):
+        client = _make_db_client(tmp_path, [("A", "B")])
+        with pytest.raises(RuntimeError, match="not loaded"):
+            InteractomeAnalyzer().validate_against_database(client)
+
+    def test_supported_true_for_known_pair(self, tmp_path):
+        a = _make_validated_analyzer(tmp_path, ["A__B"], ["Tier 1"])
+        client = _make_db_client(tmp_path, [("A", "B")])
+        result = a.validate_against_database(client)
+        assert result.loc[result["PPI"] == "A__B", "experimental_support"].item() is True
+
+    def test_unconfirmed_false_when_both_proteins_known(self, tmp_path):
+        a = _make_validated_analyzer(tmp_path, ["A__B", "A__C"], ["Tier 1", "Tier 1"])
+        # DB knows A, B, C (via A-B and B-C) but does not record A-C → False
+        client = _make_db_client(tmp_path, [("A", "B"), ("B", "C")])
+        result = a.validate_against_database(client)
+        assert result.loc[result["PPI"] == "A__C", "experimental_support"].item() is False
+
+    def test_nan_when_protein_absent_from_db(self, tmp_path):
+        a = _make_validated_analyzer(tmp_path, ["A__X"], ["Tier 2"])
+        client = _make_db_client(tmp_path, [("A", "B")])  # X not in DB
+        result = a.validate_against_database(client)
+        assert pd.isna(result.loc[result["PPI"] == "A__X", "experimental_support"].item())
+
+    def test_order_independent_lookup(self, tmp_path):
+        a = _make_validated_analyzer(tmp_path, ["B__A"], ["Tier 1"])
+        client = _make_db_client(tmp_path, [("A", "B")])
+        result = a.validate_against_database(client)
+        assert result.loc[result["PPI"] == "B__A", "experimental_support"].item() is True
+
+    def test_id_map_applied(self, tmp_path):
+        a = _make_validated_analyzer(tmp_path, ["orf1__orf2"], ["Tier 1"])
+        client = _make_db_client(tmp_path, [("geneA", "geneB")])
+        result = a.validate_against_database(
+            client, id_map={"orf1": "geneA", "orf2": "geneB"}
+        )
+        assert result["experimental_support"].item() is True
+
+    def test_id_map_unmapped_gives_nan(self, tmp_path):
+        a = _make_validated_analyzer(tmp_path, ["orf1__orf3"], ["Tier 1"])
+        client = _make_db_client(tmp_path, [("geneA", "geneB")])
+        result = a.validate_against_database(
+            client, id_map={"orf1": "geneA"}  # orf3 not in map
+        )
+        assert pd.isna(result["experimental_support"].item())
+
+    def test_one_row_per_ppi(self, tmp_path):
+        # Two model rows for same PPI → aggregated to one
+        df = pd.DataFrame({
+            "PPI": ["A__B", "A__B"],
+            "Folder": ["/f", "/f"],
+            "ipSAE_AB": [0.6, 0.8],
+            "Tier": ["Tier 1", "Tier 1"],
+        })
+        csv = tmp_path / "interactome_data.csv"
+        df.to_csv(csv, index=False)
+        a = InteractomeAnalyzer()
+        a.interactome_path = str(csv)
+        client = _make_db_client(tmp_path, [("A", "B")])
+        result = a.validate_against_database(client)
+        assert len(result) == 1
+
+    def test_tier_column_preserved(self, tmp_path):
+        a = _make_validated_analyzer(tmp_path, ["A__B"], ["Tier 1"])
+        client = _make_db_client(tmp_path, [("A", "B")])
+        result = a.validate_against_database(client)
+        assert "Tier" in result.columns
+
+
+# ---------------------------------------------------------------------------
+# TestValidationSummary
+# ---------------------------------------------------------------------------
+
+class TestValidationSummary:
+
+    @pytest.fixture
+    def validated_df(self):
+        return pd.DataFrame({
+            "PPI":                  ["A__B", "A__C", "B__C", "D__E"],
+            "Tier":                 ["Tier 1", "Tier 1", "Tier 2", "Tier 2"],
+            "experimental_support": [True,    False,    True,     None],
+        })
+
+    def test_missing_experimental_support_raises(self, validated_df):
+        a = InteractomeAnalyzer.__new__(InteractomeAnalyzer)
+        a._interactome_data = validated_df
+        bad = validated_df.drop(columns=["experimental_support"])
+        with pytest.raises(ValueError, match="experimental_support"):
+            a.validation_summary(bad)
+
+    def test_missing_group_by_raises(self, validated_df):
+        a = InteractomeAnalyzer.__new__(InteractomeAnalyzer)
+        a._interactome_data = validated_df
+        with pytest.raises(ValueError, match="nonexistent"):
+            a.validation_summary(validated_df, group_by="nonexistent")
+
+    def test_overall_row_always_present(self, validated_df):
+        a = InteractomeAnalyzer.__new__(InteractomeAnalyzer)
+        a._interactome_data = validated_df
+        result = a.validation_summary(validated_df)
+        assert "Overall" in result["Tier"].values
+
+    def test_precision_per_group(self, validated_df):
+        a = InteractomeAnalyzer.__new__(InteractomeAnalyzer)
+        a._interactome_data = validated_df
+        result = a.validation_summary(validated_df)
+        tier1 = result[result["Tier"] == "Tier 1"].iloc[0]
+        assert tier1["n_supported"] == 1
+        assert tier1["n_unconfirmed"] == 1
+        assert tier1["precision"] == pytest.approx(0.5)
+
+    def test_overall_precision(self, validated_df):
+        a = InteractomeAnalyzer.__new__(InteractomeAnalyzer)
+        a._interactome_data = validated_df
+        result = a.validation_summary(validated_df)
+        overall = result[result["Tier"] == "Overall"].iloc[0]
+        # assessable: A__B(T), A__C(F), B__C(T) → 3; supported: 2
+        assert overall["n_assessable"] == 3
+        assert overall["n_supported"] == 2
+        assert overall["precision"] == pytest.approx(2 / 3)
+
+    def test_no_recall_col_without_known_ppis(self, validated_df):
+        a = InteractomeAnalyzer.__new__(InteractomeAnalyzer)
+        a._interactome_data = validated_df
+        result = a.validation_summary(validated_df)
+        assert "recall" not in result.columns
+        assert "f1" not in result.columns
+
+    def test_recall_added_with_known_ppis(self, tmp_path, validated_df):
+        a = InteractomeAnalyzer.__new__(InteractomeAnalyzer)
+        a._interactome_data = validated_df
+        client = _make_db_client(tmp_path, [("A", "B"), ("A", "C"), ("B", "C")])
+        result = a.validation_summary(validated_df, known_ppis=client)
+        assert "recall" in result.columns
+        assert "f1" in result.columns
+
+    def test_n_reachable_correct(self, tmp_path, validated_df):
+        a = InteractomeAnalyzer.__new__(InteractomeAnalyzer)
+        a._interactome_data = validated_df
+        # Proteins in interactome: A,B,C,D,E. DB has A-B and A-C → both reachable.
+        client = _make_db_client(tmp_path, [("A", "B"), ("A", "C")])
+        result = a.validation_summary(validated_df, known_ppis=client)
+        assert result["n_reachable_experimental"].iloc[0] == 2
+
+    def test_recall_zero_when_no_supported(self, tmp_path):
+        df = pd.DataFrame({
+            "PPI":  ["A__B"],
+            "Tier": ["Tier 1"],
+            "experimental_support": [False],
+        })
+        a = InteractomeAnalyzer.__new__(InteractomeAnalyzer)
+        a._interactome_data = df
+        client = _make_db_client(tmp_path, [("A", "B")])
+        result = a.validation_summary(df, known_ppis=client)
+        overall = result[result["Tier"] == "Overall"].iloc[0]
+        assert overall["recall"] == pytest.approx(0.0)
+        assert pd.isna(overall["f1"])
