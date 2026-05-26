@@ -584,3 +584,153 @@ def test_load_model_info_sets_model_info_attributes(tmp_path):
     assert pm.model_info_by_orf is not None
     assert "id" in pm.model_info_by_orf.columns
     assert len(pm.model_info_by_orf) == 1  # 1 ORF, averaged across models
+
+
+# ---------------------------------------------------------------------------
+# file_path setter / load_proteome edge cases
+# ---------------------------------------------------------------------------
+
+def test_file_path_setter_loads_proteome(dummy_fasta_path):
+    pm = ProteomeManager()
+    pm.file_path = str(dummy_fasta_path)
+    assert len(pm) == 4
+
+
+def test_load_proteome_none_returns_without_error():
+    pm = ProteomeManager()
+    result = pm.load_proteome(None)
+    assert result is None
+    assert len(pm) == 0
+
+
+# ---------------------------------------------------------------------------
+# align_sequences
+# ---------------------------------------------------------------------------
+
+class TestAlignSequences:
+
+    def test_identical_sequences_give_full_identity(self):
+        seq = "MKTAYIAKQRQ"
+        result = ProteomeManager.align_sequences(seq, seq)
+        assert result["identity"] == pytest.approx(100.0)
+
+    def test_returns_all_keys(self):
+        result = ProteomeManager.align_sequences("MKTAY", "MKTAY")
+        assert {"score", "identity", "coverage", "gaps"} == set(result.keys())
+
+    def test_different_sequences_give_partial_identity(self):
+        result = ProteomeManager.align_sequences("MKTAYIAKQRQ", "AAAAAAAAA")
+        assert result["identity"] < 100.0
+
+    def test_coverage_full_for_identical(self):
+        seq = "MKTAYIAKQRQ"
+        result = ProteomeManager.align_sequences(seq, seq)
+        assert result["coverage"] == pytest.approx(100.0)
+
+
+# ---------------------------------------------------------------------------
+# filter_proteome
+# ---------------------------------------------------------------------------
+
+class TestFilterProteome:
+
+    def _make_pm(self):
+        pm = ProteomeManager()
+        pm.sequences = {"A": "MKTAY", "B": "GVALSK", "C": "LLKSD"}
+        return pm
+
+    def test_keeps_specified_orfs(self):
+        pm = self._make_pm()
+        pm.filter_proteome(["A", "C"])
+        assert set(pm.ids) == {"A", "C"}
+
+    def test_missing_orf_warns(self, caplog):
+        pm = self._make_pm()
+        with caplog.at_level(logging.WARNING):
+            pm.filter_proteome(["A", "MISSING"])
+        assert "MISSING" in caplog.text
+
+    def test_empty_proteome_warns(self, caplog):
+        pm = ProteomeManager()
+        with caplog.at_level(logging.WARNING):
+            pm.filter_proteome(["A"])
+        assert caplog.text  # any warning emitted
+
+    def test_no_valid_orfs_results_in_empty(self, caplog):
+        pm = self._make_pm()
+        with caplog.at_level(logging.WARNING):
+            pm.filter_proteome(["X", "Y"])
+        assert len(pm) == 0
+
+
+# ---------------------------------------------------------------------------
+# save / load
+# ---------------------------------------------------------------------------
+
+class TestSaveLoad:
+
+    def test_roundtrip_preserves_sequences(self, tmp_path, dummy_fasta_path):
+        pm = ProteomeManager(str(dummy_fasta_path))
+        pkl = tmp_path / "pm.pkl"
+        pm.save(str(pkl))
+        pm2 = ProteomeManager.load(str(pkl))
+        assert pm2.ids == pm.ids
+        assert dict(pm2.sequences) == dict(pm.sequences)
+
+    def test_load_wrong_type_raises(self, tmp_path):
+        import pickle
+        bad = tmp_path / "bad.pkl"
+        with open(bad, "wb") as f:
+            pickle.dump({"not": "a ProteomeManager"}, f)
+        with pytest.raises(TypeError):
+            ProteomeManager.load(str(bad))
+
+
+# ---------------------------------------------------------------------------
+# filter (returns new ProteomeManager)
+# ---------------------------------------------------------------------------
+
+class TestFilter:
+
+    def _make_pm(self):
+        pm = ProteomeManager()
+        pm.sequences = {"A": "MKTAY", "B": "GVALSK", "CCC": "LLKSDGQVLKAV"}
+        return pm
+
+    def test_filter_by_ids(self):
+        pm = self._make_pm()
+        result = pm.filter(ids=["A", "CCC"])
+        assert set(result.ids) == {"A", "CCC"}
+
+    def test_filter_by_min_length(self):
+        pm = self._make_pm()
+        result = pm.filter(min_length=6)
+        assert all(len(result.sequences[i]) >= 6 for i in result.ids)
+
+    def test_filter_by_max_length(self):
+        pm = self._make_pm()
+        result = pm.filter(max_length=5)
+        assert all(len(result.sequences[i]) <= 5 for i in result.ids)
+
+    def test_filter_by_regex(self):
+        pm = self._make_pm()
+        result = pm.filter(regex=r"^C")
+        assert list(result.ids) == ["CCC"]
+
+    def test_original_unchanged(self):
+        pm = self._make_pm()
+        pm.filter(ids=["A"])
+        assert len(pm) == 3
+
+    def test_missing_ids_warns(self, caplog):
+        pm = self._make_pm()
+        with caplog.at_level(logging.WARNING):
+            result = pm.filter(ids=["A", "MISSING"])
+        assert "MISSING" in caplog.text
+        assert set(result.ids) == {"A"}
+
+    def test_empty_result_warns(self, caplog):
+        pm = self._make_pm()
+        with caplog.at_level(logging.WARNING):
+            result = pm.filter(min_length=9999)
+        assert len(result) == 0
