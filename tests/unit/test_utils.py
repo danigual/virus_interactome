@@ -396,3 +396,123 @@ def test_reorganize_mixed_state(tmp_path):
     assert n == 1
     assert (tmp_path / "ORF3__ORF4").is_dir()
     assert not (tmp_path / "ORF3__ORF4_unrelaxed_rank_001_model_1_seed_000.pdb").exists()
+
+
+# ---------------------------------------------------------------------------
+# load_boltz_input
+# ---------------------------------------------------------------------------
+
+from virus_interactome.utils import load_boltz_input
+import pandas as pd
+
+
+def _write_yaml(tmp_path, content, name="job.yaml"):
+    p = tmp_path / name
+    p.write_text(content)
+    return p
+
+
+class TestLoadBoltzInput:
+
+    def test_job_name_from_filename_when_none(self, tmp_path):
+        p = _write_yaml(tmp_path, "sequences:\n  - protein:\n      id: ['A']\n      sequence: MKTAY\n", "myjob.yaml")
+        result = load_boltz_input(str(p), job_name=None)
+        assert result[0]["name"] == "myjob"
+
+    def test_explicit_job_name_used(self, tmp_path):
+        p = _write_yaml(tmp_path, "sequences:\n  - protein:\n      id: ['A']\n      sequence: MKTAY\n")
+        result = load_boltz_input(str(p), job_name="custom")
+        assert result[0]["name"] == "custom"
+
+    def test_new_format_list_id_count(self, tmp_path):
+        p = _write_yaml(tmp_path, "sequences:\n  - protein:\n      id: ['A', 'B', 'C']\n      sequence: MKTAY\n")
+        result = load_boltz_input(str(p))
+        assert result[0]["sequences"][0]["proteinChain"]["count"] == 3
+
+    def test_legacy_multiple_chains_count(self, tmp_path):
+        p = _write_yaml(tmp_path, "sequences:\n  - protein:\n      id: A\n      sequence: MKTAY\n      multiple_chains: \"B,C\"\n")
+        result = load_boltz_input(str(p))
+        assert result[0]["sequences"][0]["proteinChain"]["count"] == 3
+
+    def test_legacy_single_chain_count(self, tmp_path):
+        p = _write_yaml(tmp_path, "sequences:\n  - protein:\n      id: A\n      sequence: MKTAY\n")
+        result = load_boltz_input(str(p))
+        assert result[0]["sequences"][0]["proteinChain"]["count"] == 1
+
+    def test_null_id_defaults_to_count_one(self, tmp_path):
+        p = _write_yaml(tmp_path, "sequences:\n  - protein:\n      sequence: MKTAY\n")
+        result = load_boltz_input(str(p))
+        assert result[0]["sequences"][0]["proteinChain"]["count"] == 1
+
+    def test_sequence_preserved(self, tmp_path):
+        p = _write_yaml(tmp_path, "sequences:\n  - protein:\n      id: ['A']\n      sequence: MKTAYI\n")
+        result = load_boltz_input(str(p))
+        assert result[0]["sequences"][0]["proteinChain"]["sequence"] == "MKTAYI"
+
+
+# ---------------------------------------------------------------------------
+# df_to_pdf
+# ---------------------------------------------------------------------------
+
+from virus_interactome.utils import df_to_pdf
+
+
+class TestDfToPdf:
+
+    def _sample_df(self):
+        return pd.DataFrame({"score": [0.8, 0.3, 0.6], "label": ["A", "B", "C"]})
+
+    def test_creates_pdf_file(self, tmp_path):
+        out = tmp_path / "out.pdf"
+        df_to_pdf(self._sample_df(), str(out))
+        assert out.exists()
+
+    def test_empty_columns_raises(self, tmp_path):
+        out = tmp_path / "out.pdf"
+        with pytest.raises(ValueError):
+            df_to_pdf(pd.DataFrame(), str(out))
+
+    def test_callable_rule(self, tmp_path):
+        out = tmp_path / "out.pdf"
+        df_to_pdf(self._sample_df(), str(out), bold_rules={"score": lambda v: v > 0.5})
+        assert out.exists()
+
+    def test_tuple_rule_gt(self, tmp_path):
+        out = tmp_path / "out.pdf"
+        df_to_pdf(self._sample_df(), str(out), bold_rules={"score": ("gt", 0.5)})
+        assert out.exists()
+
+    def test_dict_rule(self, tmp_path):
+        out = tmp_path / "out.pdf"
+        df_to_pdf(self._sample_df(), str(out), bold_rules={"score": {"op": "lt", "value": 0.5}})
+        assert out.exists()
+
+    def test_contains_rule(self, tmp_path):
+        out = tmp_path / "out.pdf"
+        df_to_pdf(self._sample_df(), str(out), bold_rules={"label": ("contains", "A")})
+        assert out.exists()
+
+    def test_in_rule(self, tmp_path):
+        out = tmp_path / "out.pdf"
+        df_to_pdf(self._sample_df(), str(out), bold_rules={"label": ("in", {"A", "C"})})
+        assert out.exists()
+
+    def test_eq_and_ne_rules(self, tmp_path):
+        out = tmp_path / "out.pdf"
+        df_to_pdf(self._sample_df(), str(out), bold_rules={"label": ("eq", "B")})
+        assert out.exists()
+
+    def test_invalid_rule_spec_raises(self, tmp_path):
+        out = tmp_path / "out.pdf"
+        with pytest.raises(ValueError, match="Invalid rule"):
+            df_to_pdf(self._sample_df(), str(out), bold_rules={"score": 42})
+
+    def test_unsupported_op_raises(self, tmp_path):
+        out = tmp_path / "out.pdf"
+        with pytest.raises(ValueError, match="Unsupported operator"):
+            df_to_pdf(self._sample_df(), str(out), bold_rules={"score": ("badop", 1)})
+
+    def test_missing_column_in_rule_ignored(self, tmp_path):
+        out = tmp_path / "out.pdf"
+        df_to_pdf(self._sample_df(), str(out), bold_rules={"nonexistent": ("gt", 0)})
+        assert out.exists()
