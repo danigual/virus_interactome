@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from unittest.mock import patch, MagicMock
-from virus_interactome.interactome import InteractomeProcessor
+from virus_interactome.interactome_processor import InteractomeProcessor
 
 
 # ---------------------------------------------------------------------------
@@ -369,7 +369,7 @@ class TestExtractMonomerpLDDT:
     def test_returns_correct_keys(self, tmp_path):
         cif = tmp_path / "mono_model_0.cif"
         cif.write_text("")
-        with patch("virus_interactome.interactome.Model", return_value=self._mock_model(np.full(10, 80.0))):
+        with patch("virus_interactome.interactome_processor.Model", return_value=self._mock_model(np.full(10, 80.0))):
             result = InteractomeProcessor._extract_monomer_plddt(cif, "af3")
         assert set(result.keys()) == {"plddt_mean", "plddt_median", "n_residues"}
 
@@ -377,7 +377,7 @@ class TestExtractMonomerpLDDT:
         cif = tmp_path / "mono_model_0.cif"
         cif.write_text("")
         plddts = np.array([70.0, 80.0, 90.0, 85.0, 75.0])
-        with patch("virus_interactome.interactome.Model", return_value=self._mock_model(plddts)):
+        with patch("virus_interactome.interactome_processor.Model", return_value=self._mock_model(plddts)):
             result = InteractomeProcessor._extract_monomer_plddt(cif, "af3")
         assert result["plddt_mean"] == pytest.approx(np.mean(plddts))
         assert result["plddt_median"] == pytest.approx(np.median(plddts))
@@ -386,28 +386,28 @@ class TestExtractMonomerpLDDT:
     def test_boltz_engine(self, tmp_path):
         cif = tmp_path / "mono_model_0.cif"
         cif.write_text("")
-        with patch("virus_interactome.interactome.Model", return_value=self._mock_model(np.full(20, 75.0))):
+        with patch("virus_interactome.interactome_processor.Model", return_value=self._mock_model(np.full(20, 75.0))):
             result = InteractomeProcessor._extract_monomer_plddt(cif, "boltz")
         assert result["n_residues"] == 20
 
     def test_boltz2_alias(self, tmp_path):
         cif = tmp_path / "mono_model_0.cif"
         cif.write_text("")
-        with patch("virus_interactome.interactome.Model", return_value=self._mock_model(np.full(15, 85.0))):
+        with patch("virus_interactome.interactome_processor.Model", return_value=self._mock_model(np.full(15, 85.0))):
             result = InteractomeProcessor._extract_monomer_plddt(cif, "boltz2")
         assert result["n_residues"] == 15
 
     def test_colabfold_engine(self, tmp_path):
         cif = tmp_path / "mono_model_0.cif"
         cif.write_text("")
-        with patch("virus_interactome.interactome.Model", return_value=self._mock_model(np.full(8, 90.0))):
+        with patch("virus_interactome.interactome_processor.Model", return_value=self._mock_model(np.full(8, 90.0))):
             result = InteractomeProcessor._extract_monomer_plddt(cif, "colabfold")
         assert result["plddt_mean"] == pytest.approx(90.0)
 
     def test_parse_failure_returns_nan(self, tmp_path):
         cif = tmp_path / "mono_model_0.cif"
         cif.write_text("")
-        with patch("virus_interactome.interactome.Model", side_effect=RuntimeError("parse error")):
+        with patch("virus_interactome.interactome_processor.Model", side_effect=RuntimeError("parse error")):
             result = InteractomeProcessor._extract_monomer_plddt(cif, "af3")
         assert np.isnan(result["plddt_mean"])
         assert np.isnan(result["plddt_median"])
@@ -503,7 +503,7 @@ class TestSizeCorrectIptm:
 
     def test_known_value(self):
         import numpy as np
-        from virus_interactome.interactome import InteractomeProcessor
+        from virus_interactome.interactome_processor import InteractomeProcessor
         iptm = 0.5
         len_a, len_b = 100, 200
         expected_correction = -0.036255571 + 0.004470512 * np.sqrt(300)
@@ -511,19 +511,19 @@ class TestSizeCorrectIptm:
         assert abs(result - (iptm - expected_correction)) < 1e-9
 
     def test_larger_proteins_get_more_correction(self):
-        from virus_interactome.interactome import InteractomeProcessor
+        from virus_interactome.interactome_processor import InteractomeProcessor
         sc_small = InteractomeProcessor._size_correct_iptm(0.5, 50, 50)
         sc_large = InteractomeProcessor._size_correct_iptm(0.5, 500, 500)
         # Larger proteins → larger expected_iptm → smaller corrected value
         assert sc_large < sc_small
 
     def test_returns_float(self):
-        from virus_interactome.interactome import InteractomeProcessor
+        from virus_interactome.interactome_processor import InteractomeProcessor
         result = InteractomeProcessor._size_correct_iptm(0.3, 100, 100)
         assert isinstance(result, float)
 
     def test_high_iptm_stays_positive_for_typical_proteins(self):
-        from virus_interactome.interactome import InteractomeProcessor
+        from virus_interactome.interactome_processor import InteractomeProcessor
         # For typical viral proteins (~200-500 aa), a confident ipTM of 0.8
         # should remain positive after correction
         result = InteractomeProcessor._size_correct_iptm(0.8, 200, 300)
@@ -619,10 +619,10 @@ REQUIRED_COLS = {
 @pytest.fixture
 def pool_model_patches():
     """Patch Model + metric functions so _process_pool_model runs without CIF files."""
-    with patch("virus_interactome.interactome.Model", return_value=_make_mock_model()), \
-         patch("virus_interactome.interactome.calculate_ipsae", return_value=_make_ipsae_df()), \
-         patch("virus_interactome.interactome.calculate_LIS_family", return_value=_make_lis_df()), \
-         patch("virus_interactome.interactome.calculate_pdockq2", return_value=_make_pdockq2_df()):
+    with patch("virus_interactome.interactome_processor.Model", return_value=_make_mock_model()), \
+         patch("virus_interactome.interactome_processor.calculate_ipsae", return_value=_make_ipsae_df()), \
+         patch("virus_interactome.interactome_processor.calculate_LIS_family", return_value=_make_lis_df()), \
+         patch("virus_interactome.interactome_processor.calculate_pdockq2", return_value=_make_pdockq2_df()):
         yield
 
 

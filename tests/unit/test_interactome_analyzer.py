@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from virus_interactome.interactome import InteractomeAnalyzer, InteractomeProcessor
+from virus_interactome.interactome_analyzer import InteractomeAnalyzer
 from virus_interactome.foldseek import FoldseekClient
 from virus_interactome.databases import DatabaseClient
 

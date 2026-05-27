@@ -5,7 +5,7 @@ import pytest
 import pandas as pd
 import yaml
 from pathlib import Path
-from virus_interactome.interactome import InteractomeRunner
+from virus_interactome.interactome_runner import InteractomeRunner
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 import pytest
 import numpy as np
 import pandas as pd
-from virus_interactome.interactome import InteractomeAnalyzer
+from virus_interactome.interactome_analyzer import InteractomeAnalyzer
 
 
 # ---------------------------------------------------------------------------
