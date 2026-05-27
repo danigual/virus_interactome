@@ -1152,3 +1152,118 @@ class TestValidationSummary:
         overall = result[result["Tier"] == "Overall"].iloc[0]
         assert overall["recall"] == pytest.approx(0.0)
         assert pd.isna(overall["f1"])
+
+
+# ---------------------------------------------------------------------------
+# FoldseekClient — init validation + search orchestration
+# ---------------------------------------------------------------------------
+
+class TestFoldseekClientInit:
+    def test_negative_plddt_raises(self):
+        with pytest.raises(ValueError, match="pLDDT"):
+            FoldseekClient(plddt_threshold=-1)
+
+    def test_over_100_plddt_raises(self):
+        with pytest.raises(ValueError, match="pLDDT"):
+            FoldseekClient(plddt_threshold=101)
+
+    def test_valid_plddt_at_boundary(self):
+        client = FoldseekClient(plddt_threshold=100)
+        assert client.plddt_threshold == 100
+
+    def test_import_requests_raises_when_missing(self):
+        import sys
+        with patch.dict(sys.modules, {"requests": None}):
+            with pytest.raises(ImportError, match="requests"):
+                FoldseekClient._import_requests()
+
+
+class TestFoldseekSearch:
+    def _client(self):
+        return FoldseekClient()
+
+    def test_missing_cif_raises(self, tmp_path):
+        client = self._client()
+        with pytest.raises(FileNotFoundError):
+            client.search(tmp_path / "nonexistent.cif", ["pdb100"])
+
+    def test_existing_tsv_reused_without_submit(self, tmp_path):
+        cif = tmp_path / "prot.cif"
+        cif.write_text("mock")
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        existing_tsv = out_dir / "result.tsv"
+        existing_tsv.write_text("col1\tcol2\nA\tB")
+
+        client = self._client()
+        with patch.object(client, "_submit") as mock_sub:
+            result = client.search(cif, ["pdb100"], out_dir=out_dir)
+        mock_sub.assert_not_called()
+        assert result == existing_tsv
+
+    def test_full_pipeline_orchestration(self, tmp_path):
+        cif = tmp_path / "myprotein.cif"
+        cif.write_text("CIF content here")
+        out_dir = tmp_path / "out"
+        fake_tsv = out_dir / "myprotein.tsv"
+
+        client = self._client()
+        with patch.object(client, "_submit", return_value="ticket42") as mock_sub, \
+             patch.object(client, "_poll") as mock_poll, \
+             patch.object(client, "_download", return_value=fake_tsv) as mock_dl:
+            result = client.search(cif, ["pdb100"], out_dir=out_dir)
+
+        mock_sub.assert_called_once()
+        mock_poll.assert_called_once_with("ticket42")
+        mock_dl.assert_called_once_with("ticket42", out_dir, "myprotein")
+        assert result == fake_tsv
+
+    def test_submit_none_warns_and_returns_none(self, tmp_path):
+        cif = tmp_path / "prot.cif"
+        cif.write_text("content")
+        client = self._client()
+        with patch.object(client, "_submit", return_value=None), \
+             pytest.warns(UserWarning):
+            result = client.search(cif, ["pdb100"], out_dir=tmp_path / "out")
+        assert result is None
+
+    def test_protein_id_defaults_to_stem(self, tmp_path):
+        cif = tmp_path / "myprot.cif"
+        cif.write_text("content")
+        out_dir = tmp_path / "out"
+        fake_tsv = out_dir / "myprot.tsv"
+
+        client = self._client()
+        with patch.object(client, "_submit", return_value="t1"), \
+             patch.object(client, "_poll"), \
+             patch.object(client, "_download", return_value=fake_tsv) as mock_dl:
+            client.search(cif, ["pdb100"], out_dir=out_dir)
+        assert mock_dl.call_args[0][2] == "myprot"
+
+    def test_out_dir_created_if_missing(self, tmp_path):
+        cif = tmp_path / "prot.cif"
+        cif.write_text("content")
+        out_dir = tmp_path / "nested" / "deep" / "out"
+
+        client = self._client()
+        with patch.object(client, "_submit", return_value="t1"), \
+             patch.object(client, "_poll"), \
+             patch.object(client, "_download", return_value=out_dir / "prot.tsv"):
+            client.search(cif, ["pdb100"], out_dir=out_dir)
+        assert out_dir.exists()
+
+
+class TestSubmitMissingId:
+    def _client(self):
+        return FoldseekClient()
+
+    def test_warns_and_returns_none_when_id_missing(self):
+        client = self._client()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"status": "PENDING"}
+        with patch.object(client, "_requests") as mock_req, \
+             pytest.warns(UserWarning):
+            mock_req.post.return_value = mock_resp
+            result = client._submit("CIF", ["pdb100"])
+        assert result is None
