@@ -1,12 +1,16 @@
 
 import os
+import logging
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from pathlib import Path
 from matplotlib.patches import Rectangle
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from glob import glob
 from .utils import load_json, process_full_data_af3, process_full_data_boltz, process_full_data_colabfold
+
+logger = logging.getLogger(__name__)
 
 def plot_paes(
     pae_matrix: np.ndarray,
@@ -513,3 +517,250 @@ def batch_plotting_colabfold(ppi_folder: str, force: bool = False) -> list:
     return outputs
 
 
+
+
+# ---------------------------------------------------------------------------
+# Interactome-level plots (standalone; called by InteractomeAnalyzer wrappers)
+# ---------------------------------------------------------------------------
+
+def plot_confidence_landscape(
+    df: pd.DataFrame,
+    output_path=None,
+    title: str = "Interactome Confidence Landscape",
+) -> None:
+    """Scatter plot of pDockQ2 vs ipSAE, sized by MSA depth, coloured by pLDDT.
+
+    Uses the AlphaFold four-band colour scheme. A copy of *df* is used
+    internally; the caller's DataFrame is not modified.
+    """
+    from matplotlib.colors import ListedColormap, BoundaryNorm
+
+    df = df.copy()
+
+    y_col = None
+    for col in ["ipSAE_d0_dom_AB", "ipSAE_d0dom_AB", "ipSAE_AB", "ipSAE"]:
+        if col in df.columns:
+            y_col = col
+            break
+
+    pdockq2_col = "pDockQ2_AB" if "pDockQ2_AB" in df.columns else "pDockQ2"
+    plddt_col = "pLDDT_mean" if "pLDDT_mean" in df.columns else None
+    msa_col = "msa_depth" if "msa_depth" in df.columns else None
+
+    if not y_col or pdockq2_col not in df.columns:
+        logger.error(f"Required columns for plotting not found (y={y_col}, x={pdockq2_col}).")
+        return
+
+    af_colors = ["#FF7D45", "#FFDB13", "#65CBF3", "#0053D6"]
+    cmap = ListedColormap(af_colors)
+    norm = BoundaryNorm([0, 50, 70, 90, 100], cmap.N)
+
+    plt.figure(figsize=(10, 8))
+
+    sizes = np.sqrt(df[msa_col].fillna(0)) * 8 + 15 if msa_col and msa_col in df.columns else 40
+    x_values = df[pdockq2_col] + np.random.normal(0, 0.003, size=len(df))
+    y_values = df[y_col] + np.random.normal(0, 0.003, size=len(df))
+
+    scatter = plt.scatter(
+        x_values, y_values, s=sizes,
+        c=df[plddt_col] if plddt_col else "gray",
+        cmap=cmap, norm=norm, alpha=0.75, edgecolors="black", linewidths=0.5,
+    )
+
+    plt.axhline(0.4, color="gray", linestyle="--", alpha=0.4, label="ipSAE_dom 0.4")
+    plt.axvline(0.23, color="gray", linestyle="--", alpha=0.4, label="pDockQ2 0.23")
+    plt.xlabel("Physical Plausibility (pDockQ2)")
+    plt.ylabel(f"Interface Confidence ({y_col})")
+    plt.title(title)
+
+    if plddt_col:
+        cbar = plt.colorbar(scatter, ticks=[25, 60, 80, 95])
+        cbar.set_ticklabels(["<50 (Very Low)", "50-70 (Low)", "70-90 (High)", ">90 (Very High)"])
+        cbar.set_label("Mean pLDDT (Global Model Confidence)")
+
+    plt.legend(loc="upper left", fontsize=9, frameon=True)
+    plt.grid(True, linestyle=":", alpha=0.3)
+
+    if output_path:
+        plt.savefig(output_path, dpi=300, bbox_inches="tight")
+        logger.info(f"Confidence landscape saved to {output_path}")
+    else:
+        plt.show()
+    plt.close()
+
+
+def plot_interactive_landscape(
+    df: pd.DataFrame,
+    output_path=None,
+    title: str = "Interactome Confidence Landscape",
+) -> None:
+    """Interactive Plotly scatter of pDockQ2 vs ipSAE with hover PPI info.
+
+    Saves an HTML file when *output_path* is provided, otherwise calls
+    ``fig.show()``. Requires ``plotly``.
+    """
+    try:
+        import plotly.express as px
+    except ImportError:
+        logger.error("Plotly is required. Install with: pip install plotly")
+        return
+
+    df = df.copy()
+
+    y_col = None
+    for col in ["ipSAE_d0_dom_AB", "ipSAE_d0dom_AB", "ipSAE_AB", "ipSAE"]:
+        if col in df.columns:
+            y_col = col
+            break
+
+    pdockq2_col = "pDockQ2_AB" if "pDockQ2_AB" in df.columns else "pDockQ2"
+    plddt_col = "pLDDT_mean" if "pLDDT_mean" in df.columns else None
+    msa_col = "msa_depth" if "msa_depth" in df.columns else None
+
+    if not y_col or pdockq2_col not in df.columns:
+        logger.error("Required columns for interactive plotting not found.")
+        return
+
+    if plddt_col:
+        df["Confidence_Level"] = pd.cut(
+            df[plddt_col], bins=[0, 50, 70, 90, 100],
+            labels=["Very Low (<50)", "Low (50-70)", "High (70-90)", "Very High (>90)"],
+        )
+
+    size_col = "Size"
+    df[size_col] = np.sqrt(df[msa_col].fillna(0)) + 5 if msa_col else 10
+
+    fig = px.scatter(
+        df, x=pdockq2_col, y=y_col, size=size_col,
+        color="Confidence_Level" if plddt_col else None,
+        hover_name="PPI",
+        hover_data={
+            "ORF_A": True, "ORF_B": True, msa_col: True,
+            y_col: ":.3f", pdockq2_col: ":.3f",
+            size_col: False, "Confidence_Level": False,
+        },
+        color_discrete_map={
+            "Very High (>90)": "#0053D6", "High (70-90)": "#65CBF3",
+            "Low (50-70)": "#FFDB13", "Very Low (<50)": "#FF7D45",
+        },
+        title=f"{title}<br><sup>Bubble size = sqrt(MSA depth)</sup>",
+        labels={
+            y_col: "Interface Confidence (ipSAE_dom)",
+            pdockq2_col: "Physical Plausibility (pDockQ2)",
+        },
+        template="plotly_white",
+    )
+    fig.add_hline(y=0.4, line_dash="dash", line_color="gray", opacity=0.5)
+    fig.add_vline(x=0.23, line_dash="dash", line_color="gray", opacity=0.5)
+    fig.update_layout(legend_title_text="Global pLDDT",
+                      hoverlabel=dict(bgcolor="white", font_size=12))
+
+    if output_path:
+        out_file = str(Path(output_path).with_suffix(".html"))
+        fig.write_html(out_file)
+        logger.info(f"Interactive landscape saved to {out_file}")
+    else:
+        fig.show()
+
+
+def plot_network(
+    G,
+    network_df: pd.DataFrame,
+    color_by: str = "betweenness_centrality",
+    size_by: str = "degree",
+    label_top_n: int = 5,
+    output_path=None,
+    title: str = "Interactome Network",
+) -> None:
+    """Force-directed spring layout of the PPI network.
+
+    Node size → *size_by*; node colour → *color_by* (viridis). Edge width
+    scales with interaction weight. Top-*label_top_n* nodes are labelled.
+    Hub nodes get a red border; bottleneck nodes a blue border.
+
+    Parameters
+    ----------
+    G : nx.Graph
+        Weighted undirected PPI graph (built by
+        ``InteractomeAnalyzer._build_ppi_graph``).
+    network_df : pd.DataFrame
+        Per-protein metrics from ``InteractomeAnalyzer.compute_network_properties``.
+    """
+    import networkx as nx
+    import matplotlib.cm as cm
+    import matplotlib.colors as mcolors
+    from matplotlib.lines import Line2D
+
+    if network_df.empty:
+        logger.warning("plot_network: no nodes to plot.")
+        return
+
+    pos = nx.spring_layout(G, weight="weight", seed=42)
+    node_lookup = network_df.set_index("protein")
+
+    size_vals = network_df.set_index("protein")[size_by].reindex(G.nodes()).fillna(0)
+    s_min, s_max = size_vals.min(), size_vals.max()
+    node_sizes = (
+        300 + 2200 * (size_vals - s_min) / (s_max - s_min)
+        if s_max > s_min
+        else pd.Series(1000, index=size_vals.index)
+    )
+
+    color_vals = network_df.set_index("protein")[color_by].reindex(G.nodes()).fillna(0)
+    norm = mcolors.Normalize(vmin=color_vals.min(), vmax=color_vals.max())
+    cmap = cm.viridis
+    node_colors = [cmap(norm(color_vals[n])) for n in G.nodes()]
+
+    edge_weights = np.array([G[u][v]["weight"] for u, v in G.edges()])
+    if len(edge_weights) > 0 and edge_weights.max() > edge_weights.min():
+        edge_widths = 0.5 + 2.5 * (edge_weights - edge_weights.min()) / (
+            edge_weights.max() - edge_weights.min()
+        )
+    else:
+        edge_widths = np.full(len(edge_weights), 1.5)
+
+    def _node_edge_color(node: str) -> str:
+        if node not in node_lookup.index:
+            return "grey"
+        if node_lookup.at[node, "is_hub"]:
+            return "red"
+        if node_lookup.at[node, "is_bottleneck"]:
+            return "blue"
+        return "grey"
+
+    node_edge_colors = [_node_edge_color(n) for n in G.nodes()]
+
+    fig, ax = plt.subplots(figsize=(12, 9))
+    nx.draw_networkx_edges(G, pos, ax=ax, width=edge_widths, alpha=0.4, edge_color="grey")
+    nx.draw_networkx_nodes(
+        G, pos, ax=ax,
+        node_size=[node_sizes[n] for n in G.nodes()],
+        node_color=node_colors,
+        edgecolors=node_edge_colors,
+        linewidths=2.0, alpha=0.9,
+    )
+
+    top_nodes = set(network_df.nlargest(label_top_n, size_by)["protein"].tolist())
+    labels = {n: n for n in G.nodes() if n in top_nodes}
+    nx.draw_networkx_labels(G, pos, labels=labels, ax=ax, font_size=8, font_weight="bold")
+
+    sm = cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    plt.colorbar(sm, ax=ax, label=color_by.replace("_", " ").title(), shrink=0.7)
+
+    legend_elements = [
+        Line2D([0], [0], marker="o", color="w", markerfacecolor="grey",
+               markeredgecolor="red", markersize=10, label="Hub"),
+        Line2D([0], [0], marker="o", color="w", markerfacecolor="grey",
+               markeredgecolor="blue", markersize=10, label="Bottleneck"),
+    ]
+    ax.legend(handles=legend_elements, loc="upper left", fontsize=9)
+    ax.set_title(title)
+    ax.axis("off")
+
+    if output_path:
+        plt.savefig(output_path, dpi=300, bbox_inches="tight")
+        logger.info(f"Network plot saved to {output_path}")
+    else:
+        plt.show()
+    plt.close()

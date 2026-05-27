@@ -7,6 +7,11 @@ from pathlib import Path
 from moleculekit.molecule import Molecule
 
 from .databases import DatabaseClient
+from .plotting import (
+    plot_confidence_landscape as _plot_confidence_landscape,
+    plot_interactive_landscape as _plot_interactive_landscape,
+    plot_network as _plot_network_figure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -149,179 +154,25 @@ class InteractomeAnalyzer:
         )
         return df
 
-    def plot_confidence_landscape(self, output_path: Optional[Union[str, Path]] = None,
-                                  title: str = "Interactome Confidence Landscape"):
-        """
-        Generates a scatter plot of the interactome confidence landscape.
-        X-axis: pDockQ2, Y-axis: ipSAE_d0_dom, Size: msa_depth, Color: pLDDT (AlphaFold colors).
-        """
-        import matplotlib.pyplot as plt
-        from matplotlib.colors import ListedColormap, BoundaryNorm
-        
+    def plot_confidence_landscape(
+        self,
+        output_path: Optional[Union[str, Path]] = None,
+        title: str = "Interactome Confidence Landscape",
+    ) -> None:
+        """Scatter plot of pDockQ2 vs ipSAE, sized by MSA depth, coloured by pLDDT."""
         if self._interactome_data is None:
             raise RuntimeError("Interactome data not loaded.")
+        _plot_confidence_landscape(self._interactome_data, output_path=output_path, title=title)
 
-        df = self._interactome_data.copy()
-        
-        # Priority for the y-axis: ipSAE_d0_dom_AB -> ipSAE_d0dom_AB -> ipSAE_AB
-        y_col = None
-        for col in ["ipSAE_d0_dom_AB", "ipSAE_d0dom_AB", "ipSAE_AB", "ipSAE"]:
-            if col in df.columns:
-                y_col = col
-                break
-        
-        pdockq2_col = "pDockQ2_AB" if "pDockQ2_AB" in df.columns else "pDockQ2"
-        plddt_col = "pLDDT_mean" if "pLDDT_mean" in df.columns else None
-        msa_col = "msa_depth" if "msa_depth" in df.columns else None
-
-        if not y_col or pdockq2_col not in df.columns:
-            logger.error(f"Required columns for plotting not found. Using {y_col} and {pdockq2_col}")
-            return
-
-        # --- AlphaFold Color Scheme ---
-        # >90: #0053D6, 70-90: #65CBF3, 50-70: #FFDB13, <50: #FF7D45
-        af_colors = ["#FF7D45", "#FFDB13", "#65CBF3", "#0053D6"]
-        cmap = ListedColormap(af_colors)
-        norm = BoundaryNorm([0, 50, 70, 90, 100], cmap.N)
-
-        plt.figure(figsize=(10, 8))
-        
-        # Scaling bubbles: Use square root to normalize size differences and scale down
-        if msa_col and msa_col in df.columns:
-            # Scale factor 8 and base 15 makes them visible but small
-            sizes = np.sqrt(df[msa_col].fillna(0)) * 8 + 15
-        else:
-            sizes = 40
-
-        # Jitter: Add a tiny bit of noise to prevent overlap of identical results
-        x_values = df[pdockq2_col] + np.random.normal(0, 0.003, size=len(df))
-        y_values = df[y_col] + np.random.normal(0, 0.003, size=len(df))
-
-        scatter = plt.scatter(
-            x_values, 
-            y_values, 
-            s=sizes, 
-            c=df[plddt_col] if plddt_col else "gray", 
-            cmap=cmap,
-            norm=norm,
-            alpha=0.75, 
-            edgecolors="black",
-            linewidths=0.5
-        )
-        
-        # Reference lines (updated thresholds)
-        plt.axhline(0.4, color="gray", linestyle="--", alpha=0.4, label="ipSAE_dom 0.4")
-        plt.axvline(0.23, color="gray", linestyle="--", alpha=0.4, label="pDockQ2 0.23")
-        
-        plt.xlabel("Physical Plausibility (pDockQ2)")
-        plt.ylabel(f"Interface Confidence ({y_col})")
-        plt.title(title)
-        
-        if plddt_col:
-            cbar = plt.colorbar(scatter, ticks=[25, 60, 80, 95])
-            cbar.set_ticklabels(["<50 (Very Low)", "50-70 (Low)", "70-90 (High)", ">90 (Very High)"])
-            cbar.set_label("Mean pLDDT (Global Model Confidence)")
-        
-        plt.legend(loc="upper left", fontsize=9, frameon=True)
-        plt.grid(True, linestyle=":", alpha=0.3)
-
-        if output_path:
-            plt.savefig(output_path, dpi=300, bbox_inches="tight")
-            logger.info(f"Confidence landscape plot saved to {output_path}")
-        else:
-            plt.show()
-        plt.close()
-
-    def plot_interactive_landscape(self, output_path: Optional[Union[str, Path]] = None,
-                                   title: str = "Interactome Confidence Landscape"):
-        """
-        Generates an interactive HTML scatter plot of the confidence landscape using Plotly.
-        Includes hover info for PPI names and metrics.
-        """
-        try:
-            import plotly.express as px
-        except ImportError:
-            logger.error("Plotly is required for interactive plots. Install it with 'pip install plotly'.")
-            return
-
+    def plot_interactive_landscape(
+        self,
+        output_path: Optional[Union[str, Path]] = None,
+        title: str = "Interactome Confidence Landscape",
+    ) -> None:
+        """Interactive Plotly scatter of pDockQ2 vs ipSAE with hover PPI info."""
         if self._interactome_data is None:
             raise RuntimeError("Interactome data not loaded.")
-
-        df = self._interactome_data.copy()
-        
-        # Identify metrics
-        y_col = None
-        for col in ["ipSAE_d0_dom_AB", "ipSAE_d0dom_AB", "ipSAE_AB", "ipSAE"]:
-            if col in df.columns:
-                y_col = col
-                break
-        
-        pdockq2_col = "pDockQ2_AB" if "pDockQ2_AB" in df.columns else "pDockQ2"
-        plddt_col = "pLDDT_mean" if "pLDDT_mean" in df.columns else None
-        msa_col = "msa_depth" if "msa_depth" in df.columns else None
-
-        if not y_col or pdockq2_col not in df.columns:
-            logger.error("Required columns for interactive plotting not found.")
-            return
-
-        # Categorize pLDDT for AlphaFold coloring in Plotly
-        if plddt_col:
-            df["Confidence_Level"] = pd.cut(
-                df[plddt_col], 
-                bins=[0, 50, 70, 90, 100], 
-                labels=["Very Low (<50)", "Low (50-70)", "High (70-90)", "Very High (>90)"]
-            )
-        
-        # Bubble sizing (normalized for Plotly)
-        size_col = "Size"
-        if msa_col:
-            df[size_col] = np.sqrt(df[msa_col].fillna(0)) + 5
-        else:
-            df[size_col] = 10
-
-        # Create Plotly figure
-        fig = px.scatter(
-            df,
-            x=pdockq2_col,
-            y=y_col,
-            size=size_col,
-            color="Confidence_Level" if plddt_col else None,
-            hover_name="PPI",
-            hover_data={
-                "ORF_A": True,
-                "ORF_B": True,
-                msa_col: True,
-                y_col: ":.3f",
-                pdockq2_col: ":.3f",
-                size_col: False,
-                "Confidence_Level": False
-            },
-            color_discrete_map={
-                "Very High (>90)": "#0053D6",
-                "High (70-90)": "#65CBF3",
-                "Low (50-70)": "#FFDB13",
-                "Very Low (<50)": "#FF7D45"
-            },
-            title=f"{title}<br><sup>Bubble size = sqrt(MSA depth)</sup>",
-            labels={y_col: "Interface Confidence (ipSAE_dom)", pdockq2_col: "Physical Plausibility (pDockQ2)"},
-            template="plotly_white"
-        )
-
-        # Add reference lines
-        fig.add_hline(y=0.4, line_dash="dash", line_color="gray", opacity=0.5)
-        fig.add_vline(x=0.23, line_dash="dash", line_color="gray", opacity=0.5)
-
-        fig.update_layout(
-            legend_title_text="Global pLDDT",
-            hoverlabel=dict(bgcolor="white", font_size=12)
-        )
-
-        if output_path:
-            out_file = str(Path(output_path).with_suffix(".html"))
-            fig.write_html(out_file)
-            logger.info(f"Interactive landscape saved to: {out_file}")
-        else:
-            fig.show()
+        _plot_interactive_landscape(self._interactome_data, output_path=output_path, title=title)
 
     #Getters and setters
 
@@ -1763,10 +1614,6 @@ class InteractomeAnalyzer:
         ImportError
             If ``networkx`` or ``matplotlib`` is not installed.
         """
-        import matplotlib.pyplot as plt
-        import matplotlib.cm as cm
-        import matplotlib.colors as mcolors
-
         if self._interactome_data is None:
             raise RuntimeError("Interactome data not loaded. Set interactome_path first.")
 
@@ -1778,96 +1625,12 @@ class InteractomeAnalyzer:
                 model_agg=model_agg,
             )
 
-        if network_df.empty:
-            logger.warning("plot_network: no nodes to plot.")
-            return
-
         G = self._build_ppi_graph(weight_col, min_weight, ppi_separator, model_agg)
-        import networkx as nx
-        pos = nx.spring_layout(G, weight="weight", seed=42)
-
-        node_lookup = network_df.set_index("protein")
-
-        # Node sizes — min-max scale to [300, 2500]
-        size_vals = network_df.set_index("protein")[size_by].reindex(G.nodes()).fillna(0)
-        s_min, s_max = size_vals.min(), size_vals.max()
-        if s_max > s_min:
-            node_sizes = 300 + 2200 * (size_vals - s_min) / (s_max - s_min)
-        else:
-            node_sizes = pd.Series(1000, index=size_vals.index)
-
-        # Node colours — viridis on color_by
-        color_vals = network_df.set_index("protein")[color_by].reindex(G.nodes()).fillna(0)
-        norm = mcolors.Normalize(vmin=color_vals.min(), vmax=color_vals.max())
-        cmap = cm.viridis
-        node_colors = [cmap(norm(color_vals[n])) for n in G.nodes()]
-
-        # Edge widths — scale to [0.5, 3.0]
-        edge_weights = np.array([G[u][v]["weight"] for u, v in G.edges()])
-        if edge_weights.max() > edge_weights.min():
-            edge_widths = 0.5 + 2.5 * (edge_weights - edge_weights.min()) / (
-                edge_weights.max() - edge_weights.min()
-            )
-        else:
-            edge_widths = np.full(len(edge_weights), 1.5)
-
-        # Node edge colours: red for hubs, blue for bottlenecks, grey otherwise
-        def _node_edge_color(node: str) -> str:
-            if node not in node_lookup.index:
-                return "grey"
-            if node_lookup.at[node, "is_hub"]:
-                return "red"
-            if node_lookup.at[node, "is_bottleneck"]:
-                return "blue"
-            return "grey"
-
-        node_edge_colors = [_node_edge_color(n) for n in G.nodes()]
-
-        fig, ax = plt.subplots(figsize=(12, 9))
-
-        nx.draw_networkx_edges(
-            G, pos, ax=ax,
-            width=edge_widths, alpha=0.4, edge_color="grey",
+        _plot_network_figure(
+            G, network_df,
+            color_by=color_by, size_by=size_by,
+            label_top_n=label_top_n, output_path=output_path, title=title,
         )
-        nx.draw_networkx_nodes(
-            G, pos, ax=ax,
-            node_size=[node_sizes[n] for n in G.nodes()],
-            node_color=node_colors,
-            edgecolors=node_edge_colors,
-            linewidths=2.0,
-            alpha=0.9,
-        )
-
-        # Labels for top-N nodes
-        top_nodes = set(
-            network_df.nlargest(label_top_n, size_by)["protein"].tolist()
-        )
-        labels = {n: n for n in G.nodes() if n in top_nodes}
-        nx.draw_networkx_labels(G, pos, labels=labels, ax=ax, font_size=8, font_weight="bold")
-
-        # Colorbar
-        sm = cm.ScalarMappable(cmap=cmap, norm=norm)
-        sm.set_array([])
-        plt.colorbar(sm, ax=ax, label=color_by.replace("_", " ").title(), shrink=0.7)
-
-        # Legend
-        from matplotlib.lines import Line2D
-        legend_elements = [
-            Line2D([0], [0], marker="o", color="w", markerfacecolor="grey",
-                   markeredgecolor="red", markersize=10, label="Hub"),
-            Line2D([0], [0], marker="o", color="w", markerfacecolor="grey",
-                   markeredgecolor="blue", markersize=10, label="Bottleneck"),
-        ]
-        ax.legend(handles=legend_elements, loc="upper left", fontsize=9)
-        ax.set_title(title)
-        ax.axis("off")
-
-        if output_path:
-            plt.savefig(output_path, dpi=300, bbox_inches="tight")
-            logger.info(f"Network plot saved to {output_path}")
-        else:
-            plt.show()
-        plt.close()
 
     # -------------------------------------------------------------------------
     # Database cross-validation
