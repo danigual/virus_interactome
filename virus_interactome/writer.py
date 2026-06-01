@@ -36,20 +36,12 @@ class PoolDesigner:
         Maximum total amino acids per pool (no default — set based on VRAM).
     seed : int
         Random seed for reproducible pool construction. Defaults to 42.
-    lambda_penalty : float
-        Redundancy penalty weight (0 = no penalty, current behaviour).
-        Each already-covered pair between a candidate protein and the current
-        pool is subtracted as ``lambda_penalty * redundant_pairs`` from the
-        raw gain.  Proteins with zero new coverage are never added regardless
-        of this value.  Typical useful range: 0.0–1.0. Defaults to 0.0.
     """
 
-    def __init__(self, proteome: ProteomeManager, token_limit: int, seed: int = 42,
-                 lambda_penalty: float = 0.0) -> None:
+    def __init__(self, proteome: ProteomeManager, token_limit: int, seed: int = 42) -> None:
         self._proteome = proteome
         self._token_limit = token_limit
         self._seed = seed
-        self._lambda = lambda_penalty
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -200,7 +192,7 @@ class PoolDesigner:
 
         while True:
             best_p: Optional[str] = None
-            best_gain: float = float("-inf")
+            best_gain: int = 0
 
             candidates = [p for p in proteins if p not in pool_set]
             rng.shuffle(candidates)
@@ -208,16 +200,12 @@ class PoolDesigner:
             for p in candidates:
                 if pool_aa + len(sequences[p]) > self._token_limit:
                     continue
-                new_cov = self._uncovered_count(p, pool, uncovered)
-                if new_cov == 0:
-                    continue
-                redundant = len(pool) - new_cov
-                gain = new_cov - self._lambda * redundant
+                gain = self._uncovered_count(p, pool, uncovered)
                 if gain > best_gain:
                     best_gain = gain
                     best_p = p
 
-            if best_p is None:
+            if best_p is None or best_gain == 0:
                 break
 
             pool.append(best_p)
@@ -677,7 +665,6 @@ class InteractomeWriter:
         token_limit: int,
         *,
         seed: int = 42,
-        lambda_penalty: float = 0.0,
         pool_manifest_name: str = "pool_manifest.csv",
         csv_name: str = "colabfold_pooled_input.csv",
     ) -> List[Dict[str, Any]]:
@@ -700,8 +687,6 @@ class InteractomeWriter:
             Maximum total amino acids per pool.
         seed : int
             Random seed forwarded to :class:`PoolDesigner`. Defaults to 42.
-        lambda_penalty : float
-            Redundancy penalty forwarded to :class:`PoolDesigner`. Defaults to 0.0.
         pool_manifest_name : str
             Filename for the pool manifest. Defaults to ``'pool_manifest.csv'``.
         csv_name : str
@@ -726,8 +711,7 @@ class InteractomeWriter:
         proteome = self.proteome_a
         sequences = proteome.sequences
 
-        designer = PoolDesigner(proteome, token_limit=token_limit, seed=seed,
-                                lambda_penalty=lambda_penalty)
+        designer = PoolDesigner(proteome, token_limit=token_limit, seed=seed)
         pools = designer.design_pools()
 
         report = designer.coverage_report(pools)
