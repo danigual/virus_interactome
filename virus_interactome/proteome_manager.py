@@ -1,6 +1,6 @@
 from concurrent.futures import ProcessPoolExecutor
 from itertools import combinations
-from Bio import pairwise2, SeqIO
+from Bio import SeqIO, Align
 from Bio.SeqUtils import molecular_weight
 from Bio.SeqUtils.IsoelectricPoint import IsoelectricPoint
 from Bio.SeqUtils.ProtParam import ProteinAnalysis
@@ -105,10 +105,15 @@ class ProteomeManager:
 
     @staticmethod
     def _compute_identity(args):
-        from Bio import pairwise2
+        from Bio import Align
         i, j, seq1, seq2 = args
-        alignments = pairwise2.align.globalxx(seq1, seq2)
-        score = alignments[0].score
+        aligner = Align.PairwiseAligner()
+        aligner.mode = "global"
+        aligner.match_score = 1
+        aligner.mismatch_score = 0
+        aligner.open_gap_score = 0
+        aligner.extend_gap_score = 0
+        score = aligner.score(seq1, seq2)
         max_len = max(len(seq1), len(seq2))
         return i, j, score / max_len
     
