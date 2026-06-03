@@ -303,7 +303,7 @@ class InteractomeAnalyzer(_PeptidePipelineMixin, _StatsMixin, _NetworkMixin, _Va
         return self._interactome_data 
     
     @interactome_path.setter
-    def interactome_path(self, interactome_data_path: str):
+    def interactome_path(self, interactome_data_path: Union[str, Path]):
         """
         Sets the interactome file path and triggers strict validation and loading.
         """
@@ -423,8 +423,6 @@ class InteractomeAnalyzer(_PeptidePipelineMixin, _StatsMixin, _NetworkMixin, _Va
         
         self._models_path = new_model_path
         logger.info(f"Path relocation complete. New root: {self._models_path}")
-       
-        return self._cluster_path 
 
     def __str__(self)-> str:
         """Returns a summary of the loaded data status."""

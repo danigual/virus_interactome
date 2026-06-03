@@ -186,14 +186,14 @@ class TestClusterPipeline:
 
 
 # ---------------------------------------------------------------------------
-# process_ppi — full static method test with real AF3 dummy data
+# _process_ppi — full static method test with real AF3 dummy data
 # ---------------------------------------------------------------------------
 
 import shutil
 
 @pytest.fixture
 def af3_model_in_ppi_dir(tmp_path, data_dir):
-    """Copies AF3 dummy CIF + JSON files into a PPI-named directory for process_ppi."""
+    """Copies AF3 dummy CIF + JSON files into a PPI-named directory for _process_ppi."""
     ppi_dir = tmp_path / "ProtA__ProtB"
     ppi_dir.mkdir()
     src = data_dir / "af3_dummy_example"
@@ -218,34 +218,34 @@ def af3_proc(af3_model_in_ppi_dir):
 @pytest.mark.slow
 class TestProcessPpi:
     def test_returns_tuple(self, af3_model_in_ppi_dir, af3_proc):
-        result = af3_proc.process_ppi(str(af3_model_in_ppi_dir))
+        result = af3_proc._process_ppi(str(af3_model_in_ppi_dir))
         assert isinstance(result, tuple)
         assert len(result) == 2
 
     def test_summary_dict_keys(self, af3_model_in_ppi_dir, af3_proc):
-        summary, _ = af3_proc.process_ppi(str(af3_model_in_ppi_dir))
+        summary, _ = af3_proc._process_ppi(str(af3_model_in_ppi_dir))
         required = {"PPI", "ORF_A", "ORF_B", "Folder", "Model_num", "ipTM", "pTM"}
         assert required.issubset(set(summary.keys()))
 
     def test_ppi_parsed_from_dir_name(self, af3_model_in_ppi_dir, af3_proc):
-        summary, _ = af3_proc.process_ppi(str(af3_model_in_ppi_dir))
+        summary, _ = af3_proc._process_ppi(str(af3_model_in_ppi_dir))
         assert summary["PPI"] == "ProtA__ProtB"
         assert summary["ORF_A"] == "ProtA"
         assert summary["ORF_B"] == "ProtB"
 
     def test_extracts_idx_zero(self, af3_model_in_ppi_dir, af3_proc):
-        summary, _ = af3_proc.process_ppi(str(af3_model_in_ppi_dir))
+        summary, _ = af3_proc._process_ppi(str(af3_model_in_ppi_dir))
         assert summary["Model_num"] == 0
 
     def test_cluster_data_non_empty_for_heteromer(self, af3_model_in_ppi_dir, af3_proc):
-        _, clusters = af3_proc.process_ppi(str(af3_model_in_ppi_dir))
+        _, clusters = af3_proc._process_ppi(str(af3_model_in_ppi_dir))
         assert not clusters.empty
         assert "cluster_id" in clusters.columns
         assert "PPI" in clusters.columns
         assert "cluster_ratio" in clusters.columns
 
     def test_plots_created(self, af3_model_in_ppi_dir, af3_proc):
-        af3_proc.process_ppi(str(af3_model_in_ppi_dir))
+        af3_proc._process_ppi(str(af3_model_in_ppi_dir))
         parent = af3_model_in_ppi_dir.parent
         stem = af3_model_in_ppi_dir.stem
         assert (parent / f"{stem}_plddt.png").exists()
@@ -257,17 +257,17 @@ class TestProcessPpi:
             InteractomeProcessor([str(af3_model_in_ppi_dir)], engine="InvalidEngine")
 
     def test_prefix_stripping(self, af3_model_in_ppi_dir, af3_proc):
-        summary, _ = af3_proc.process_ppi(str(af3_model_in_ppi_dir), prefix="Prot")
+        summary, _ = af3_proc._process_ppi(str(af3_model_in_ppi_dir), prefix="Prot")
         assert summary["PPI"] == "A__B"
 
 
 # ---------------------------------------------------------------------------
-# process_ppi — Boltz engine (L1726)
+# _process_ppi — Boltz engine (L1726)
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
 def boltz_model_in_ppi_dir(tmp_path, data_dir):
-    """Copies Boltz2 dummy files into a PPI-named directory for process_ppi."""
+    """Copies Boltz2 dummy files into a PPI-named directory for _process_ppi."""
     ppi_dir = tmp_path / "pvi__protease"
     ppi_dir.mkdir()
     src = data_dir / "boltz_dummy_example"
@@ -290,16 +290,16 @@ def boltz_proc(boltz_model_in_ppi_dir):
 @pytest.mark.slow
 class TestProcessPpiBoltz:
     def test_boltz_returns_tuple(self, boltz_model_in_ppi_dir, boltz_proc):
-        result = boltz_proc.process_ppi(str(boltz_model_in_ppi_dir))
+        result = boltz_proc._process_ppi(str(boltz_model_in_ppi_dir))
         assert isinstance(result, tuple)
         assert len(result) == 2
 
     def test_boltz_summary_keys(self, boltz_model_in_ppi_dir, boltz_proc):
-        summary, _ = boltz_proc.process_ppi(str(boltz_model_in_ppi_dir))
+        summary, _ = boltz_proc._process_ppi(str(boltz_model_in_ppi_dir))
         assert {"PPI", "ORF_A", "ORF_B", "Model_num", "ipTM", "pTM"}.issubset(summary.keys())
 
     def test_boltz_ppi_parsed_from_dir_name(self, boltz_model_in_ppi_dir, boltz_proc):
-        summary, _ = boltz_proc.process_ppi(str(boltz_model_in_ppi_dir))
+        summary, _ = boltz_proc._process_ppi(str(boltz_model_in_ppi_dir))
         assert summary["PPI"] == "pvi__protease"
         assert summary["ORF_A"] == "pvi"
         assert summary["ORF_B"] == "protease"
@@ -344,12 +344,12 @@ class TestProcessModels:
             proc.process_models(str(out_dir))
         # Second call: all models already processed → early return, no re-processing
         call_count = {"n": 0}
-        original_ppi = InteractomeProcessor.process_ppi
+        original_ppi = InteractomeProcessor._process_ppi
         def counting_ppi(self_inst, *args, **kwargs):
             call_count["n"] += 1
             return original_ppi(self_inst, *args, **kwargs)
         with patch("concurrent.futures.ProcessPoolExecutor", _SyncPool):
-            with patch.object(InteractomeProcessor, "process_ppi", counting_ppi):
+            with patch.object(InteractomeProcessor, "_process_ppi", counting_ppi):
                 proc.process_models(str(out_dir))
         assert call_count["n"] == 0
 

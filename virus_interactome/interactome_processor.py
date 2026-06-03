@@ -206,7 +206,7 @@ class InteractomeProcessor:
 
         return pd.DataFrame(cluster_info_list, columns=columns)
     
-    def process_ppi(self, model_file: Union[str, Path],
+    def _process_ppi(self, model_file: Union[str, Path],
                     prefix: str = "") -> Tuple[Dict[str, Any], pd.DataFrame]:
         """
         Processes a single CIF model file using the engine set at construction.
@@ -364,7 +364,7 @@ class InteractomeProcessor:
         new_clusters_list = []
 
         with concurrent.futures.ProcessPoolExecutor(**kwargs) as executor:
-            worker = partial(self.process_ppi, prefix=prefix)
+            worker = partial(self._process_ppi, prefix=prefix)
             results_iterator = tqdm.tqdm(
                 executor.map(worker, models_to_process),
                 total=len(models_to_process),
@@ -386,7 +386,7 @@ class InteractomeProcessor:
 
         final_interactome_df.round(2).to_csv(interactome_csv, index=False)
 
-        # Enforce a fixed cluster schema (columns added by cluster_info + process_ppi bookkeeping).
+        # Enforce a fixed cluster schema (columns added by cluster_info + _process_ppi bookkeeping).
         _CLUSTER_COLS = [
             "PPI", "model_num", "path", "cluster_id", "num_points",
             "x_len", "y_len", "x_min", "x_max", "y_min", "y_max",
