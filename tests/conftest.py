@@ -163,9 +163,6 @@ def dummy_cluster_csv(tmp_path, dummy_cluster_df):
 
 @pytest.fixture
 def analyzer_with_data(dummy_interactome_csv, dummy_cluster_csv):
-    """Returns an InteractomeAnalyzer with both interactome and cluster data loaded."""
+    """Returns an InteractomeAnalyzer with both datasets auto-loaded from tmp_path."""
     from virus_interactome.interactome_analyzer import InteractomeAnalyzer
-    analyzer = InteractomeAnalyzer()
-    analyzer.interactome_path = str(dummy_interactome_csv)
-    analyzer.cluster_path = str(dummy_cluster_csv)
-    return analyzer
+    return InteractomeAnalyzer(output_path=dummy_interactome_csv.parent)

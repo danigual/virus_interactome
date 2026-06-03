@@ -12,65 +12,6 @@ logger = logging.getLogger(__name__)
 class _NetworkMixin:
     """Network topology analysis methods for InteractomeAnalyzer."""
 
-    # Non-numeric columns excluded from rank aggregation
-    _META_COLS: frozenset = frozenset({
-        "PPI", "ORF_A", "ORF_B", "Folder", "Path",
-        "LIR_AB", "cLIR_AB", "pool_id", "Tier", "LIS_Tier", "iLIS_Tier",
-    })
-
-    def _aggregate_per_ppi(
-        self,
-        model_agg: str = "mean",
-        weight_col: Optional[str] = None,
-    ) -> pd.DataFrame:
-        """Collapse multiple model-rank rows into one row per PPI.
-
-        Parameters
-        ----------
-        model_agg : str
-            ``"mean"`` — average all numeric columns across ranks.
-            ``"max"``  — take the per-column maximum across ranks.
-            ``"best"`` — keep the single rank row with the highest ``weight_col``.
-        weight_col : str, optional
-            Required only for ``model_agg="best"``. The column used to pick the
-            best rank.
-
-        Returns
-        -------
-        pd.DataFrame
-            One row per unique PPI with string meta columns preserved and
-            numeric columns aggregated.
-
-        Raises
-        ------
-        ValueError
-            If ``model_agg`` is invalid, or ``weight_col`` is missing when
-            ``model_agg="best"``.
-        """
-        df = self._interactome_data.copy()
-
-        if model_agg not in ("mean", "max", "best"):
-            raise ValueError(f"model_agg must be 'mean', 'max', or 'best'. Got: '{model_agg}'")
-        if model_agg == "best" and (weight_col is None or weight_col not in df.columns):
-            raise ValueError(
-                f"model_agg='best' requires a valid weight_col. Got: '{weight_col}'"
-            )
-
-        num_cols = [
-            c for c in df.columns
-            if c not in self._META_COLS and pd.api.types.is_numeric_dtype(df[c])
-        ]
-        meta_present = [c for c in df.columns if c != "PPI" and c not in num_cols]
-
-        if model_agg == "best":
-            return df.loc[df.groupby("PPI")[weight_col].idxmax()].reset_index(drop=True)
-
-        meta = df.groupby("PPI")[meta_present].first().reset_index() if meta_present \
-            else df.groupby("PPI")[[]].first().reset_index()
-        agg_fn = df.groupby("PPI")[num_cols].mean() if model_agg == "mean" \
-            else df.groupby("PPI")[num_cols].max()
-        return meta.merge(agg_fn.reset_index(), on="PPI")
-
     def _build_ppi_graph(
         self,
         weight_col: str,

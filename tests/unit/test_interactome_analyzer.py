@@ -80,6 +80,38 @@ class TestAnalyzerProperties:
         s = str(analyzer_with_data)
         assert "InteractomeAnalyzer" in s
 
+    # -- Auto-detection from output_path -------------------------------------
+
+    def test_autodetect_loads_both_csvs(self, dummy_interactome_csv, dummy_cluster_csv):
+        analyzer = InteractomeAnalyzer(output_path=dummy_interactome_csv.parent)
+        assert analyzer.interactome_data is not None
+        assert analyzer.cluster_data is not None
+
+    def test_autodetect_empty_dir_leaves_none(self, tmp_path):
+        analyzer = InteractomeAnalyzer(output_path=tmp_path)
+        assert analyzer.interactome_data is None
+        assert analyzer.cluster_data is None
+
+    def test_explicit_path_overrides_autodetect(self, dummy_interactome_csv, tmp_path):
+        other_csv = tmp_path / "other" / "interactome_data.csv"
+        other_csv.parent.mkdir()
+        dummy_interactome_csv.parent  # standard file also present
+        # point to different explicit file in a subdirectory
+        import shutil
+        shutil.copy(dummy_interactome_csv, other_csv)
+        analyzer = InteractomeAnalyzer(
+            output_path=dummy_interactome_csv.parent,
+            interactome_path=other_csv,
+        )
+        assert str(analyzer.interactome_path) == str(other_csv)
+
+    def test_explicit_path_missing_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            InteractomeAnalyzer(
+                output_path=tmp_path,
+                interactome_path=tmp_path / "nonexistent.csv",
+            )
+
 
 # ---------------------------------------------------------------------------
 # Tier classification

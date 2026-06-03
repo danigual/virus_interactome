@@ -38,18 +38,93 @@ class InteractomeAnalyzer(_PeptidePipelineMixin, _StatsMixin, _NetworkMixin, _Va
     """
     REQUIRED_INTERACTOME_COLS = ["PPI", "Folder"]
     REQUIRED_CLUSTER_COLS = ["PPI", "path", "cluster_id"]
-    
-    def __init__(self, output_path : Union[str, Path] = "."):
-        """
-        Initializes the Analyzer with a default output path.
+
+    _DEFAULT_INTERACTOME_FILENAME = "interactome_data.csv"
+    _DEFAULT_CLUSTER_FILENAME = "clusters_data.csv"
+
+    # Non-numeric columns excluded from rank aggregation across all mixins.
+    _META_COLS: frozenset = frozenset({
+        "PPI", "ORF_A", "ORF_B", "Folder", "Path",
+        "LIR_AB", "cLIR_AB", "pool_id", "Tier", "LIS_Tier", "iLIS_Tier",
+    })
+
+    def _aggregate_per_ppi(
+        self,
+        model_agg: str = "mean",
+        weight_col: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """Collapse multiple model-rank rows into one row per PPI.
 
         Parameters
         ----------
-        output_path : str or Path, optional
-            The directory where results will be saved. Defaults to current directory (".").
+        model_agg : str
+            ``"mean"`` — average all numeric columns across ranks.
+            ``"max"``  — take the per-column maximum across ranks.
+            ``"best"`` — keep the single rank row with the highest ``weight_col``.
+        weight_col : str, optional
+            Required only for ``model_agg="best"``.
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per unique PPI with string meta columns preserved and
+            numeric columns aggregated.
+
+        Raises
+        ------
+        RuntimeError
+            If interactome data is not loaded.
+        ValueError
+            If ``model_agg`` is invalid or ``weight_col`` is missing for ``"best"``.
+        """
+        if self._interactome_data is None:
+            raise RuntimeError("Interactome data not loaded. Set interactome_path first.")
+
+        df = self._interactome_data.copy()
+
+        if model_agg not in ("mean", "max", "best"):
+            raise ValueError(f"model_agg must be 'mean', 'max', or 'best'. Got: '{model_agg}'")
+        if model_agg == "best" and (weight_col is None or weight_col not in df.columns):
+            raise ValueError(
+                f"model_agg='best' requires a valid weight_col. Got: '{weight_col}'"
+            )
+
+        num_cols = [
+            c for c in df.columns
+            if c not in self._META_COLS and pd.api.types.is_numeric_dtype(df[c])
+        ]
+        meta_present = [c for c in df.columns if c != "PPI" and c not in num_cols]
+
+        if model_agg == "best":
+            return df.loc[df.groupby("PPI")[weight_col].idxmax()].reset_index(drop=True)
+
+        meta = df.groupby("PPI")[meta_present].first().reset_index() if meta_present \
+            else df.groupby("PPI")[[]].first().reset_index()
+        agg_fn = df.groupby("PPI")[num_cols].mean() if model_agg == "mean" \
+            else df.groupby("PPI")[num_cols].max()
+        return meta.merge(agg_fn.reset_index(), on="PPI")
+
+    def __init__(
+        self,
+        output_path: Union[str, Path] = ".",
+        interactome_path: Optional[Union[str, Path]] = None,
+        cluster_path: Optional[Union[str, Path]] = None,
+    ):
+        """
+        Parameters
+        ----------
+        output_path : str or Path
+            Base directory for output. When ``interactome_path`` / ``cluster_path``
+            are not supplied, the constructor looks for the standard filenames
+            (``interactome_data.csv``, ``clusters_data.csv``) inside this directory
+            and loads them automatically if found.
+        interactome_path : str or Path, optional
+            Explicit path to the interactome CSV. Overrides auto-detection.
+        cluster_path : str or Path, optional
+            Explicit path to the cluster CSV. Overrides auto-detection.
         """
         self.output_path = Path(output_path)
-        
+
         self._interactome_path: Optional[Path] = None
         self._interactome_data: Optional[pd.DataFrame] = None
         self._cluster_path: Optional[Path] = None
@@ -57,6 +132,20 @@ class InteractomeAnalyzer(_PeptidePipelineMixin, _StatsMixin, _NetworkMixin, _Va
         self._models_path: Optional[str] = None
         self._binder_data: Optional[pd.DataFrame] = None
         self._candidate_clusters: Optional[pd.DataFrame] = None
+
+        if interactome_path is not None:
+            self.interactome_path = Path(interactome_path)
+        else:
+            candidate = self.output_path / self._DEFAULT_INTERACTOME_FILENAME
+            if candidate.exists():
+                self.interactome_path = candidate
+
+        if cluster_path is not None:
+            self.cluster_path = Path(cluster_path)
+        else:
+            candidate = self.output_path / self._DEFAULT_CLUSTER_FILENAME
+            if candidate.exists():
+                self.cluster_path = candidate
     
     def get_confidence_tiers(
         self,
