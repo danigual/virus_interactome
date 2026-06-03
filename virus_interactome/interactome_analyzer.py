@@ -191,6 +191,14 @@ class InteractomeAnalyzer(_PeptidePipelineMixin, _StatsMixin, _NetworkMixin, _Va
         pdockq2_col = "pDockQ2_AB" if "pDockQ2_AB" in df.columns else "pDockQ2"
         msa_col     = "msa_depth"
 
+        if msa_col not in df.columns or df[msa_col].isna().all():
+            logger.warning(
+                "msa_depth is absent or all-NaN (expected for AF3/Boltz2). "
+                "The MSA gate in Tier classification is inactive: all predictions "
+                "pass the evolutionary-support criterion regardless of actual MSA coverage. "
+                "Tier 1 counts may be inflated compared to ColabFold runs."
+            )
+
         def _ipsae_classify(row) -> str:
             if ipsae_col not in row or pdockq2_col not in row:
                 return "Unknown"

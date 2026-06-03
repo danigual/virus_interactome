@@ -359,70 +359,43 @@ class InteractomeProcessor:
             return
         
         logger.info(f"Starting parallel processing for {len(models_to_process)} models...")
-    
-        # Parallel Execution
+
         new_interactome_list = []
         new_clusters_list = []
 
         with concurrent.futures.ProcessPoolExecutor(**kwargs) as executor:
-            worker = partial(self.process_ppi,
-                            #  model_type=self._engine,
-                             prefix=prefix)
-            
-            # tqdm for progress bar
-            # map maintains order, which matches models_to_process order
+            worker = partial(self.process_ppi, prefix=prefix)
             results_iterator = tqdm.tqdm(
-                executor.map(worker, models_to_process), 
+                executor.map(worker, models_to_process),
                 total=len(models_to_process),
-                desc="Processing Models"
+                desc="Processing Models",
             )
             for metrics_dict, cluster_df in results_iterator:
                 new_interactome_list.append(metrics_dict)
                 if not cluster_df.empty:
                     new_clusters_list.append(cluster_df)
-        
-        # Aggregation
-        logger.info("Aggregating and saving results...")  
 
-        # Combine Lists into DataFrames
+        logger.info("Aggregating and saving results...")
+
         new_interactome_df = pd.DataFrame(new_interactome_list)
-        # if self._mode in [InteractomeMode.HOMOMERS]:
-        #     new_interactome_df.rename(columns={"ORF_A": "ORF", "ORF_B": "N_copies"}, inplace=True)
-        
-        # if self._mode in [InteractomeMode.INTER_PAIRS, InteractomeMode.INTRA_PAIRS]:
-        if new_clusters_list:
-            new_clusters_df = pd.concat(new_clusters_list, ignore_index=True)
-        else:
-            new_clusters_df = pd.DataFrame()  
+        new_clusters_df = pd.concat(new_clusters_list, ignore_index=True) if new_clusters_list \
+            else pd.DataFrame()
 
-        # Concatenate with Existing Data (Resume)
         final_interactome_df = pd.concat([interactome_df, new_interactome_df], ignore_index=True)
         final_clusters_df = pd.concat([clusters_df, new_clusters_df], ignore_index=True)
-            
-        # Save dfs to .csv
-        final_interactome_df = final_interactome_df.round(2)
-        final_interactome_df.to_csv(interactome_csv, index=False)
 
-        # Formatting Clusters DataFrame
-        ## NOTE: I do not know what is going on below... Maybe should be removed
-        if self._mode in [InteractomeMode.INTER_PAIRS, InteractomeMode.INTRA_PAIRS] and not final_clusters_df.empty:
-            desired_columns = [
-                'PPI', 'model_num', 'path', 'cluster_id', 'num_points', 
-                'x_len', 'y_len', 'x_min', 'x_max', 'y_min', 'y_max',
-                'center_x', 'center_y', 'cluster_ratio'
-            ]
-        # Ensure columns exist (handle case-sensitivity if old CSV had 'Cluster_ratio')
-            # if 'Cluster_ratio' in final_clusters_df.columns and 'cluster_ratio' not in final_clusters_df.columns:
-            #     final_clusters_df.rename(columns={'Cluster_ratio': 'cluster_ratio'}, inplace=True)
-            
-            # Select and order columns safely
-            # Only select columns that actually exist to avoid KeyError
-            existing_cols = [c for c in desired_columns if c in final_clusters_df.columns]
-            final_clusters_df = final_clusters_df[existing_cols]
+        final_interactome_df.round(2).to_csv(interactome_csv, index=False)
 
-            final_clusters_df = final_clusters_df.round(2)
-            final_clusters_df.to_csv(clusters_csv, index=False)
-        
+        # Enforce a fixed cluster schema (columns added by cluster_info + process_ppi bookkeeping).
+        _CLUSTER_COLS = [
+            "PPI", "model_num", "path", "cluster_id", "num_points",
+            "x_len", "y_len", "x_min", "x_max", "y_min", "y_max",
+            "center_x", "center_y", "cluster_ratio",
+        ]
+        if not final_clusters_df.empty:
+            existing_cols = [c for c in _CLUSTER_COLS if c in final_clusters_df.columns]
+            final_clusters_df[existing_cols].round(2).to_csv(clusters_csv, index=False)
+
         logger.info(f"Done. Data saved to {out_dir}")
 
     # ── Pooled ColabFold processing ───────────────────────────────────────────
