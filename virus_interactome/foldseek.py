@@ -269,43 +269,6 @@ class FoldseekClient:
 
         tsv_path.write_text(content, encoding="utf-8")
         return tsv_path
-    
-    # def _parse_output(self, tsv_path: Path, evalue_cutoff: float, top_n: int) -> List[Dict[str, Any]]:
-    #     """Read the TSV result file into a list of dicts."""
-    #     import csv
-
-    #     _RAW_COLS = [
-    #         "query", "target", "fident", "alnlen", "mismatch",
-    #         "gapopen", "qstart", "qend", "tstart", "tend", "evalue", "bits",
-    #     ]
-
-    #      # Parse raw TSV
-    #     try:
-    #         df_raw = pd.read_csv(
-    #             tsv_path,
-    #             sep="\t",
-    #             header=None,
-    #             names=_RAW_COLS,
-    #             comment="#",
-    #         )
-    #     except Exception as exc:
-    #         logger.warning(f"Could not parse TSV for '{protein_id}': {exc}")
-    #         continue
-
-    #     df_filtered = df_raw[df_raw["evalue"] <= evalue_cutoff].copy()
-    #     df_top = df_filtered.sort_values("evalue").head(top_n).reset_index(drop=True)
-    #     df_top.insert(0, "protein_id", protein_id)
-    #     df_top.insert(1, "rank", range(1, len(df_top) + 1))
-
-    #     keep_cols = [
-    #         "protein_id", "rank", "target", "fident", "alnlen",
-    #         "evalue", "bits", "qstart", "qend", "tstart", "tend",
-    #     ]
-    #     summary_rows.append(df_top[[c for c in keep_cols if c in df_top.columns]])
-    #     logger.info(
-    #         f"  {protein_id}: {len(df_top)} hits retained "
-    #         f"(e-value ≤ {evalue_cutoff}, top {top_n})."
-    #     )
 
     #     if summary_rows:
     #         summary_df = pd.concat(summary_rows, ignore_index=True)
