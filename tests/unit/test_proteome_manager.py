@@ -1,7 +1,8 @@
 import pytest
 import logging
+import pandas as pd
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 from virus_interactome.proteome_manager import ProteomeManager
 
 
@@ -734,3 +735,261 @@ class TestFilter:
         with caplog.at_level(logging.WARNING):
             result = pm.filter(min_length=9999)
         assert len(result) == 0
+
+
+class TestSearchPdbSequence:
+
+    def test_returns_hits_dataframe(self):
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "result_set": [
+                {"identifier": "4HHB_A", "score": 0.9},
+                {"identifier": "1ABC_B", "score": 0.5},
+            ]
+        }
+        with patch("requests.post", return_value=mock_response):
+            df = ProteomeManager.search_pdb_sequence("MKTAYIAK", protein_name="P1")
+        assert list(df["PDB_code"]) == ["4HHB", "1ABC"]
+        assert list(df["PDB_chain"]) == ["A", "B"]
+        assert list(df["protein_name"]) == ["P1", "P1"]
+
+    def test_empty_result_set_returns_empty_dataframe(self):
+        mock_response = Mock()
+        mock_response.json.return_value = {}
+        with patch("requests.post", return_value=mock_response):
+            df = ProteomeManager.search_pdb_sequence("MKTAYIAK")
+        assert df.empty
+
+    def test_network_error_returns_empty_dataframe(self, caplog):
+        with patch("requests.post", side_effect=ConnectionError("boom")):
+            with caplog.at_level(logging.ERROR):
+                df = ProteomeManager.search_pdb_sequence("MKTAYIAK")
+        assert df.empty
+        assert "PDB Search failed" in caplog.text
+
+
+class TestScreenProteomeAgainstPdb:
+
+    def _make_pm(self):
+        pm = ProteomeManager()
+        pm.sequences = {"P1": "MKTAYIAKQR"}
+        return pm
+
+    def test_aggregates_hits_with_alignment_columns(self):
+        pm = self._make_pm()
+        hit_df = pd.DataFrame({
+            "protein_name": ["P1"],
+            "PDB_ID": ["4HHB_A"],
+            "PDB_code": ["4HHB"],
+            "PDB_chain": ["A"],
+            "score": [0.9],
+        })
+        mock_mol = Mock()
+        mock_mol.sequence.return_value = {"A": "MKTAYIAKQR"}
+        with patch.object(ProteomeManager, "search_pdb_sequence", return_value=hit_df), \
+             patch("virus_interactome.proteome_manager.Molecule", return_value=mock_mol):
+            result = pm.screen_proteome_against_pdb()
+        assert not result.empty
+        assert {"alignment_score", "coverage", "identity", "gaps"} <= set(result.columns)
+        assert list(result["protein_name"]) == ["P1"]
+
+    def test_no_hits_returns_empty_dataframe(self, caplog):
+        pm = self._make_pm()
+        with patch.object(ProteomeManager, "search_pdb_sequence", return_value=pd.DataFrame()):
+            with caplog.at_level(logging.WARNING):
+                result = pm.screen_proteome_against_pdb()
+        assert result.empty
+        assert "No PDB matches" in caplog.text
+
+    def test_score_cutoff_filters_low_scoring_hits(self):
+        pm = self._make_pm()
+        hit_df = pd.DataFrame({
+            "protein_name": ["P1", "P1"],
+            "PDB_ID": ["4HHB_A", "1ABC_B"],
+            "PDB_code": ["4HHB", "1ABC"],
+            "PDB_chain": ["A", "B"],
+            "score": [0.9, 0.05],
+        })
+        mock_mol = Mock()
+        mock_mol.sequence.return_value = {"A": "MKTAYIAKQR", "B": "GVALSKMNQT"}
+        with patch.object(ProteomeManager, "search_pdb_sequence", return_value=hit_df), \
+             patch("virus_interactome.proteome_manager.Molecule", return_value=mock_mol):
+            result = pm.screen_proteome_against_pdb(score_cutoff=0.15)
+        assert list(result["PDB_code"]) == ["4HHB"]
+
+
+class TestDescribeOrf:
+
+    def _make_pm(self):
+        pm = ProteomeManager()
+        pm.sequences = {"P1": "MKTAYIAKQRSTVWYGHILMNPQ", "P2": "GVALSKMNQTYWFHDE"}
+        pm.identity_table = pd.DataFrame({
+            "ORF1": ["P1"],
+            "ORF2": ["P2"],
+            "Identity": [0.42],
+        })
+        return pm
+
+    def test_unknown_orf_warns(self, capsys):
+        pm = self._make_pm()
+        pm.describe_orf("MISSING")
+        out = capsys.readouterr().out
+        assert "not found in proteome" in out
+
+    def test_prints_sequence_section(self, capsys):
+        pm = self._make_pm()
+        pm.describe_orf("P1")
+        out = capsys.readouterr().out
+        assert "[SEQUENCE]" in out
+        assert "Length      : 23 aa" in out
+
+    def test_prints_no_model_data_message(self, capsys):
+        pm = self._make_pm()
+        pm.describe_orf("P1")
+        out = capsys.readouterr().out
+        assert "No model data" in out
+
+    def test_prints_model_section_with_data(self, capsys):
+        pm = self._make_pm()
+        pm.model_info_by_model = pd.DataFrame({
+            "id": ["P1", "P1"],
+            "pTM": [0.8, 0.82],
+            "mean_plddt": [85.0, 86.0],
+        })
+        pm._model_engine = "af3"
+        pm.describe_orf("P1")
+        out = capsys.readouterr().out
+        assert "Engine      : af3" in out
+        assert "N models    : 2" in out
+
+    def test_accepts_list_of_orf_ids(self, capsys):
+        pm = self._make_pm()
+        pm.describe_orf(["P1", "P2"])
+        out = capsys.readouterr().out
+        assert "ORF: P1" in out
+        assert "ORF: P2" in out
+
+    def test_with_interactome_df_skip_via_n(self, capsys, monkeypatch):
+        pm = self._make_pm()
+        interactome_df = pd.DataFrame({
+            "PPI": ["P1__P2"],
+            "ipTM": [0.7],
+            "Tier": ["Tier 1"],
+        })
+        monkeypatch.setattr("builtins.input", lambda *a, **kw: "n")
+        pm.describe_orf("P1", interactome_df=interactome_df)
+        out = capsys.readouterr().out
+        assert "[PPIs]" in out
+        assert "Total PPIs  : 1" in out
+
+    def test_with_interactome_df_custom_threshold(self, capsys, monkeypatch):
+        pm = self._make_pm()
+        interactome_df = pd.DataFrame({
+            "PPI": ["P1__P2"],
+            "ipTM": [0.7],
+            "Tier": ["Tier 1"],
+        })
+        monkeypatch.setattr("builtins.input", lambda *a, **kw: "0.5")
+        pm.describe_orf("P1", interactome_df=interactome_df)
+        out = capsys.readouterr().out
+        assert "P1__P2" in out
+
+    def test_with_foldseek_df_hits(self, capsys):
+        pm = self._make_pm()
+        foldseek_df = pd.DataFrame({
+            "protein_id": ["P1"],
+            "rank": [1],
+            "target": ["4HHB_A"],
+            "fident": [0.5],
+        })
+        pm.describe_orf("P1", foldseek_df=foldseek_df)
+        out = capsys.readouterr().out
+        assert "[FOLDSEEK]" in out
+        assert "4HHB_A" in out
+
+    def test_with_foldseek_df_no_hits(self, capsys):
+        pm = self._make_pm()
+        foldseek_df = pd.DataFrame({"protein_id": ["OTHER"], "rank": [1]})
+        pm.describe_orf("P1", foldseek_df=foldseek_df)
+        out = capsys.readouterr().out
+        assert "No hits found." in out
+
+
+class TestViewErrors:
+
+    def _make_pm(self):
+        pm = ProteomeManager()
+        pm.sequences = {"P1": "MKTAYIAKQR"}
+        return pm
+
+    def test_no_orf_models_attribute_raises(self):
+        pm = self._make_pm()
+        with pytest.raises(ValueError, match="Run load_model_info"):
+            pm.view("P1")
+
+    def test_orf_id_not_in_orf_models_raises(self):
+        pm = self._make_pm()
+        pm.orf_models = {"OTHER": ["/path/to/model.cif"]}
+        with pytest.raises(ValueError, match="Run load_model_info"):
+            pm.view("P1")
+
+    def test_empty_model_list_raises(self):
+        pm = self._make_pm()
+        pm.orf_models = {"P1": []}
+        with pytest.raises(ValueError, match="is empty"):
+            pm.view("P1")
+
+
+class TestFilterWithDerivedData:
+
+    def _make_pm(self):
+        pm = ProteomeManager()
+        pm.sequences = {"A": "MKTAY", "B": "GVALSK", "CCC": "LLKSDGQVLKAV"}
+        pm.identity_table = pd.DataFrame({
+            "ORF1": ["A", "A", "B"],
+            "ORF2": ["B", "CCC", "CCC"],
+            "Identity": [0.5, 0.3, 0.6],
+        })
+        pm.high_similarity_pairs = [("A", "B", 0.5), ("B", "CCC", 0.6)]
+        pm.model_info_by_orf = pd.DataFrame({"id": ["A", "B", "CCC"], "pTM": [0.7, 0.8, 0.6]})
+        pm.model_info_by_model = pd.DataFrame({"id": ["A", "A", "B", "CCC"], "pTM": [0.7, 0.71, 0.8, 0.6]})
+        pm.orf_models = {"A": ["a1.cif"], "B": ["b1.cif"], "CCC": ["c1.cif"]}
+        pm.sequence_properties = pd.DataFrame({"mw": [500, 600, 1200]}, index=["A", "B", "CCC"])
+        pm.invalid_sequences = {"X": "bad"}
+        return pm
+
+    def test_identity_table_subset(self):
+        pm = self._make_pm()
+        result = pm.filter(ids=["A", "B"])
+        assert set(result.identity_table["ORF1"]) | set(result.identity_table["ORF2"]) <= {"A", "B"}
+        assert len(result.identity_table) == 1
+
+    def test_high_similarity_pairs_subset(self):
+        pm = self._make_pm()
+        result = pm.filter(ids=["A", "B"])
+        assert result.high_similarity_pairs == [("A", "B", 0.5)]
+
+    def test_model_info_by_orf_subset(self):
+        pm = self._make_pm()
+        result = pm.filter(ids=["A"])
+        assert list(result.model_info_by_orf["id"]) == ["A"]
+
+    def test_model_info_by_model_subset(self):
+        pm = self._make_pm()
+        result = pm.filter(ids=["A"])
+        assert set(result.model_info_by_model["id"]) == {"A"}
+
+    def test_orf_models_subset(self):
+        pm = self._make_pm()
+        result = pm.filter(ids=["A", "B"])
+        assert set(result.orf_models.keys()) == {"A", "B"}
+
+    def test_sequence_properties_subset(self):
+        pm = self._make_pm()
+        result = pm.filter(ids=["A"])
+        assert list(result.sequence_properties.index) == ["A"]
+
+    def test_invalid_sequences_carried_over(self):
+        pm = self._make_pm()
+        result = pm.filter(ids=["A"])
+        assert result.invalid_sequences == {"X": "bad"}
