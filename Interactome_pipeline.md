@@ -1,6 +1,6 @@
 # Virus Interactome Analysis Pipeline
 
-Complete description of the pipeline for viral proteome interactome analysis, from proteome preparation to downstream structural analysis. Implemented in the `virus_interactome` package around four core classes: `ProteomeManager`, `InteractomeWriter`, `InteractomeRunner`, `InteractomeProcessor`, and `InteractomeAnalyzer`.
+Complete description of the pipeline for viral proteome interactome analysis, from proteome preparation to downstream structural, network and database-validation analysis. Implemented in the `virus_interactome` package around five core classes: `ProteomeManager`, `InteractomeWriter` (+ `PoolDesigner`), `InteractomeRunner`, `InteractomeProcessor`, and `InteractomeAnalyzer` (composed of a core class + 4 mixins: peptide pipeline, stats, network, validation — see `_peptide_mixin.py`, `_stats_mixin.py`, `_network_mixin.py`, `_validation_mixin.py`). `interactome.py` was split into per-class modules (commit `ed405f7`); no shim — import directly from the package root.
 
 ---
 
@@ -72,6 +72,29 @@ writer.write_interactome_jobs(
 - Produces one `.yaml` (Boltz2) / `.json` (AF3) per protein; ColabFold writes a single `colabfold_input.csv`.
 - `index.csv` metadata: `idA` = protein ID, `idB` = `""`, `countB` = `""`.
 - For run monitoring: `InteractomeRunner.check_run(expected_models=1)` (Boltz2) or `expected_models=5` (AF3).
+
+---
+
+## Stage 1c — Pooled ColabFold Input Generation (`PoolDesigner`, Todor et al. 2026)
+
+**Goal:** For large proteomes, instead of one job per pair, partition the proteome into multi-protein "pools" that jointly cover every pairwise combination within a token budget — drastically reducing the number of ColabFold runs.
+
+```python
+from virus_interactome import PoolDesigner, InteractomeWriter
+
+writer = InteractomeWriter(proteome_a="<virus>_proteome.fa")
+pools = writer.write_pooled_jobs(
+    engine="colabfold",
+    output_dir="2_pooled/input/",
+    token_limit=4000,   # VRAM-dependent — not fixed; ≈4000 aa for ~50 GB GPU
+    seed=42,
+)
+```
+
+- `PoolDesigner.design_pools()` — greedy partitioning algorithm; `coverage_report()` summarizes which pairs are covered. Pairs whose combined length exceeds `token_limit` are uncoverable and logged/excluded.
+- `InteractomeWriter.write_pooled_jobs(...)` (ColabFold only) writes:
+  - `colabfold_pooled_input.csv` — `id`, colon-separated concatenated sequences (one row per pool).
+  - `pool_manifest.csv` — `pool_id`, ordered protein list, `total_aa`, `n_pairs`. Protein order = chain-letter assignment (A, B, C, …).
 
 ---
 
@@ -215,6 +238,28 @@ Resume-logic identical to `process_models`: already-processed CIF paths are skip
 
 ---
 
+## Stage 3c — Pooled ColabFold Processing (`InteractomeProcessor.process_pooled`)
+
+**Prerequisite:** run `reorganize_colabfold_outputs()` on the ColabFold output directory first (groups flat output into `{pool_id}/` subdirectories).
+
+```python
+from virus_interactome import InteractomeProcessor
+
+InteractomeProcessor.process_pooled(
+    pool_manifest="2_pooled/input/pool_manifest.csv",
+    cf_output_dir="2_pooled/output/",
+    output_path="3_pooled_results/",
+)
+```
+
+**Pipeline (`_process_pool_model`, classmethod `process_pooled`):**
+1. Reads the manifest → finds `{cf_output_dir}/{pool_id}/*.cif` for every pool.
+2. Loads each pool CIF once, computes the full metric set, then slices it per chain pair → one dict per unique protein pair, with `ipTM` and `size_corrected_ipTM` (Todor et al. 2026 size correction: `iptm − (−0.0363 + 0.00447 × sqrt(len_a + len_b))`, applied via `_size_correct_iptm`).
+3. Averages metrics over ranks within a pool, then over pools for pairs that appear in more than one (tracked via `n_pools`).
+4. Writes `interactome_data.csv` with the **same schema** as `process_models` — `InteractomeAnalyzer` loads it unchanged, no special-casing needed downstream.
+
+---
+
 ## Stage 4 — Analysis and Prioritization (`InteractomeAnalyzer`)
 
 **Goal:** Load the processed CSVs and apply biological filters to identify high-confidence interactions and candidate peptide-binding sites.
@@ -274,6 +319,38 @@ merged = analyzer.compare_engines(other_df=boltz_df)
 # K-Means clustering on metric space
 clustered = analyzer.cluster_interactome_by_metrics(n_clusters=4)
 ```
+
+### 4.2b Network Topology Analysis
+
+Builds a weighted PPI graph (`networkx`) and computes per-protein centrality metrics — useful for identifying hub proteins (many interactions) and bottlenecks (high betweenness, few but critical connections):
+
+```python
+network_df = analyzer.compute_network_properties(weight_col="ipSAE_d0dom_AB", min_weight=0.5)
+analyzer.plot_network(network_df, color_by="degree", size_by="weighted_degree")
+```
+
+- `_build_ppi_graph(...)` — private helper; aggregates multi-rank rows per PPI (`_aggregate_per_ppi`, shared with validation) and builds an undirected weighted `nx.Graph`.
+- `compute_network_properties(...)` — returns a DataFrame with 9 metrics per protein: `degree`, `weighted_degree`, `betweenness`, `closeness`, `eigenvector`, `clustering_coefficient`, `is_hub`, `is_bottleneck`. Hub/bottleneck flags use adaptive thresholds (mean + 1σ).
+- `plot_network(...)` — spring layout; node size/colour configurable; red border = hub, blue border = bottleneck; labels shown for top-N nodes only.
+
+### 4.2c Database Cross-validation
+
+Cross-checks predicted PPIs against a reference set of experimentally validated interactions (e.g. curated literature CSV, BioGRID/STRING export):
+
+```python
+from virus_interactome import DatabaseClient
+
+known = DatabaseClient.from_file(
+    "experimental_ppis.csv", col_a="protein_A", col_b="protein_B",
+    filters={"confidence": ["medium", "high"]},
+)
+validated_df = analyzer.validate_against_database(known_ppis=known)
+summary = analyzer.validation_summary(validated_df, group_by="Tier", known_ppis=known)
+```
+
+- `DatabaseClient.from_file(path, col_a, col_b, filters, extra_cols)` — loads a reference PPI table; pairs are normalised to a directionality-agnostic `frozenset`/sorted-tuple representation (`{A,B}` == `{B,A}`).
+- `validate_against_database(known_ppis, id_map=None, ppi_separator="__", model_agg="mean")` — adds an `experimental_support` column (`True`/`False`/`NaN`) to a per-PPI aggregated DataFrame. `id_map` translates IDs when the reference DB uses a different naming scheme (default `None` = IDs already match).
+- `validation_summary(validated_df, group_by, known_ppis)` — precision / recall / F1 per group (e.g. per `Tier`) plus an `Overall` row. Recall denominator = experimental PPIs where **both** proteins are reachable in the predicted interactome (avoids penalising for proteins never modeled).
 
 ### 4.3 Confidence Landscape Visualization
 
@@ -389,18 +466,25 @@ Expected `monomer_cif_dir` layout (output of `process_monomers`):
     ▼                             [FoldseekClient.search() — per protein]
 [InteractomeAnalyzer]                      └  foldseek_results/{pid}.tsv
     ├── get_confidence_tiers()
-    ├── filter_by_metrics()
-    ├── get_top_interactions()
-    ├── summarize_by_protein()
-    ├── export_to_network()
-    ├── compare_engines()
-    ├── cluster_interactome_by_metrics()
-    ├── plot_confidence_landscape()
+    ├── filter_by_metrics() / get_top_interactions() / summarize_by_protein()
+    ├── export_to_network() / compare_engines() / cluster_interactome_by_metrics()
+    ├── compute_network_properties() ──► plot_network()           [Step 1: topology]
+    ├── validate_against_database() ──► validation_summary()      [Step 2: DB cross-validation]
+    ├── plot_confidence_landscape() / plot_interactive_landscape()
     └── analyze_peptide_proteins_pairs()
             ├── filtered PDBs
             ├── aligned PDBs
             ├── ChimeraX sessions
             └── peptide_binder_info.csv
+
+[Pooled ColabFold path — Todor et al. 2026, large proteomes]
+[PoolDesigner.design_pools] ──► [InteractomeWriter.write_pooled_jobs]
+    │  pool_manifest.csv               │  colabfold_pooled_input.csv
+    ▼
+[ColabFold] ──► reorganize_colabfold_outputs() ──► [InteractomeProcessor.process_pooled]
+                                                        │  interactome_data.csv (same schema)
+                                                        ▼
+                                                  [InteractomeAnalyzer]  (loads unchanged)
 ```
 
 ---
