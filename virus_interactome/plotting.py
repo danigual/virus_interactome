@@ -279,7 +279,7 @@ def plot_boxplots (data_type:str, value_matrix:np.array, orf_labels:np.array, ou
     """
     plt.figure(figsize=(12, 6))
     plt.boxplot(list(value_matrix),
-                labels=list(orf_labels))
+                tick_labels=list(orf_labels))
     plt.xticks(rotation=45, ha='right')
     plt.ylabel(data_type)
     plt.title(f"{data_type} / ORF")
