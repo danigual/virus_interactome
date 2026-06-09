@@ -328,7 +328,7 @@ def plot_iptm_vs_ptm(df, output_path:str = None):
     """
 
     plt.figure(figsize=(12,12))
-    plt.scatter(df['iPTM'], df['pTM'], alpha=0.7)
+    plt.scatter(df['ipTM'], df['pTM'], alpha=0.7)
     plt.axhline(0.5, color='blue', linestyle='--', label='pTM')
     plt.axvline(0.6, color='green', linestyle='--', label='ipTM')
     plt.axvline(0.8, color='red', linestyle='--', label='ipTM')
@@ -443,8 +443,9 @@ def plot_confidence_landscape(
     plt.figure(figsize=(10, 8))
 
     sizes = np.sqrt(df[msa_col].fillna(0)) * 8 + 15 if msa_col and msa_col in df.columns else 40
-    x_values = df[pdockq2_col] + np.random.normal(0, 0.003, size=len(df))
-    y_values = df[y_col] + np.random.normal(0, 0.003, size=len(df))
+    rng = np.random.default_rng(0)
+    x_values = df[pdockq2_col] + rng.normal(0, 0.003, size=len(df))
+    y_values = df[y_col] + rng.normal(0, 0.003, size=len(df))
 
     scatter = plt.scatter(
         x_values, y_values, s=sizes,
