@@ -20,19 +20,19 @@ class ModelType(Enum):
 
 @dataclass(frozen=True)
 class ModelMetrics:
-    pae: np.ndarray | None = None 
-    ptm: float | None = None,
+    pae: np.ndarray | None = None
+    ptm: float | None = None
     # complex-only — None for monomers
-    iptm: float | None = None,
-    iptm_chain_pair: np.ndarray | None = None,
-    atom_plddts: np.ndarray | None = None,
-    cb_plddts: np.ndarray | None = None,
-    ca_plddts: np.ndarray | None = None,
+    iptm: float | None = None
+    iptm_chain_pair: np.ndarray | None = None
+    atom_plddts: np.ndarray | None = None
+    cb_plddts: np.ndarray | None = None
+    ca_plddts: np.ndarray | None = None
 
 @dataclass(frozen=True)
 class ModelData:
-    token_chain_ids: np.ndarray | None = None,
-    chain_boundaries_by_res: dict[str, tuple[int, int]] | None = None,
+    token_chain_ids: np.ndarray | None = None
+    chain_boundaries_by_res: dict[str, tuple[int, int]] | None = None
     chain_boundaries_by_atom: dict[str, tuple[int, int]] | None = None
 
 # ── Main class ────────────────────────────────────────────────────────────────

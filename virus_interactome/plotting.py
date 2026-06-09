@@ -7,8 +7,7 @@ import pandas as pd
 from pathlib import Path
 from matplotlib.patches import Rectangle
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-from glob import glob
-from .utils import load_json, process_full_data_af3, process_full_data_boltz, process_full_data_colabfold
+from .utils import process_full_data_colabfold
 
 logger = logging.getLogger(__name__)
 
@@ -86,120 +85,6 @@ def plot_paes(
         plt.close(fig)
 
     return ax
-
-def plot_af3_output(af3_folder: list):
-   
-    """
-    Processes a directory of AlphaFold3 output files and generates PAE and pLDDT plots.
-
-    This function scans the specified directory for full data JSON files, identifies their corresponding
-    summary confidence files, and generates visualizations for both Predicted Aligned Error (PAE) and
-    per-residue confidence (pLDDT). If the plots already exist, they are reused; otherwise, they are created
-    and saved.
-
-    Parameters
-    ----------
-    af3_folders : list
-        Path to the directory containing AlphaFold3 JSON output files.
-
-    Returns
-    -------
-    list[Path]
-        A list of file paths pointing to the generated (or reused) PNG plots for PAE and pLDDT.
-
-    Raises
-    ------
-    FileNotFoundError
-        If expected JSON files are missing or paths are incorrect.
-    """
-    # import pdb;pdb.set_trace()
-    # results_dir = Path(af3_folders)
-
-    # outputs = []
-    # for tmp_folder in af3_folders:
-    # results_dir = Path(tmp_folder)
-
-    full_data_files= list(glob(f"{af3_folder}/fold_*_full_data_*.json"))
-    
-
-    for tmp_data_file in full_data_files:
-        tmp_conf_file = tmp_data_file.replace("full_data", "summary_confidences")
-        save_name_pae = tmp_data_file.replace(".json", "_pae").replace("full_data", "model")
-        save_name_plddt = tmp_data_file.replace(".json", "_plddt").replace("full_data", "model")
-        # save_path_pae = Path (save_name_pae)
-        # save_path_plddt = Path (save_name_plddt)
-
-        # if save_path_pae.exists():
-        #     outputs.append(save_path_pae)
-        
-        # else:
-        # outfile_pae= 
-        plot_paes(tmp_conf_file, tmp_data_file, save_name=save_name_pae)
-            # outputs.append(outfile_pae)
-        
-        # if save_path_plddt.exists():
-        #     outputs.append(save_path_plddt)
-        
-        # else:
-        # outfile_plddt = 
-        plot_pLDDT(tmp_data_file, save_name=save_name_plddt)
-            # outputs.append(outfile_plddt)
-
-    # return outputs
-
-def batch_plotting(results_dir: str):
-   
-    """
-    Processes a directory of AlphaFold3 output files and generates PAE and pLDDT plots.
-
-    This function scans the specified directory for full data JSON files, identifies their corresponding
-    summary confidence files, and generates visualizations for both Predicted Aligned Error (PAE) and
-    per-residue confidence (pLDDT). If the plots already exist, they are reused; otherwise, they are created
-    and saved.
-
-    Parameters
-    ----------
-    results_dir : str
-        Path to the directory containing AlphaFold3 JSON output files.
-
-    Returns
-    -------
-    list[Path]
-        A list of file paths pointing to the generated (or reused) PNG plots for PAE and pLDDT.
-
-    Raises
-    ------
-    FileNotFoundError
-        If expected JSON files are missing or paths are incorrect.
-    """
-    results_dir = Path(results_dir)
-   
-    full_data_files= list(results_dir.glob("fold_*_full_data_*.json"))
-    
-    outputs = []
-   
-    for tmp_data_file in full_data_files:
-        tmp_conf_file = str(tmp_data_file).replace("full_data", "summary_confidences")
-        save_name_pae = str(tmp_data_file).replace(".json", "_pae").replace("full_data", "model")
-        save_path_pae = Path (save_name_pae)
-        save_name_plddt = str(tmp_data_file).replace(".json", "_plddt").replace("full_data", "model")
-        save_path_plddt = Path (save_name_plddt)
-
-        if save_path_pae.exists():
-            outputs.append(save_path_pae)
-        
-        else:
-            outfile_pae= plot_paes(tmp_conf_file, tmp_data_file, save_name=save_name_pae)
-            outputs.append(outfile_pae)
-        
-        if save_path_plddt.exists():
-            outputs.append(save_path_plddt)
-        
-        else:
-            outfile_plddt = plot_pLDDT(tmp_data_file, save_name=save_name_plddt)
-            outputs.append(outfile_plddt)
-
-    return outputs
 
 def plot_plddt(plddts: np.ndarray, 
                chain_boundaries: list = None,
