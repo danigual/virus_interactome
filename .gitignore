@@ -11,3 +11,4 @@ CLAUDE.local.md
 INTERACTOME_DOC.md
 Testing_pipeline.md
 virus_interactome/scripts/
+.coverage
