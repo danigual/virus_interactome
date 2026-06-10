@@ -961,6 +961,30 @@ class TestComputeNetworkProperties:
         result = a.compute_network_properties(weight_col="ipSAE_AB")
         assert len(result) == 3
 
+    def test_malformed_ppi_skipped_with_warning(self, tmp_path, caplog):
+        import logging
+        ppis = ["A__B", "malformed_ppi"]
+        a = _make_analyzer(tmp_path, ppis, [0.5, 0.5])
+        with caplog.at_level(logging.WARNING):
+            result = a.compute_network_properties()
+        assert "Cannot parse PPI" in caplog.text
+        assert set(result["protein"]) == {"A", "B"}
+
+    def test_eigenvector_convergence_failure_yields_nan(self, tmp_path, monkeypatch, caplog):
+        import logging
+        import networkx as nx
+
+        def _raise(*args, **kwargs):
+            raise nx.PowerIterationFailedConvergence(100)
+
+        monkeypatch.setattr(nx, "eigenvector_centrality", _raise)
+        ppis = ["A__B", "A__C"]
+        a = _make_analyzer(tmp_path, ppis, [0.5, 0.5])
+        with caplog.at_level(logging.WARNING):
+            result = a.compute_network_properties()
+        assert "failed to converge" in caplog.text
+        assert result["eigenvector_centrality"].isna().all()
+
 
 class TestPlotNetwork:
 

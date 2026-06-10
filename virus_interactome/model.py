@@ -217,14 +217,14 @@ class Model:
             "path":        str(self._model_path.resolve()),
         })
 
-    def calculate_ipsae(self, pae_cutoff: float = 10.0) -> np.ndarray | None:
-        """Inter-chain PAE submatrix, if available (complex-only)."""
+    def calculate_ipsae(self, pae_cutoff: float = 10.0) -> pd.DataFrame | None:
+        """Inter-chain ipSAE table, if available (complex-only)."""
         if self.model_type == ModelType.MONOMER:
             return None
         if self._metrics.pae is None or self._model_data.chain_boundaries_by_res is None:
             return None
-        
-        from .metrics import calc_d0, ptm_func_vec, calculate_ipsae
+
+        from .metrics import calculate_ipsae
         self.ipsae = calculate_ipsae(self._molecule, self._metrics.pae, pae_cutoff)
         return self.ipsae
     
@@ -239,8 +239,7 @@ class Model:
             return self._model_path.stem.split("_unrelaxed_")[0].split("_relaxed")[0]
         elif self._engine == Engine.BOLTZ:
             return self._model_path.stem.split("_model_")[0]
-        return None
-     
+
     def _get_model_num_from_path(self) -> int | None:
         if self._engine == Engine.AF3:
             return int(self._model_path.stem.split("_model_")[1].split("_")[0])
@@ -248,7 +247,6 @@ class Model:
             return int(self._model_path.stem.split("_rank_")[1].split("_")[0])
         elif self._engine == Engine.BOLTZ:
             return int(self._model_path.stem.split("_model_")[1].split(".")[0])
-        return None
 
     def _resolve_extra_files(self) -> dict[str, Path]:
         """
@@ -276,7 +274,6 @@ class Model:
                 "plddt":  parent / f"plddt_{stem}.npz",
                 "pde":    parent / f"pde_{stem}.npz",
             }
-        return {}
 
     def _load_data(self) -> tuple[ModelMetrics, ModelData]:
         """Dispatch to the right parser based on engine."""

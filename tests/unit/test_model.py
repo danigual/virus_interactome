@@ -136,6 +136,35 @@ class TestModelProperties:
         m = Model(AF3_CIF, engine="af3", is_complex=True)
         assert m.model_type == ModelType.COMPLEX
 
+    def test_plddt_lazy_property(self, af3_model):
+        plddt = af3_model.plddt
+        assert isinstance(plddt, np.ndarray)
+        assert len(plddt) > 0
+
+    def test_chain_lazy_property(self, af3_model):
+        chain = af3_model.chain
+        assert isinstance(chain, np.ndarray)
+        assert len(chain) > 0
+
+    def test_resname_lazy_property(self, af3_model):
+        resname = af3_model.resname
+        assert isinstance(resname, np.ndarray)
+        assert len(resname) > 0
+
+    def test_resid_lazy_property(self, af3_model):
+        resid = af3_model.resid
+        assert isinstance(resid, np.ndarray)
+        assert len(resid) > 0
+
+
+class TestExtraFilesOverride:
+    def test_explicit_extra_files_merged(self):
+        custom = {"custom_key": Path("/tmp/custom.json")}
+        m = Model(AF3_CIF, engine="af3", extra_files=custom)
+        assert m._extra_files["custom_key"] == Path("/tmp/custom.json")
+        # auto-resolved entries are preserved alongside the override
+        assert "scores" in m._extra_files
+
 
 class TestModelSummary:
     def test_summary_returns_series(self, af3_model):
@@ -174,3 +203,78 @@ class TestBuildChimeraXScript:
     def test_script_contains_model_path(self, af3_model):
         script = af3_model._build_chimerax_script("plddt")
         assert str(af3_model.model_path) in script
+
+
+# ---------------------------------------------------------------------------
+# view() — script writing + optional ChimeraX launch
+# ---------------------------------------------------------------------------
+
+class TestView:
+    def _model_in_tmp(self, tmp_path, name="af3"):
+        import shutil
+        dst_dir = tmp_path / name
+        shutil.copytree(AF3_CIF.parent, dst_dir)
+        return Model(dst_dir / AF3_CIF.name, engine="af3")
+
+    def test_writes_script_without_launch(self, tmp_path):
+        m = self._model_in_tmp(tmp_path)
+        script_path = m.view(mode="plddt", launch=False)
+        assert script_path == m.model_path.parent / "visualize.cxc"
+        assert script_path.exists()
+        assert "color bfactor" in script_path.read_text()
+
+    def test_launch_calls_chimerax(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+        m = self._model_in_tmp(tmp_path, name="af3_launch")
+        mock_run = MagicMock()
+        monkeypatch.setattr("subprocess.run", mock_run)
+        script_path = m.view(mode="chain", launch=True)
+        mock_run.assert_called_once_with(["chimerax", str(script_path)])
+
+
+# ---------------------------------------------------------------------------
+# calculate_ipsae
+# ---------------------------------------------------------------------------
+
+class TestCalculateIpsae:
+    def test_returns_data_for_complex(self, af3_model):
+        result = af3_model.calculate_ipsae()
+        assert result is not None
+
+    def test_returns_none_for_monomer(self):
+        m = Model(BOLTZ_CIF, engine="boltz", is_complex=False)
+        assert m.calculate_ipsae() is None
+
+
+# ---------------------------------------------------------------------------
+# ColabFold loader — PAE/pLDDT vs CA-atom-count validation
+# ---------------------------------------------------------------------------
+
+class TestColabfoldSizeValidation:
+    def test_pae_size_mismatch_raises(self, monkeypatch):
+        import virus_interactome.model as model_mod
+        real_load_json = model_mod.load_json
+
+        def fake_load_json(path):
+            data = real_load_json(path)
+            if "pae" in data:
+                data["pae"] = [[0.0, 0.0], [0.0, 0.0]]
+            return data
+
+        monkeypatch.setattr(model_mod, "load_json", fake_load_json)
+        with pytest.raises(ValueError, match="PAE size"):
+            Model(CF_PDB, engine="colabfold")
+
+    def test_plddt_length_mismatch_raises(self, monkeypatch):
+        import virus_interactome.model as model_mod
+        real_load_json = model_mod.load_json
+
+        def fake_load_json(path):
+            data = real_load_json(path)
+            if "plddt" in data:
+                data["plddt"] = [50.0, 60.0]
+            return data
+
+        monkeypatch.setattr(model_mod, "load_json", fake_load_json)
+        with pytest.raises(ValueError, match="pLDDT length"):
+            Model(CF_PDB, engine="colabfold")
