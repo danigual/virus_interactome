@@ -225,8 +225,7 @@ class Model:
             return None
 
         from .metrics import calculate_ipsae
-        self.ipsae = calculate_ipsae(self._molecule, self._metrics.pae, pae_cutoff)
-        return self.ipsae
+        return calculate_ipsae(self._molecule, self._metrics.pae, pae_cutoff)
     
     def __repr__(self) -> str:
         return self.summary().to_string()
