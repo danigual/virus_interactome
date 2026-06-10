@@ -10,6 +10,9 @@ from virus_interactome.interactome_analyzer import InteractomeAnalyzer
 from virus_interactome.foldseek import FoldseekClient
 from virus_interactome.databases import DatabaseClient
 
+DATA = Path(__file__).parent.parent / "data"
+AF3_CIF = DATA / "af3_dummy_example" / "fold_adv5_pvi_protease_model_0.cif"
+
 
 # ---------------------------------------------------------------------------
 # Property setter/getter tests
@@ -1307,6 +1310,43 @@ class TestFoldseekSearch:
              patch.object(client, "_download", return_value=out_dir / "prot.tsv"):
             client.search(cif, ["pdb100"], out_dir=out_dir)
         assert out_dir.exists()
+
+
+class TestFoldseekSearchPlddtFilter:
+    """search() with plddt_threshold > 0 filters the structure before submission."""
+
+    def test_filters_structure_and_submits_filtered_pdb(self, tmp_path):
+        import shutil
+        cif = tmp_path / "myprotein.cif"
+        shutil.copy(AF3_CIF, cif)
+        out_dir = tmp_path / "out"
+        fake_tsv = out_dir / "myprotein.tsv"
+
+        client = FoldseekClient(plddt_threshold=50.0)
+        with patch.object(client, "_submit", return_value="ticket1") as mock_sub, \
+             patch.object(client, "_poll"), \
+             patch.object(client, "_download", return_value=fake_tsv):
+            client.search(cif, ["pdb100"], out_dir=out_dir)
+
+        filtered_path = out_dir / "myprotein_filtered.pdb"
+        assert filtered_path.exists()
+        mock_sub.assert_called_once()
+
+    def test_threshold_zero_skips_filtering(self, tmp_path):
+        import shutil
+        cif = tmp_path / "myprotein.cif"
+        shutil.copy(AF3_CIF, cif)
+        out_dir = tmp_path / "out"
+        fake_tsv = out_dir / "myprotein.tsv"
+
+        client = FoldseekClient(plddt_threshold=0)
+        with patch.object(client, "_submit", return_value="ticket1"), \
+             patch.object(client, "_poll"), \
+             patch.object(client, "_download", return_value=fake_tsv):
+            client.search(cif, ["pdb100"], out_dir=out_dir)
+
+        filtered_path = out_dir / "myprotein_filtered.pdb"
+        assert not filtered_path.exists()
 
 
 class TestSubmitMissingId:
