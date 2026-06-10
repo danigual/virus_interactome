@@ -1,15 +1,12 @@
-import os
 import time
 import subprocess
 import logging
 import concurrent.futures
-import csv
 import pandas as pd
 from typing import Dict, List, Optional, Any, Callable, Union
 from pathlib import Path
 
 from .utils import load_json, load_boltz_input, reorganize_colabfold_outputs
-from .model import Engine
 
 logger = logging.getLogger(__name__)
 

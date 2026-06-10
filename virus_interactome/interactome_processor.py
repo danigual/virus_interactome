@@ -7,18 +7,15 @@ from functools import partial
 from typing import Dict, List, Tuple, Optional, Any, Union
 from pathlib import Path
 from sklearn.cluster import DBSCAN
-from moleculekit.molecule import Molecule
 
-from .utils import load_json, parse_msa_metrics
 from .model import Engine, Model
 from .metrics import (
     calculate_all_metrics,
     calculate_ipsae,
     calculate_LIS_family,
-    calculate_pdockq,
     calculate_pdockq2,
 )
-from .plotting import plot_boxplots, plot_iptm_vs_ptm, plot_pae_clusters, plot_paes, plot_plddt
+from .plotting import plot_pae_clusters, plot_paes, plot_plddt
 
 logger = logging.getLogger(__name__)
 

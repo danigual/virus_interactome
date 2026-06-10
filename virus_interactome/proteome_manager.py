@@ -1,6 +1,3 @@
-from concurrent.futures import ProcessPoolExecutor
-from itertools import combinations
-from Bio import SeqIO, Align
 from Bio.SeqUtils import molecular_weight
 from Bio.SeqUtils.IsoelectricPoint import IsoelectricPoint
 from Bio.SeqUtils.ProtParam import ProteinAnalysis
@@ -633,9 +630,7 @@ class ProteomeManager:
             mw = molecular_weight(seq, seq_type="protein")
             pi = IsoelectricPoint(seq).pi()
             charge_ph7 = IsoelectricPoint(seq).charge_at_pH(7.0)
-            preview = seq[:30] + ("..." if len(seq) > 30 else "")
             print(f"  Length      : {len(seq)} aa")
-            # print(f"  Preview     : {preview}")
             print(f"  MW          : {mw:.1f} Da")
             print(f"  pI          : {pi:.2f}")
             print(f"  Charge@pH7  : {charge_ph7:+.2f}")

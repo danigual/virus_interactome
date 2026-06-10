@@ -3,8 +3,7 @@ import logging
 import subprocess
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Union
-from pathlib import Path
+from typing import List, Optional, Union
 from moleculekit.molecule import Molecule
 from sklearn.cluster import DBSCAN
 
@@ -237,9 +236,9 @@ class _PeptidePipelineMixin:
 
         # 5. Align
         # mode="index" requires strict atom-to-atom correspondence.
-        tmp_mol.align(f"chain A",
+        tmp_mol.align("chain A",
                     refmol=reference_mol,
-                    refsel=f"chain A",
+                    refsel="chain A",
                     mode="index"
                     )
         return tmp_mol
@@ -531,13 +530,13 @@ class _PeptidePipelineMixin:
 
 
             ## Final cleanup and save
-            f.write(f"lighting depthCue false\n")
-            f.write(f"rename #3 Peptides\n")
-            f.write(f"hide #3/A cartoon\n") # Hide the Binder chain in the aligned peptide models
-            f.write(f"hide atoms\n")
-            f.write(f"rename #4 Peptide_centers\n")
+            f.write("lighting depthCue false\n")
+            f.write("rename #3 Peptides\n")
+            f.write("hide #3/A cartoon\n")  # Hide the Binder chain in the aligned peptide models
+            f.write("hide atoms\n")
+            f.write("rename #4 Peptide_centers\n")
             f.write(f"save {session_path}\n")
-            f.write(f"exit\n")
+            f.write("exit\n")
 
         logger.info(f"Executing ChimeraX script: {script_path}")
         try:

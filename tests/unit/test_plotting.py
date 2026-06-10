@@ -141,7 +141,7 @@ class TestPlotBoxplots:
 class TestPlotIptmVsPtm:
     def test_saves_file(self, tmp_path, interactome_df):
         plot_iptm_vs_ptm(interactome_df, output_path=str(tmp_path))
-        assert (tmp_path / "_scatterplot.png").exists()
+        assert (tmp_path / "iptm_vs_ptm_scatterplot.png").exists()
 
 
 # ── plot_confidence_landscape ─────────────────────────────────────────────────

@@ -155,7 +155,7 @@ class FoldseekClient:
         print(f"[Foldseek] Ticket: {ticket_id}. Waiting for completion …")
 
         self._poll(ticket_id)
-        print(f"[Foldseek] Job complete. Downloading results …")
+        print("[Foldseek] Job complete. Downloading results …")
 
         tsv_path = self._download(ticket_id, out_dir, protein_id)
         print(f"[Foldseek] Results written to: {tsv_path}")

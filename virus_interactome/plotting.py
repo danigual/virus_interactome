@@ -339,7 +339,7 @@ def plot_iptm_vs_ptm(df, output_path:str = None):
     plt.ylim(0, 1)
     plt.legend()
     plt.tight_layout()
-    filename = f"_scatterplot.png"
+    filename = "iptm_vs_ptm_scatterplot.png"
     plt.savefig(os.path.join(output_path, filename), dpi=300, bbox_inches='tight')
     plt.close()
 

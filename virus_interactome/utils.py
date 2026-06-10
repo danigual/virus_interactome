@@ -2,19 +2,14 @@ import json
 import re
 import shutil
 import yaml
-from collections import OrderedDict
 import numpy as np
 from typing import Union, Dict, List, Any
-from glob import glob
-import numpy as np
 import os
 import logging
 from moleculekit.molecule import Molecule
 from pathlib import Path
 from .metrics import ptm_func_vec, calc_d0
-import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
