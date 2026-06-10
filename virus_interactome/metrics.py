@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 from moleculekit.molecule import Molecule
 from typing import Union
@@ -90,10 +92,12 @@ def _load_mol(mol_file) -> Molecule:
     """Return a Molecule instance from a path or pass-through if already loaded."""
     if isinstance(mol_file, Molecule):
         return mol_file
+    if not Path(mol_file).exists():
+        raise FileNotFoundError(f"File {mol_file} does not exist")
     try:
         return Molecule(mol_file)
     except Exception as exc:
-        raise FileNotFoundError(f"File {mol_file} does not exist") from exc
+        raise ValueError(f"Could not parse structure file {mol_file}: {exc}") from exc
 
 
 def calculate_pdockq(

@@ -542,7 +542,7 @@ def df_to_pdf(
             if x is None or (isinstance(x, float) and np.isnan(x)):
                 return None
             return float(x)
-        except Exception:
+        except (TypeError, ValueError):
             return None
 
     def _make_predicate(spec):

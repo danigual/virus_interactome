@@ -127,7 +127,7 @@ class _StatsMixin:
             split = df["PPI"].str.split(ppi_separator, n=1, expand=True)
             df["_prot_a"] = split[0]
             df["_prot_b"] = split[1] if 1 in split.columns else split[0]
-        except Exception as e:
+        except (AttributeError, KeyError, TypeError) as e:
             raise ValueError(f"Failed to parse PPI column with separator '{ppi_separator}': {e}")
 
         records: Dict[str, Any] = {}
@@ -198,7 +198,7 @@ class _StatsMixin:
             split = df["PPI"].str.split(ppi_separator, n=1, expand=True)
             df["_source"] = split[0]
             df["_target"] = split[1] if 1 in split.columns else split[0]
-        except Exception as e:
+        except (AttributeError, KeyError, TypeError) as e:
             raise ValueError(f"Failed to parse PPI column with separator '{ppi_separator}': {e}")
 
         src_col, tgt_col = ("Source", "Target") if output_format == "gephi" else ("source", "target")
